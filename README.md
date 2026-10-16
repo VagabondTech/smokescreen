@@ -1,0 +1,281 @@
+# Smokescreen
+
+Smoke that fills rooms, pours through doorways, stops at walls and blocks sight. **`bevy_smokescreen`** brings it to **Bevy 0.20**: smoke grenades, smoke walls, poison gas, fog banks and steam, in three looks, with gameplay queries that agree with what players see. Underneath is **`smokescreen`**, an engine-free simulation that gives bit-identical answers on every machine, so it works for multiplayer games and dedicated servers too.
+
+**Volumetric**: soft, light-scattering smoke.
+
+![Volumetric smoke](docs/screenshots.jpg)
+
+**Faceted**: hard-edged, tumbling polyhedral puffs merged like metaballs.
+
+![Faceted smoke](docs/faceted.jpg)
+
+**Crystal**: tumbling polyhedra that don't merge, drawn as ordinary meshes. The cheapest look to draw and to check, and what players see is exactly what blocks.
+
+![Crystal smoke](docs/crystal.jpg)
+
+*Captured from `examples/demo.rs` with a software Vulkan rasteriser.*
+
+## What you get
+
+- Clouds that flood rooms, follow corridors, pour through doorways and off ledges, and stop at walls, dense right up to them.
+- Presets: smoke grenades, smoke walls, poison gas, fog banks and steam vents, or your own mix of volume, lifetime, colour and look.
+- Bullets carve tunnels that close again; explosions clear a sphere that refills from the edges.
+- Lit by the sun with self-shadowing, darker indoors, lit from inside by muzzle flashes and explosions (any Bevy `PointLight`).
+- **Gameplay sees the same smoke.** `blocks_sight(a, b)` and `occlusion(a, b)` for AI, server-side visibility and audio; `density_at(p)` for gas damage.
+- **Level setup without collision code:** mark your level's meshes with `SmokeObstacle`.
+- **One performance dial per camera**, or a GPU millisecond budget that turns it for you. No dial step changes a cloud's shape, so a cheaper setting never shows through smoke a better one hides.
+- **Multiplayer-ready core** (`smokescreen`): engine-free, runs on your ticks and in your units, bit-identical on x86-64 and ARM, with a per-tick CPU budget.
+
+![Presets](docs/presets.jpg)
+
+*`examples/presets.rs`: three grenades (volumetric, faceted, crystal), a smoke wall behind a low wall, gas kept in a room, a fog bank and a steam vent. The walls and floor are plain meshes marked `SmokeObstacle`.*
+
+## Quick start
+
+```toml
+[dependencies]
+bevy = "0.20"
+bevy_smokescreen = { git = "https://github.com/VagabondTech/smokescreen" } # not on crates.io yet
+```
+
+Bevy 0.20 needs Rust 1.97.1. Smoke needs compute shaders: native (Vulkan, Metal, DX12) or WebGPU, not WebGL2.
+
+```rust,no_run
+use bevy::prelude::*;
+use bevy_smokescreen::prelude::*;
+
+fn main() {
+    App::new()
+        .add_plugins((DefaultPlugins, SmokePlugin::default()))
+        .add_systems(Startup, setup)
+        .add_systems(Update, bot_vision)
+        .run();
+}
+
+fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
+    commands.spawn((
+        Camera3d::default(),
+        SmokeCamera::HIGH, // the performance dial
+        Transform::from_xyz(0.0, 1.7, -10.0).looking_at(Vec3::new(0.0, 1.0, 0.0), Vec3::Y),
+    ));
+    commands.spawn((
+        DirectionalLight::default(),
+        SmokeSun, // the light that lights the smoke
+        Transform::from_xyz(-4.0, 10.0, -6.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+
+    // Level geometry smoke flows around: just mark it.
+    commands.spawn((
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(50.0, 50.0))),
+        MeshMaterial3d(materials.add(Color::srgb(0.6, 0.6, 0.6))),
+        SmokeObstacle,
+    ));
+
+    // A smoke grenade popping at the origin.
+    commands.spawn((Smoke::grenade(), Transform::from_xyz(0.0, 0.0, 0.0)));
+}
+
+fn bot_vision(mut vision: SmokeVision) {
+    if vision.blocks_sight(Vec3::new(0.0, 1.6, -10.0), Vec3::new(0.0, 1.6, 10.0)) {
+        // The bot can't see the player.
+    }
+}
+```
+
+`examples/minimal.rs` is the same with bullets, explosions and a level made of boxes instead of meshes.
+
+## Looks
+
+Pick a default with `SmokeSettings::style`, or per smoke with `Smoke::with_style`.
+
+| | Volumetric | Faceted | Crystal |
+|---|---|---|---|
+| Look | soft, light-scattering | hard facets, merged like metaballs | hard, separate tumbling crystals |
+| Drawn by | raymarching at reduced resolution | sphere tracing a distance field | plain meshes (Bevy's PBR) |
+| GPU cost | low; one dial per camera | 3–5× volumetric per covered pixel | a few thousand triangles per cloud |
+| 250 sight checks through 4 of 32 clouds¹ | 0.3 ms | 2.5 ms exact, 0.2 ms with `FacetRule::Core` | 0.11 ms (any contact blocks), 0.28 ms (0.8 m rule) |
+| Bullets and explosions | tunnels and cleared spheres | hexagonal tunnels, cavities | knock crystals out of the way |
+| Picture against the rule | thin smoke is see-through in both | never shows through what the rule blocks; thin edges drawn solid | exact with `sight_threshold = 0` |
+
+¹ Fully grown clouds, on the 2-core 2.1 GHz VM this was built on. Halfway through a cloud's fade, when many lines are only partly blocked, they cost up to 4× as much; see [Performance](#performance). A current desktop or server CPU should be faster. `cargo bench -p smokescreen` measures it on yours.
+
+How each look works, and why faceted costs more than volumetric despite its hard edges, is in [docs/design.md](docs/design.md).
+
+## Presets and sources
+
+```rust,no_run
+use bevy::prelude::*;
+use bevy_smokescreen::prelude::*;
+
+fn spawn_smokes(mut commands: Commands) {
+    commands.spawn((Smoke::grenade(), Transform::from_xyz(0.0, 0.0, 3.0)));
+    commands.spawn((Smoke::wall(Vec3::new(10.0, 0.0, 0.0)), Transform::from_xyz(-5.0, 0.3, 8.0)));
+    commands.spawn((Smoke::gas(), Transform::from_xyz(4.0, 0.0, -2.0)));
+    commands.spawn((Smoke::fog_bank(Vec3::new(6.0, 1.5, 4.0)), Transform::from_xyz(0.0, 1.5, 20.0)));
+    commands.spawn((
+        Smoke::steam_vent().with_style(SmokeStyle::Crystal).with_tint(Color::srgb(0.9, 0.95, 1.0)),
+        Transform::from_xyz(8.0, 0.0, 0.0),
+    ));
+}
+```
+
+| Preset | What it does |
+|---|---|
+| `Smoke::grenade()` | Spreads from where it lands to a 90 m³ cloud, lasts 18 s (the default `Smoke`) |
+| `Smoke::wall(offset)` | Spreads from every point between the entity and `offset` from it, lasts 25 s |
+| `Smoke::gas()` | Greenish, thinner-looking, spreads over 4 s, lasts 25 s; hurt players with `SmokeVision::density_at` |
+| `Smoke::fog_bank(half_extents)` | Fills a box, feathered at the edges, for as long as the entity lives |
+| `Smoke::steam_vent()` | White, thin, spreads slowly over 8 s, clears after 15 s |
+
+All of them take the builders `with_style`, `with_volume`, `with_lifetime`, `with_grow_time`, `with_tint`, `with_seed` and `with_source` (`SmokeSource::Point`, `Line` or `Box`). Style, volume, lifetime, grow time, seed and source are part of the rules: they change what blocks, so in a multiplayer game every machine must use the same. Tint and `density` are looks.
+
+## Gameplay
+
+`SmokeVision` answers for the current tick, in world units:
+
+- `blocks_sight(a, b)`: does smoke hide `b` from `a`? True once the segment passes through `Tuning::sight_threshold` of cloud (0.8 m by default; 0 blocks on any contact).
+- `occlusion(a, b)`: how much cloud lies between them, every smoke added up.
+- `transmittance(a, b)`: fraction of light that gets through, for audio and other soft effects.
+- `density_at(p)`: how dense the smoke is at a point, for gas damage.
+
+The rule is the same function on every machine and in every look's terms: for volumetric smoke the density integrated along the segment, for faceted and crystal smoke the length of the segment inside the puffs. Bullets (`SmokeBullet`) and explosions (`SmokeExplosion`) are messages; holes take part in the rule.
+
+## Multiplayer and servers
+
+The simulation is its own crate, `smokescreen`, with no Bevy in it. A dedicated server links just that:
+
+```rust,ignore
+use smokescreen::*;
+
+let mut config = Config::new(Units::INCHES_Z_UP, 128.0); // your units and tick rate
+config.tuning.sight_threshold = 32.0;                     // 32 inches of cloud hide a player
+let mut smokes = Smokes::new(config, level);             // `level`: your collision, behind the `Level` trait
+
+smokes.pop(CloudSpec::new(origin, tick, seed, Style::Crystal));
+smokes.bullet(muzzle, impact, tick);
+smokes.advance(tick);                                     // every tick: spend the fill budget
+let view = smokes.view(tick);                             // `Copy + Sync`: share it between threads
+let hidden = view.blocks_sight(eye, enemy_head);
+```
+
+`smokescreen/examples/server.rs` is a complete headless loop.
+
+- **Your ticks.** A cloud at tick *t* is a pure function of its `CloudSpec` (origin, pop tick, seed, style, source, volume, timeline), the level, the `Tuning` and *t*; holes are events with ticks. Events can arrive late or in any order, late joiners compute the same clouds from the same events, and a `view` of a recent tick answers as it would have then (lag compensation).
+- **Your units.** `Units { up, metres_per_unit }`: Y-up metres, Z-up inches, or anything else.
+- **Bit-identical everywhere.** Only exact float arithmetic in a fixed order, `libm` for transcendental functions, no fused multiply-add, no SIMD types, no hash-map iteration; `smokescreen/clippy.toml` enforces it. `smokescreen/tests/determinism.rs` hashes 10,000 query results across all styles, and a level voxelised from meshes with clouds filled in it; the hashes match on x86-64 (debug, release, `-C target-cpu=native`) and aarch64. CI runs them on macOS, Linux and Windows.
+- **A per-tick CPU budget.** A cloud's fill runs a little each tick (`Config::fill_budget`, about 0.2 ms); it speeds up only if the cloud is about to start growing. The finished cloud is the same however the work is split.
+- **Networking.** Send the `CloudSpec` of each pop (a couple of dozen bytes) and each bullet and explosion with its tick; every machine computes the same clouds, as long as they share the `Tuning` and the same level answers. For mesh-based levels, voxelise once and ship the voxels (`VoxelObstacles::to_bytes`). A level voxelised at the tuning's voxel size (`VoxelObstacles::from_level`) gives exactly the clouds its source level would, faster: cloud grids lie on the same world lattice. Or run the fill on the server with `fill_cloud` and send the result for `Smokes::insert`.
+
+In Bevy, `SmokeWorld` is the `Smokes` the plugin runs, and `SmokeClock` sets the tick (by default from Bevy's virtual time; set `auto: false` to drive it from your netcode, with `draw_tick` for an interpolation delay). `SmokePlugin { config }` takes the same `Config`, so a Bevy client in Z-up inches works too:
+
+![Units](docs/units.jpg)
+
+*`examples/units.rs`: the same scene built in Y-up metres (left) and in Z-up inches (right), volumetric above and faceted below, gives the same smoke.*
+
+## Performance
+
+Measured on the build VM (2 cores, 2.1 GHz, numbers vary by ±30 % between runs) at 128 ticks a second. Run `cargo bench -p smokescreen` on your own hardware.
+
+**Fills**, per cloud, in a voxelised level:
+
+| | Volumetric | Faceted | Crystal |
+|---|---|---|---|
+| All at once | 1.7 ms | 5.5 ms | 5.3 ms |
+| Default timeline (the cloud starts 0.1 s after the pop): per tick for 13 ticks | median 0.16 ms, worst 0.35 ms | median 0.46 ms, worst 0.64 ms | median 0.46 ms, worst 0.86 ms |
+| A start of 0.4 s or later: per tick | as above | median 0.13 ms, worst 0.41 ms, for 40–45 ticks | median 0.13 ms, worst 0.32 ms, for 40–45 ticks |
+
+The fill budget (`Config::fill_budget`, about 0.2 ms a tick) grows only when a fill would otherwise not be ready by the time its cloud starts. Faceted and crystal fills need about 0.35 s of ticks, so give those clouds a later `Timeline::start` to keep to the budget.
+
+**Sight checks**: 250 a tick, each through 4 of 32 clouds, in milliseconds:
+
+| | Growing | Grown | Halfway through the fade | Per-tick snapshot |
+|---|---|---|---|---|
+| Volumetric | 0.30 | 0.30 | 1.1 | 0.005 |
+| Faceted, `FacetRule::Exact` | 2.5 | 2.5 | 4.5 | 0.3 |
+| Faceted, `FacetRule::Core` | 0.2 | 0.2 | 0.7 | 0.2 |
+| Crystal, 0.8 m rule | 0.28 | 0.28 | 0.33 | 0.1 |
+| Crystal, any contact blocks | 0.11 | 0.11 | 0.18 | 0.1 |
+
+Halfway through the fade the clouds are thin, so many lines never reach the threshold and are integrated all the way through. The snapshot is the clouds' state at a tick (puff positions, holes), computed once per tick before the first check.
+
+On the GPU, the volumetric and faceted styles have a quality dial per camera (`SmokeCamera::quality`, or `SmokeCamera::budget(ms)` to fit a GPU time budget); see [docs/design.md](docs/design.md#the-performance-dial). Crystal smoke is ordinary geometry. Only a software rasteriser was available while building this, so no absolute GPU timings exist yet: run the demo's HUD on your hardware.
+
+## Tuning
+
+### The rules (`Tuning`, the same on every machine)
+
+`Tuning::new(&units)` converts these defaults to your units; set it in `SmokePlugin { config }` (or `Config::tuning` for `smokescreen`).
+
+| Field | Default | Effect |
+|---|---|---|
+| `grid_dims`, `voxel_size` | 48 × 24 × 48, 0.3 m | Fill grid per cloud (dimensions rounded up to multiples of 4) |
+| `volume` | 90 m³ | The fill stops once this much is filled |
+| `up_cost`, `down_cost` | 1.4, 0.9 | Spreading upwards costs more, downwards less: a dome that pours off ledges |
+| `lumpiness`, `lump_size` | 0.3, 1.6 m | Noise on spreading costs, for a lumpy outline |
+| `floor_fraction` | 0.25 | Fraction of the grid below the source |
+| `timeline` | starts 0.1 s after the pop, full 1.4 s later, gone at 18 s after a 3 s fade | Per cloud via `Smoke` or `CloudSpec::timeline` |
+| `facets`, `crystals` | 0.9 m spacing, 0.72 m puffs, 0.3 m blend (crystal: none) | Puff shape of the faceted and crystal looks |
+| `facet_rule` | `Exact` | `Core` for cheap, conservative faceted checks |
+| `holes` | bullets: 0.38 m, closed by 1.8 s; blasts: 3.5 m, refilled by 5 s | `None` turns holes off |
+| `max_holes_per_cloud` | 16 | The newest win |
+| `max_clouds` | 32 | Past this the oldest stop counting (and aren't drawn); also sizes the GPU atlas |
+| `sight_threshold` | 0.8 m | Cloud a sight line must cross to be blocked; 0 blocks on any contact |
+
+### The simulation (`Config`)
+
+| Field | Default | Effect |
+|---|---|---|
+| `units`, `tick_rate` | set in `Config::new` (Bevy: Y-up metres, 128 ticks per second) | Your units, up axis and ticks |
+| `fill_budget` | 20,000 | Work units per tick for fills, about 10 ns each. Performance only |
+| `level_query_units` | 4 | Units charged per `Level` query (`is_blocked`, `is_inside`); raise it if yours are slow |
+| `history_ticks` | one second | How long ended clouds and holes are kept, for views of past ticks |
+| `cached_ticks` | 4 | Ticks whose snapshots are kept |
+
+### The look (`SmokeSettings`, change any time)
+
+| Field | Default | Effect |
+|---|---|---|
+| `style` | volumetric | Look of smokes that don't set their own |
+| `extinction` | 7.0 /m | Opacity of the volumetric picture. At 7 you can't see past ~0.5 m inside |
+| `albedo` | 0.9 grey | Smoke colour; tint per smoke with `Smoke::tint` |
+| `multi_scattering` | 1.0 | 0 = physically single-scattered (too dark); ~1 = bright, like CS2 |
+| `ambient_occlusion` | 0.85 | Darkening deep inside and under the cloud |
+| `indoor_ambient` | 0.5 | Ambient kept where the level hides the sky |
+| `anisotropy` | 0.25 | Glow when looking towards the sun through thin smoke |
+| `noise_frequency`, `erosion`, `detail_erosion` | 0.22, 0.6, 0.35 | Billow size and how ragged volumetric edges are |
+| `wind` | slight upward drift | Drift of the volumetric noise |
+| `crystal_shadows` | on | Crystal puffs cast shadows |
+| `debug_silhouette` | off | Draws faceted and crystal smoke flat magenta, to check silhouettes |
+
+## Examples
+
+| Example | What it shows |
+|---|---|
+| `minimal` | The smallest integration: a grenade, bullets, explosions, a bot's line of sight |
+| `presets` | Every preset and look, in a yard made of `SmokeObstacle` meshes |
+| `demo` | A playable test range: throw, shoot, switch looks (F), turn the dial (1–6), budget mode (B); GPU timings in the HUD; scripted captures |
+| `viewmodel` | A first-person weapon that stays visible inside smoke (a second camera) |
+| `units` | The same scene in Y-up metres and Z-up inches |
+| `smokescreen/examples/server` | A headless server loop in Z-up inches with 250 bots |
+
+Run one with `cargo run --release --example presets`.
+
+## Limitations
+
+- A first-person weapon needs its own camera to stay visible inside smoke (see `viewmodel`); transparent objects need nothing.
+- Volumetric and faceted smoke are lit by one directional light and up to eight point lights (unshadowed); spot lights don't light them yet. Crystal smoke takes any Bevy light.
+- Orthographic cameras aren't supported.
+- Clouds don't drift with wind, and doors closing on a smoke don't re-shape it.
+- Smoke fills right up to walls and floors at least a voxel thick (0.3 m by default), wherever they sit on the voxel grid. Against thinner walls it stops at the middle of the first voxel they reach into, so up to about half a voxel can stay clear in front of them, and as much can show past them; picture and rule agree. Level meshes (`SmokeObstacle`) need triangles facing outwards for this, as Bevy's shapes do; against a mesh facing inwards, or a wall made of a single vertical sheet, smoke stops up to half a voxel short. A single sheet facing up (a `Plane3d`, say) counts as ground, solid underneath, so up to a voxel of smoke can show beneath a raised floor made of one: use a box for floors with open air below.
+- Faceted and crystal smoke can still stop up to about a voxel short of walls (see [ROADMAP.md](ROADMAP.md)).
+- With the default 0.8 m rule, faceted and crystal pictures draw thin edges solid where the rule sees through.
+- Tested only on a software rasteriser so far. The demo builds for browsers with WebGPU but hasn't been seen running in one yet.
+
+[ROADMAP.md](ROADMAP.md) has the plan. [CONTRIBUTING.md](CONTRIBUTING.md) explains how to build, test and keep the core deterministic.
+
+## License
+
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE), at your option.
+
+Smokescreen is made by [VagabondTech](https://github.com/VagabondTech).

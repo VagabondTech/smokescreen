@@ -1,0 +1,20 @@
+[package]
+name = "smokescreen"
+version = "0.1.0"
+edition = "2024"
+# Let chains. Std APIs are checked against this by clippy's `incompatible_msrv`.
+rust-version = "1.88"
+description = "Deterministic smoke simulation for games and servers: flood fill through levels, three looks, bullet and explosion holes, bit-identical line-of-sight queries, no engine"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["smoke", "deterministic", "gamedev", "line-of-sight", "multiplayer"]
+categories = ["game-development", "simulation"]
+repository = "https://github.com/VagabondTech/smokescreen"
+
+[dependencies]
+glam = "0.33"
+libm = "0.2"
+
+[[bench]]
+name = "queries"
+harness = false

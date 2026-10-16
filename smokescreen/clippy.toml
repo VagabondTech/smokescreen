@@ -1,0 +1,33 @@
+# Determinism (see the crate docs): transcendental functions come from libm,
+# never from std (whose results differ between platforms), and nothing may
+# fuse a multiply and an add.
+disallowed-methods = [
+    { path = "f32::sin", reason = "use libm (deterministic across platforms)" },
+    { path = "f32::cos", reason = "use libm (deterministic across platforms)" },
+    { path = "f32::sin_cos", reason = "use libm (deterministic across platforms)" },
+    { path = "f32::tan", reason = "use libm (deterministic across platforms)" },
+    { path = "f32::asin", reason = "use libm (deterministic across platforms)" },
+    { path = "f32::acos", reason = "use libm (deterministic across platforms)" },
+    { path = "f32::atan", reason = "use libm (deterministic across platforms)" },
+    { path = "f32::atan2", reason = "use libm (deterministic across platforms)" },
+    { path = "f32::exp", reason = "use libm (deterministic across platforms)" },
+    { path = "f32::exp2", reason = "use libm (deterministic across platforms)" },
+    { path = "f32::ln", reason = "use libm (deterministic across platforms)" },
+    { path = "f32::log", reason = "use libm (deterministic across platforms)" },
+    { path = "f32::log2", reason = "use libm (deterministic across platforms)" },
+    { path = "f32::log10", reason = "use libm (deterministic across platforms)" },
+    { path = "f32::powf", reason = "use libm (deterministic across platforms)" },
+    { path = "f32::powi", reason = "powi may be evaluated differently per platform; multiply instead" },
+    { path = "f32::cbrt", reason = "use libm (deterministic across platforms)" },
+    { path = "f32::hypot", reason = "use libm (deterministic across platforms)" },
+    { path = "f32::mul_add", reason = "no fused multiply-add: results differ with and without FMA" },
+    { path = "glam::Vec3::mul_add", reason = "no fused multiply-add: results differ with and without FMA" },
+]
+disallowed-types = [
+    { path = "glam::Quat", reason = "R1: build rotations as Mat3 from libm sin/cos" },
+    { path = "glam::Vec3A", reason = "R1: scalar types only" },
+    { path = "glam::Vec4", reason = "R1: scalar types only" },
+    { path = "glam::Mat4", reason = "R1: scalar types only" },
+    { path = "std::collections::HashMap", reason = "R1: no hash-map iteration order in results" },
+    { path = "std::collections::HashSet", reason = "R1: no hash-set iteration order in results" },
+]

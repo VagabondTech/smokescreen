@@ -1,0 +1,75 @@
+[package]
+name = "bevy_smokescreen"
+version = "0.1.0"
+edition = "2024"
+# Bevy 0.20's minimum.
+rust-version = "1.97.1"
+description = "Smoke for Bevy that fills rooms, flows through doorways and blocks sight: grenades, smoke walls, gas, fog banks; volumetric, faceted or crystal; deterministic gameplay queries"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["bevy", "smoke", "volumetric", "gamedev", "multiplayer"]
+categories = ["game-development", "rendering", "simulation"]
+repository = "https://github.com/VagabondTech/smokescreen"
+# Once the browser demo runs (see ROADMAP.md):
+# homepage = "https://vagabondtech.github.io/smokescreen"
+exclude = ["docs/*.jpg", "tools/", "web/", ".github/"]
+
+[workspace]
+members = ["smokescreen"]
+# Resolver 2, not 3: with resolver 3 (MSRV-aware), smokescreen's lower
+# rust-version would hold Bevy's dependencies back on `cargo update`.
+resolver = "2"
+
+[features]
+# Draw through WebGPU in the browser (wasm32); see web/ and .github/workflows/web.yml.
+webgpu = ["bevy/webgpu"]
+
+[dependencies]
+smokescreen = { path = "smokescreen", version = "0.1.0" }
+bevy = { version = "0.20.0", default-features = false, features = [
+    "std",
+    "multi_threaded",
+    "default_app",
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_pbr",
+    "bevy_light",
+    "bevy_camera",
+    "bevy_image",
+    "bevy_shader",
+] }
+
+bytemuck = "1"
+
+[dev-dependencies]
+bevy = { version = "0.20.0", default-features = false, features = [
+    "std",
+    "multi_threaded",
+    "default_app",
+    "bevy_winit",
+    "x11",
+    "wayland",
+    "default_font",
+    "3d_api",
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_pbr",
+    "bevy_post_process",
+    "bevy_anti_alias",
+    "ui_api",
+    "ui_bevy_render",
+    "png",
+] }
+
+# Bevy's recommended dev settings: optimise dependencies, keep this crate quick to rebuild.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# Browser builds (`--profile web`, see web/README.md): smaller downloads.
+[profile.web]
+inherits = "release"
+opt-level = "s"
+lto = "thin"
