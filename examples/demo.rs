@@ -2261,11 +2261,10 @@ fn clips() -> Vec<Clip> {
             style: Volumetric,
             pre_roll: 0.5,
             length: 10.0,
-            // Steep, so the 4 m front wall doesn't hide the smoke just inside it.
-            camera: CameraPath::Keys(vec![
-                (0.0, Vec3::new(2.5, 32.0, -3.5), Vec3::new(3.5, 0.0, 3.5)),
-                (10.0, Vec3::new(5.0, 31.0, -2.5), Vec3::new(3.5, 0.0, 3.5)),
-            ]),
+            // Steep, so the 4 m front wall doesn't hide the smoke just inside
+            // it; still, so that only the smoke changes from frame to frame
+            // (much smaller animations).
+            camera: CameraPath::Keys(vec![(0.0, Vec3::new(3.5, 32.0, -3.0), Vec3::new(3.5, 0.0, 3.5))]),
             events: vec![
                 (-0.5, Event::Roof(false)),
                 (
@@ -2294,10 +2293,7 @@ fn clips() -> Vec<Clip> {
             style: Volumetric,
             pre_roll: 0.5,
             length: 12.0,
-            camera: CameraPath::Keys(vec![
-                (0.0, Vec3::new(20.0, 10.5, -33.0), Vec3::new(20.0, 0.6, -18.0)),
-                (12.0, Vec3::new(17.5, 9.5, -32.0), Vec3::new(20.0, 0.6, -18.0)),
-            ]),
+            camera: CameraPath::Keys(vec![(0.0, Vec3::new(19.0, 10.0, -32.5), Vec3::new(20.0, 0.6, -18.0))]),
             events: vec![
                 (-0.5, Event::Bots(true)),
                 (
