@@ -180,6 +180,7 @@
         ];
         log("gpu", `limits: ${limits.map((k) => `${k} ${adapter.limits[k]}`).join(", ")}`);
         log("gpu", `features: ${[...adapter.features].join(", ") || "none"}`);
+        log("gpu", `WGSL language features: ${[...(navigator.gpu.wgslLanguageFeatures || [])].join(", ") || "none"}`);
         log("gpu", `preferred canvas format: ${navigator.gpu.getPreferredCanvasFormat()}`);
       }
 
@@ -205,10 +206,42 @@
               log("error", message);
               if (lost.reason !== "destroyed") problem(message, true);
             });
+            if (!watchingShaders) {
+              watchingShaders = true;
+              watchShaders(Object.getPrototypeOf(device));
+            }
           } catch (error) {
             log("page", `couldn't watch the device: ${error}`);
           }
           return device;
+        };
+      }
+
+      // Bevy asks for shader errors in an error scope whose answer it can't
+      // wait for in a browser, so they'd never show: ask each module instead.
+      let watchingShaders = false;
+      function watchShaders(devicePrototype) {
+        const createShaderModule = devicePrototype.createShaderModule;
+        devicePrototype.createShaderModule = function (descriptor) {
+          const module = createShaderModule.call(this, descriptor);
+          try {
+            module.getCompilationInfo().then(
+              (info) => {
+                const source = String(descriptor.code).split("\n");
+                for (const m of info.messages) {
+                  if (m.type !== "error") continue;
+                  const line = (source[m.lineNum - 1] || "").trim().slice(0, 160);
+                  const message = `a shader didn't compile: ${m.message} (line ${m.lineNum}: ${line})`;
+                  log("error", message);
+                  problem(message, false);
+                }
+              },
+              (error) => log("page", `couldn't check a shader: ${error}`),
+            );
+          } catch (error) {
+            log("page", `couldn't check a shader: ${error}`);
+          }
+          return module;
         };
       }
 

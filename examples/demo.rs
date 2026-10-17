@@ -358,7 +358,7 @@ fn setup_level(
     let mut obstacle_boxes = Vec::new();
     for (i, (center, size, mat)) in boxes.into_iter().enumerate() {
         let mut entity = commands.spawn((
-            Mesh3d(meshes.add(Cuboid::from_size(size))),
+            Mesh3d(meshes.add(no_uvs(Cuboid::from_size(size)))),
             MeshMaterial3d(mat),
             Transform::from_translation(center),
         ));
@@ -419,6 +419,13 @@ fn slab_ground(size: f32, slab: f32) -> Mesh {
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
         .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
         .with_inserted_indices(Indices::U32(indices))
+}
+
+/// A shape's mesh without UVs. Nothing here is textured, and Safari 26 can't
+/// compile Bevy 0.20's PBR shader for meshes with UVs: it keeps textures in
+/// `let`s, which needs WGSL's `texture_and_sampler_let`.
+fn no_uvs(shape: impl Into<Mesh>) -> Mesh {
+    shape.into().with_removed_attribute(Mesh::ATTRIBUTE_UV_0)
 }
 
 #[derive(Component)]
@@ -743,11 +750,11 @@ fn setup_grenades(
     };
     commands.insert_resource(GrenadeAssets {
         smoke: (
-            meshes.add(Cylinder::new(GRENADE_RADIUS * 0.75, GRENADE_RADIUS * 2.2)),
+            meshes.add(no_uvs(Cylinder::new(GRENADE_RADIUS * 0.75, GRENADE_RADIUS * 2.2))),
             material(Color::srgb(0.25, 0.32, 0.2)),
         ),
         he: (
-            meshes.add(Sphere::new(GRENADE_RADIUS)),
+            meshes.add(no_uvs(Sphere::new(GRENADE_RADIUS))),
             material(Color::srgb(0.2, 0.22, 0.2)),
         ),
     });
@@ -2391,7 +2398,7 @@ fn setup_bots(
 ) {
     let (config, _) = gizmos.config_mut::<DefaultGizmoConfigGroup>();
     config.line.width = (video.caption_size * 0.15).max(2.0);
-    let body = meshes.add(Capsule3d::new(0.25, 1.1));
+    let body = meshes.add(no_uvs(Capsule3d::new(0.25, 1.1)));
     let blue = materials.add(Color::srgb(0.3, 0.4, 0.62));
     let orange = materials.add(Color::srgb(0.92, 0.45, 0.12));
     for (eye, material) in BOT_EYES.iter().map(|e| (*e, &blue)).chain([(SIGHT_TARGET, &orange)]) {

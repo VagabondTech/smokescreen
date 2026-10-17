@@ -54,7 +54,10 @@ the CPU (the README has both).
    publishes `main` to <https://vagabondtech.github.io/smokescreen/>.
    Still to do: Safari, Firefox and Edge, other GPUs, and the click-to-look
    pointer lock with someone at the keyboard (tried only on a locked
-   screen, where Chrome refuses it); touch controls for phones.
+   screen, where Chrome refuses it); touch controls for phones. In Safari
+   every shader the demo uses compiles (Safari 26.4) now that its meshes
+   have no UVs: Bevy 0.20's PBR shader keeps textures in `let`s, which
+   Safari can't compile. Report that to Bevy.
 3. **crates.io.** Make README image and file links absolute (crates.io
    doesn't resolve relative ones), publish `smokescreen` first, then
    `bevy_smokescreen`, and switch the README's install lines from git to

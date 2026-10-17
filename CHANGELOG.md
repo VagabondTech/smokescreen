@@ -65,6 +65,10 @@ For anyone already running a copy from before the repository existed:
   and with `?log` in the address the whole log, to copy. The demo's
   settings work in the address too (`?smoke=0&ldr&msaa=0`), and two are
   new: `SMOKE_DEMO_MSAA` and `SMOKE_DEMO_SMOKE`.
+- Crystal puffs have no UVs (they had all-zero ones): Safari 26 can't
+  compile Bevy 0.20's PBR shader for meshes with UVs. The demo's meshes
+  have none either, and its page reports shader compile errors, which Bevy
+  drops in a browser.
 
 ### smokescreen
 

@@ -5,8 +5,12 @@ macOS and ChromeOS; Safari and Firefox where WebGPU is turned on). WebGL2
 can't run it: the smoke needs compute shaders.
 
 **Status:** it runs in Chrome 155 on an Apple M4 (macOS 26): all three
-styles, throwing, shooting and the dial. Safari, Firefox, Edge and other
-GPUs haven't been tried yet (see `ROADMAP.md`).
+styles, throwing, shooting and the dial. On an iPhone (Safari 26) the
+screen stayed black: Safari can't compile Bevy 0.20's PBR shader for
+meshes with UVs (see the README's limitations), so the demo's meshes have
+none now, and every shader it uses compiles in Safari 26.4. Playing it in
+Safari, Firefox and Edge, and on other GPUs, is still to be tried (see
+`ROADMAP.md`).
 
 ## Playing
 
