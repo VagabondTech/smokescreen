@@ -218,6 +218,11 @@ struct GpuSlot {
     facet_ofs: UVec4,
     /// x: smooth-union radius, y: region clip padding.
     facet_shape: Vec4,
+    /// xyz: what the smoke occupies at this tick (`FrameSlot::drawn_*`): a
+    /// sample outside reads nothing, a voxel whose centre is outside holds
+    /// nothing.
+    drawn_min: Vec4,
+    drawn_max: Vec4,
 }
 
 #[derive(ShaderType, Clone, Copy, Default)]
@@ -1163,6 +1168,8 @@ fn prepare_smoke(
             params: Vec4::new(src.growth, src.density, src.dissolve * 0.6, src.seed),
             tint: src.tint.extend(1.0),
             holes: UVec4::new(src.hole_start, src.hole_count, 0, 0),
+            drawn_min: src.drawn_min.extend(0.0),
+            drawn_max: src.drawn_max.extend(0.0),
             ..default()
         };
         if let Some(f) = src.facet
