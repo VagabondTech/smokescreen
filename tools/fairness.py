@@ -40,15 +40,25 @@ def dilate(m, n=1):
     return out
 
 
+def cost(row):
+    """GPU time where the run had GPU timings; else the frame time with smoke
+    minus the same view's without (macOS, where timestamps lose the device)."""
+    if row["gpu_ms"]:
+        return float(row["gpu_ms"])
+    if row.get("frame_ms") and row.get("empty_frame_ms"):
+        return float(row["frame_ms"]) - float(row["empty_frame_ms"])
+    return float("nan")
+
+
 def main(src):
     rows = list(csv.DictReader(open(f"{src}/tiers.csv")))
     views = list(dict.fromkeys(r["view"] for r in rows))
-    print(f"{'view':6} {'step':8} {'gpu ms':>9} {'rel':>5} {'smoke px':>9} {'missing':>8} {'missing>1px':>11} {'extra':>7}")
+    print(f"{'view':6} {'step':8} {'cost ms':>9} {'rel':>5} {'smoke px':>9} {'missing':>8} {'missing>1px':>11} {'extra':>7}")
     worst = 0
     for v in views:
         top = max(int(r["tier"]) for r in rows if r["view"] == v)
         ref = mask(src, f"{v}_tier{top}_mask")
-        top_ms = float(next(r["gpu_ms"] for r in rows if r["view"] == v and int(r["tier"]) == top))
+        top_ms = cost(next(r for r in rows if r["view"] == v and int(r["tier"]) == top))
         for r in [r for r in rows if r["view"] == v]:
             t = int(r["tier"])
             m = mask(src, f"{v}_tier{t}_mask")
@@ -56,7 +66,7 @@ def main(src):
             missing_far = ref & ~dilate(m, 1)
             extra = m & ~ref
             worst = max(worst, int(missing_far.sum()))
-            ms = float(r["gpu_ms"]) if r["gpu_ms"] else float("nan")
+            ms = cost(r)
             print(
                 f"{v:6} {r['tier_name']:8} {ms:9.2f} {ms / top_ms:5.2f} {int(ref.sum()):9d} "
                 f"{int(missing.sum()):8d} {int(missing_far.sum()):11d} {int(extra.sum()):7d}"

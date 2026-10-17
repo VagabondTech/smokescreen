@@ -53,6 +53,8 @@ bevy = { version = "0.20.0", default-features = false, features = [
     "3d_api",
     "bevy_render",
     "bevy_core_pipeline",
+    # Draws the demo's bullet tracers and sight lines.
+    "bevy_gizmos_render",
     "bevy_pbr",
     "bevy_post_process",
     "bevy_anti_alias",
@@ -60,6 +62,11 @@ bevy = { version = "0.20.0", default-features = false, features = [
     "ui_bevy_render",
     "png",
 ] }
+
+# In a browser, the demo reads the page's pointer lock and tells the page when
+# it's drawing (web/index.html).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+web-sys = { version = "0.3", features = ["Document", "Element", "Window"] }
 
 # Bevy's recommended dev settings: optimise dependencies, keep this crate quick to rebuild.
 [profile.dev]

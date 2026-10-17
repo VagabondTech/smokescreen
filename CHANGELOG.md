@@ -46,6 +46,20 @@ For anyone already running a copy from before the repository existed:
   against a wall isn't darkened as if inside it.
 - The crates are now `smokescreen` (was `smoke_core`) and
   `bevy_smokescreen` (was `bevy_smoke`).
+- The demo throws grenades that fly, bounce off the level and go off (G and
+  H no longer drop smoke where you aim), looks around with a click (Esc
+  lets go), clears smokes with X, and has buttons for throwing, clearing,
+  the style and the dial. C moves down
+  instead of Ctrl, which closes a browser tab with W. Its bullet tracers
+  are drawn: the examples lacked Bevy's `bevy_gizmos_render` feature. The
+  map gains a window, a second room, a raised platform with steps, a low
+  wall and more cover.
+- The demo's scripted captures draw offscreen (`SMOKE_DEMO_WINDOW=1` for a
+  window), take a size (`SMOKE_DEMO_SIZE`), and wait for every screenshot
+  to be written before exiting. A `video` script records captioned clips
+  frame by frame. Without GPU timings (macOS, where they lose the Metal
+  device), the `tiers` sweep times whole frames, each waiting for the GPU,
+  against the same view without smoke; `tools/fairness.py` reads either.
 
 ### smokescreen
 
@@ -86,6 +100,6 @@ For anyone already running a copy from before the repository existed:
 - Smoke is drawn after opaque and transmissive objects and before
   transparent ones, with or without MSAA; first-person weapons use a second
   camera (`examples/viewmodel.rs`).
-- Examples: `minimal`, `presets`, `demo` (also built for browsers with
-  WebGPU, not yet tried in one), `viewmodel`, `units`; `smokescreen` has a
-  headless `server`.
+- Examples: `minimal`, `presets`, `demo` (also for browsers with WebGPU;
+  checked in Chrome on an Apple M4), `viewmodel`, `units`; `smokescreen`
+  has a headless `server`.
