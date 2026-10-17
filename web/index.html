@@ -256,45 +256,76 @@
 
       try {
         const { default: init } = await import("./pkg/demo.js");
-        // Download the module with progress shown; it compiles as it arrives.
-        // GitHub Pages also has it gzipped (demo_bg.wasm.gz, see web/README.md),
-        // for the page to unpack; a local build has only demo_bg.wasm.
+        // Download the module with progress shown. GitHub Pages has it gzipped
+        // and in 1 MB pieces, which the page fetches side by side (see
+        // web/README.md). Otherwise it fetches demo_bg.wasm.gz or, as in a
+        // local build, demo_bg.wasm, which compiles as it arrives.
         const mb = (bytes) => (bytes / 1048576).toFixed(1);
+        let received = 0;
+        const progress = (bytes, total) => {
+          received += bytes;
+          say(`Downloading the demo: ${mb(received)}${total ? ` of ${mb(total)}` : ""} MB&hellip;`);
+        };
+        const downloaded = () => {
+          log("page", `downloaded ${mb(received)} MB`);
+          say("Starting&hellip;");
+          setTimeout(() => {
+            if (!ready && !stopped) {
+              say(`Still starting after 30 s. Its last words: ${escape(lines[lines.length - 1] || "none")}.${details()}`);
+            }
+          }, 30000);
+        };
         say("Downloading the demo&hellip;");
         const waiting = setTimeout(() => say("Waiting for the server&hellip;"), 10000);
-        let response = await fetch("./pkg/demo_bg.wasm.gz");
-        if (!response.ok) response = await fetch("./pkg/demo_bg.wasm");
-        if (!response.ok) throw new Error(`downloading the demo failed (HTTP ${response.status})`);
-        // With a Content-Encoding, the length isn't what arrives here.
-        const total = response.headers.get("Content-Encoding") ? 0 : Number(response.headers.get("Content-Length"));
-        const reader = response.body.getReader();
-        // Still gzipped? A server may have unpacked it already.
-        let next = await reader.read();
-        clearTimeout(waiting);
-        const gzipped = !next.done && next.value[0] === 0x1f && next.value[1] === 0x8b;
-        log("page", `downloading ${response.url.split("/").pop()}${total ? `, ${mb(total)} MB` : ""}${gzipped ? ", gzipped" : ""}`);
-        let received = 0;
-        const counted = new ReadableStream({
-          async pull(controller) {
-            const { done, value } = next || (await reader.read());
-            next = null;
-            if (done) {
-              controller.close();
-              log("page", `downloaded ${mb(received)} MB`);
-              say("Starting&hellip;");
-              setTimeout(() => {
-                if (!ready && !stopped) {
-                  say(`Still starting after 30 s. Its last words: ${escape(lines[lines.length - 1] || "none")}.${details()}`);
-                }
-              }, 30000);
-              return;
-            }
-            received += value.length;
-            say(`Downloading the demo: ${mb(received)}${total ? ` of ${mb(total)}` : ""} MB&hellip;`);
-            controller.enqueue(value);
-          },
-        });
-        const body = gzipped ? counted.pipeThrough(new DecompressionStream("gzip")) : counted;
+        const pieces = await fetch("./pkg/demo_bg.wasm.gz.json")
+          .then((response) => (response.ok ? response.json() : null))
+          .catch(() => null);
+        let body;
+        if (pieces) {
+          log("page", `downloading demo_bg.wasm.gz in ${pieces.files.length} pieces, ${mb(pieces.size)} MB`);
+          const blobs = await Promise.all(
+            pieces.files.map(async (file) => {
+              const response = await fetch(`./pkg/${file}`);
+              if (!response.ok) throw new Error(`downloading ${file} failed (HTTP ${response.status})`);
+              const reader = response.body.getReader();
+              const chunks = [];
+              for (let next = await reader.read(); !next.done; next = await reader.read()) {
+                clearTimeout(waiting);
+                chunks.push(next.value);
+                progress(next.value.length, pieces.size);
+              }
+              return new Blob(chunks);
+            }),
+          );
+          downloaded();
+          body = new Blob(blobs).stream().pipeThrough(new DecompressionStream("gzip"));
+        } else {
+          let response = await fetch("./pkg/demo_bg.wasm.gz");
+          if (!response.ok) response = await fetch("./pkg/demo_bg.wasm");
+          if (!response.ok) throw new Error(`downloading the demo failed (HTTP ${response.status})`);
+          // With a Content-Encoding, the length isn't what arrives here.
+          const total = response.headers.get("Content-Encoding") ? 0 : Number(response.headers.get("Content-Length"));
+          const reader = response.body.getReader();
+          // Still gzipped? A server may have unpacked it already.
+          let next = await reader.read();
+          clearTimeout(waiting);
+          const gzipped = !next.done && next.value[0] === 0x1f && next.value[1] === 0x8b;
+          log("page", `downloading ${response.url.split("/").pop()}${total ? `, ${mb(total)} MB` : ""}${gzipped ? ", gzipped" : ""}`);
+          const counted = new ReadableStream({
+            async pull(controller) {
+              const { done, value } = next || (await reader.read());
+              next = null;
+              if (done) {
+                controller.close();
+                downloaded();
+                return;
+              }
+              progress(value.length, total);
+              controller.enqueue(value);
+            },
+          });
+          body = gzipped ? counted.pipeThrough(new DecompressionStream("gzip")) : counted;
+        }
         await init({ module_or_path: new Response(body, { headers: { "Content-Type": "application/wasm" } }) });
       } catch (error) {
         // Bevy hands control back to the browser by throwing; anything else is a real failure.
