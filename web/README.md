@@ -64,6 +64,12 @@ that touches the demo, and publishes `main` to GitHub Pages, at
 <https://vagabondtech.github.io/smokescreen/>. Turn Pages on first
 (Settings → Pages → Source: GitHub Actions), or the deploy fails.
 
+It also publishes the module gzipped (`pkg/demo_bg.wasm.gz`, 9 MB), which
+the page unpacks itself. GitHub Pages gzips files as they're asked for,
+and after a deploy the first request for the 45 MB module waited up to
+three minutes for it. Without a `.gz`, as in a local build, the page loads
+`demo_bg.wasm`; delete a stale `.gz` after rebuilding.
+
 The browser build is single-threaded, so fills, lighting and voxelising run
 on the main thread between frames; the first smokes can hitch a little.
 Starting takes about 2.5 s of work on the main thread on an Apple M4, 0.8 s

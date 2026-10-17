@@ -224,16 +224,30 @@
       try {
         const { default: init } = await import("./pkg/demo.js");
         // Download the module with progress shown; it compiles as it arrives.
-        const response = await fetch("./pkg/demo_bg.wasm");
+        // GitHub Pages also has it gzipped (demo_bg.wasm.gz, see web/README.md),
+        // for the page to unpack; a local build has only demo_bg.wasm.
+        const mb = (bytes) => (bytes / 1048576).toFixed(1);
+        say("Downloading the demo&hellip;");
+        const waiting = setTimeout(() => say("Waiting for the server&hellip;"), 10000);
+        let response = await fetch("./pkg/demo_bg.wasm.gz");
+        if (!response.ok) response = await fetch("./pkg/demo_bg.wasm");
         if (!response.ok) throw new Error(`downloading the demo failed (HTTP ${response.status})`);
+        // With a Content-Encoding, the length isn't what arrives here.
+        const total = response.headers.get("Content-Encoding") ? 0 : Number(response.headers.get("Content-Length"));
         const reader = response.body.getReader();
+        // Still gzipped? A server may have unpacked it already.
+        let next = await reader.read();
+        clearTimeout(waiting);
+        const gzipped = !next.done && next.value[0] === 0x1f && next.value[1] === 0x8b;
+        log("page", `downloading ${response.url.split("/").pop()}${total ? `, ${mb(total)} MB` : ""}${gzipped ? ", gzipped" : ""}`);
         let received = 0;
-        const body = new ReadableStream({
+        const counted = new ReadableStream({
           async pull(controller) {
-            const { done, value } = await reader.read();
+            const { done, value } = next || (await reader.read());
+            next = null;
             if (done) {
               controller.close();
-              log("page", `downloaded ${(received / 1048576).toFixed(1)} MB`);
+              log("page", `downloaded ${mb(received)} MB`);
               say("Starting&hellip;");
               setTimeout(() => {
                 if (!ready && !stopped) {
@@ -243,10 +257,11 @@
               return;
             }
             received += value.length;
-            say(`Downloading the demo: ${(received / 1048576).toFixed(0)} MB&hellip;`);
+            say(`Downloading the demo: ${mb(received)}${total ? ` of ${mb(total)}` : ""} MB&hellip;`);
             controller.enqueue(value);
           },
         });
+        const body = gzipped ? counted.pipeThrough(new DecompressionStream("gzip")) : counted;
         await init({ module_or_path: new Response(body, { headers: { "Content-Type": "application/wasm" } }) });
       } catch (error) {
         // Bevy hands control back to the browser by throwing; anything else is a real failure.
