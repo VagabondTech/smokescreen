@@ -5,12 +5,12 @@ macOS and ChromeOS; Safari and Firefox where WebGPU is turned on). WebGL2
 can't run it: the smoke needs compute shaders.
 
 **Status:** it runs in Chrome 155 on an Apple M4 (macOS 26): all three
-styles, throwing, shooting and the dial. On an iPhone (Safari 26) the
-screen stayed black: Safari can't compile Bevy 0.20's PBR shader for
-meshes with UVs (see the README's limitations), so the demo's meshes have
-none now, and every shader it uses compiles in Safari 26.4. Playing it in
-Safari, Firefox and Edge, and on other GPUs, is still to be tried (see
-`ROADMAP.md`).
+styles, throwing, shooting and the dial. It draws in Safari 26 on an
+iPhone 15 Pro, now that the demo's meshes have no UVs: Safari can't
+compile Bevy 0.20's PBR shader for meshes with UVs (see the README's
+limitations). Its touch controls have so far been tried only with
+simulated touches in Chrome. Firefox, Edge, Android and other GPUs are
+still to be tried (see `ROADMAP.md`).
 
 ## Playing
 
@@ -19,6 +19,12 @@ the right mouse button. WASD moves, Space and C go up and down. G throws a
 smoke grenade, H an HE grenade, the left mouse button shoots, X clears the
 smokes and F changes the style; the buttons at the top right do the same.
 The help at the bottom left lists the rest.
+
+On a phone or tablet, drag on the scene to look around, and put a thumb
+down in the lower left for a stick that moves you (look up and push
+forward to rise). A quick tap on the scene, the lower left included, shoots
+where you tap, and the buttons throw, clear, and step the style and the
+dial.
 
 ## When it doesn't work
 

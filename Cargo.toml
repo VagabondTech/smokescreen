@@ -64,9 +64,10 @@ bevy = { version = "0.20.0", default-features = false, features = [
 ] }
 
 # In a browser, the demo reads its settings from the page's address and the
-# page's pointer lock, and tells the page when it's drawing (web/index.html).
+# page's pointer lock, asks whether the main pointer is a finger, and tells
+# the page when it's drawing (web/index.html).
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-web-sys = { version = "0.3", features = ["Document", "Element", "Location", "Window"] }
+web-sys = { version = "0.3", features = ["Document", "Element", "Location", "MediaQueryList", "Window"] }
 
 # Bevy's recommended dev settings: optimise dependencies, keep this crate quick to rebuild.
 [profile.dev]
