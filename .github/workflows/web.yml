@@ -1,0 +1,72 @@
+# Builds the demo for browsers with WebGPU (see web/README.md), and publishes
+# main to GitHub Pages: https://vagabondtech.github.io/smokescreen/. Turn Pages
+# on first (Settings → Pages → Source: GitHub Actions), or the deploy fails.
+name: web
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "src/**"
+      - "examples/demo.rs"
+      - "web/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/web.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # A newer push to the same branch or pull request makes this build moot.
+    concurrency:
+      group: web-build-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: wasm-bindgen, exactly the version in Cargo.lock
+        run: |
+          version=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | sed -n 's/version = "\(.*\)"/\1/p')
+          cargo install wasm-bindgen-cli --locked --version "$version"
+      - name: Build the demo
+        run: cargo build --profile web --example demo --target wasm32-unknown-unknown --features webgpu
+      # Without the name section (function names, for stack traces) the module
+      # is 44 MB instead of 110 MB, 8.7 MB gzipped.
+      - name: JavaScript bindings
+        run: >-
+          wasm-bindgen --no-typescript --remove-name-section --target web --out-dir web/pkg --out-name demo
+          target/wasm32-unknown-unknown/web/examples/demo.wasm
+      - uses: actions/upload-pages-artifact@v4
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: web
+
+  # Only main is published. Deploys queue rather than cancel each other, so
+  # none is stopped half-way.
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

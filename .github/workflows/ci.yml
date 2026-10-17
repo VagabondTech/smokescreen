@@ -1,0 +1,83 @@
+# The checks in CONTRIBUTING.md, on every push to main and every pull request.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The simulation has no engine in it, so it builds in seconds everywhere.
+  # macOS runners are ARM and the others x86-64: the determinism hashes are
+  # checked on both.
+  core:
+    name: core (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p smokescreen --all-targets -- -D warnings
+      - run: cargo test -p smokescreen --release
+      - name: Determinism hashes in a debug build
+        run: cargo test -p smokescreen --test determinism
+
+  # Every instruction the runner has (FMA, AVX2) must leave results alone.
+  core-native:
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -C target-cpu=native
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p smokescreen --release --test determinism
+
+  # The core's minimum Rust version (`rust-version` in smokescreen/Cargo.toml).
+  core-msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p smokescreen --release
+
+  # The Bevy plugin: formatting, lints, the examples (built, not run), the
+  # README's examples as doc tests, and the docs.
+  plugin:
+    runs-on: ubuntu-latest
+    env:
+      # Full debug info makes Bevy's build much bigger and slower; CI doesn't need it.
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+    steps:
+      - uses: actions/checkout@v5
+      - name: Bevy's Linux dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test -p bevy_smokescreen
+      - run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
