@@ -18,6 +18,10 @@
 //!
 //! The buttons at the top right throw, clear, and step the style and the dial.
 //!
+//! On a touch screen: drag to look, put a thumb down in the lower left for a
+//! stick that moves (look up and push forward to rise), tap the scene to
+//! shoot where you tap, and tap the buttons.
+//!
 //! Settings: environment variables natively, and in a browser the same names
 //! in lower case in the page's address (`?style=crystal&msaa=0`; see
 //! `web/README.md`).
@@ -66,7 +70,7 @@ use bevy::{
         view::screenshot::{Screenshot, save_to_disk},
     },
     time::TimeUpdateStrategy,
-    ui::{IsDefaultUiCamera, RelativeCursorPosition},
+    ui::{ComputedNode, IsDefaultUiCamera, RelativeCursorPosition, UiGlobalTransform},
     window::{CursorGrabMode, CursorOptions, ExitCondition, PrimaryWindow},
     winit::WinitPlugin,
 };
@@ -145,12 +149,25 @@ fn main() {
         .init_resource::<Effects>()
         .init_resource::<Actions>()
         .init_resource::<MouseLook>()
+        .insert_resource(TouchControls {
+            active: coarse_pointer(),
+            ..default()
+        })
         .configure_sets(Update, (Step::Input, Step::Script, Step::Act).chain())
         .add_systems(
             Startup,
-            (setup_level, setup_camera_and_hud, setup_grenades, setup_toolbar),
+            (
+                setup_level,
+                setup_camera_and_hud,
+                setup_grenades,
+                setup_toolbar,
+                setup_stick,
+            ),
         )
-        .add_systems(Update, (mouse_capture, toolbar).chain().in_set(Step::Input))
+        .add_systems(
+            Update,
+            (mouse_capture, toolbar, touch_input).chain().in_set(Step::Input),
+        )
         .add_systems(
             Update,
             (
@@ -163,6 +180,8 @@ fn main() {
                 update_effects,
                 update_hud,
                 update_toolbar,
+                update_stick,
+                update_help,
             )
                 .in_set(Step::Act),
         );
@@ -538,6 +557,7 @@ fn fly_camera(
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     look: Res<MouseLook>,
+    touch: Res<TouchControls>,
     mut cameras: Query<(&mut Transform, &mut FlyCam)>,
 ) {
     let Ok((mut transform, mut cam)) = cameras.single_mut() else {
@@ -547,6 +567,9 @@ fn fly_camera(
         cam.yaw -= motion.delta.x * 0.003;
         cam.pitch = (cam.pitch - motion.delta.y * 0.003).clamp(-1.5, 1.5);
     }
+    // Dragging a finger turns the view as moving the mouse does.
+    cam.yaw -= touch.look.x * TOUCH_LOOK;
+    cam.pitch = (cam.pitch - touch.look.y * TOUCH_LOOK).clamp(-1.5, 1.5);
     transform.rotation = Quat::from_euler(EulerRot::YXZ, cam.yaw, cam.pitch, 0.0);
     let mut dir = Vec3::ZERO;
     let forward = transform.forward().as_vec3();
@@ -571,7 +594,10 @@ fn fly_camera(
         dir -= Vec3::Y;
     }
     let speed = if keys.pressed(KeyCode::ShiftLeft) { 12.0 } else { 4.0 };
-    transform.translation += dir.normalize_or_zero() * speed * time.delta_secs();
+    // The thumb stick moves as far as it's pushed. It's a fly camera, so
+    // looking up and pushing forward rises.
+    let push = dir.normalize_or_zero() + forward * -touch.stick.y + right * touch.stick.x;
+    transform.translation += push.clamp_length_max(1.0) * speed * time.delta_secs();
 }
 
 /// Short-lived visual effects: tracers and flash lights.
@@ -1014,22 +1040,27 @@ const BUTTON_HOVERED: Color = Color::srgba(0.22, 0.25, 0.3, 0.85);
 
 fn setup_toolbar(mut commands: Commands) {
     let buttons = [
-        (ToolButton::Smoke, "Smoke grenade (G)"),
-        (ToolButton::He, "HE grenade (H)"),
-        (ToolButton::Clear, "Clear (X)"),
-        (ToolButton::Style, "Style (F)"),
-        (ToolButton::Quality, "Quality (1-6)"),
+        ToolButton::Smoke,
+        ToolButton::He,
+        ToolButton::Clear,
+        ToolButton::Style,
+        ToolButton::Quality,
     ];
     commands
         .spawn(Node {
             position_type: PositionType::Absolute,
             top: px(10),
             right: px(12),
+            // On a narrow screen the buttons wrap onto more rows.
+            max_width: percent(50),
+            flex_wrap: FlexWrap::Wrap,
+            justify_content: JustifyContent::FlexEnd,
             column_gap: px(6),
+            row_gap: px(6),
             ..default()
         })
         .with_children(|bar| {
-            for (button, label) in buttons {
+            for button in buttons {
                 bar.spawn((
                     button,
                     Node {
@@ -1041,7 +1072,8 @@ fn setup_toolbar(mut commands: Commands) {
                     RelativeCursorPosition::default(),
                 ))
                 .with_child((
-                    Text::new(label),
+                    // Written by `update_toolbar`.
+                    Text::default(),
                     TextFont {
                         font_size: FontSize::Px(14.0),
                         ..default()
@@ -1065,34 +1097,69 @@ fn toolbar(
             color.0 = wanted;
         }
         if over && mouse.just_pressed(MouseButton::Left) {
-            match button {
-                ToolButton::Smoke => actions.smoke = true,
-                ToolButton::He => actions.explode = true,
-                ToolButton::Clear => actions.clear = true,
-                ToolButton::Style => actions.cycle_style = true,
-                ToolButton::Quality => actions.cycle_quality = true,
-            }
+            press(*button, &mut actions);
         }
     }
 }
 
-/// The style and dial buttons say what's on.
+/// What a button does, clicked or tapped.
+fn press(button: ToolButton, actions: &mut Actions) {
+    match button {
+        ToolButton::Smoke => actions.smoke = true,
+        ToolButton::He => actions.explode = true,
+        ToolButton::Clear => actions.clear = true,
+        ToolButton::Style => actions.cycle_style = true,
+        ToolButton::Quality => actions.cycle_quality = true,
+    }
+}
+
+/// The buttons say what the style and the dial are on, more briefly on a
+/// small screen, and without their keys on a touch screen.
 fn update_toolbar(
     settings: Res<SmokeSettings>,
-    cameras: Query<&SmokeQuality>,
+    touch: Res<TouchControls>,
+    cameras: Query<(&SmokeQuality, &Camera)>,
     mut labels: Query<(&ToolLabel, &mut Text)>,
 ) {
-    let tier = cameras.single().map_or("-", |q| q.tier_name());
+    let (tier, small) = cameras
+        .single()
+        .map_or(("-", false), |(q, camera)| (q.tier_name(), small_screen(camera)));
     for (label, mut text) in &mut labels {
-        let wanted = match label.0 {
-            ToolButton::Style => format!("Style: {} (F)", style_name(settings.style)),
-            ToolButton::Quality => format!("Quality: {tier} (1-6)"),
-            _ => continue,
-        };
+        let wanted = tool_label(label.0, settings.style, tier, small, touch.active);
         if text.0 != wanted {
             text.0 = wanted;
         }
     }
+}
+
+fn tool_label(button: ToolButton, style: SmokeStyle, tier: &str, small: bool, touch: bool) -> String {
+    let (text, key) = match button {
+        ToolButton::Smoke if small => ("Smoke".into(), "G"),
+        ToolButton::Smoke => ("Smoke grenade".into(), "G"),
+        ToolButton::He if small => ("HE".into(), "H"),
+        ToolButton::He => ("HE grenade".into(), "H"),
+        ToolButton::Clear => ("Clear".into(), "X"),
+        ToolButton::Style if small => (capitalised(style_name(style)), "F"),
+        ToolButton::Style => (format!("Style: {}", style_name(style)), "F"),
+        ToolButton::Quality if small => (capitalised(tier), "1-6"),
+        ToolButton::Quality => (format!("Quality: {tier}"), "1-6"),
+    };
+    if touch { text } else { format!("{text} ({key})") }
+}
+
+fn capitalised(word: &str) -> String {
+    let mut chars = word.chars();
+    chars
+        .next()
+        .map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
+}
+
+/// Narrower than this (in logical pixels: a phone, or a tablet held upright),
+/// the buttons and the HUD say less.
+const SMALL_SCREEN: f32 = 900.0;
+
+fn small_screen(camera: &Camera) -> bool {
+    camera.logical_viewport_size().is_some_and(|size| size.x < SMALL_SCREEN)
 }
 
 fn style_name(style: SmokeStyle) -> &'static str {
@@ -1263,6 +1330,7 @@ fn update_hud(
         &Msaa,
         Has<TemporalAntiAliasing>,
         &GlobalTransform,
+        &Camera,
     )>,
     mut vision: SmokeVision,
     time: Res<Time<Real>>,
@@ -1273,7 +1341,7 @@ fn update_hud(
         return;
     }
     *timer = 0.25;
-    let (Ok(mut text), Ok((smoke_cam, status, msaa, taa, cam))) = (hud.single_mut(), cameras.single()) else {
+    let (Ok(mut text), Ok((smoke_cam, status, msaa, taa, cam, camera))) = (hud.single_mut(), cameras.single()) else {
         return;
     };
     let fps = diagnostics
@@ -1309,13 +1377,21 @@ fn update_hud(
         SmokeStyle::Faceted => "faceted",
         SmokeStyle::Crystal => "crystal",
     };
-    text.0 = format!(
-        "FPS {fps:.0}   smokes {}   style {style}   {dial}   MSAA {}   TAA {}\nGPU{gpu}\nRed box visibility (CPU query): {:.0}%",
-        smokes.iter().filter(|s| s.cloud().is_some()).count(),
-        msaa.samples(),
-        if taa { "on" } else { "off" },
-        seen * 100.0,
-    );
+    let count = smokes.iter().filter(|s| s.cloud().is_some()).count();
+    text.0 = if small_screen(camera) {
+        // Short lines, to fit beside the buttons on a phone held either way.
+        format!(
+            "FPS {fps:.0}   smokes {count}\n{dial}\nRed box visible: {:.0}%",
+            seen * 100.0
+        )
+    } else {
+        format!(
+            "FPS {fps:.0}   smokes {count}   style {style}   {dial}   MSAA {}   TAA {}\nGPU{gpu}\nRed box visibility (CPU query): {:.0}%",
+            msaa.samples(),
+            if taa { "on" } else { "off" },
+            seen * 100.0,
+        )
+    };
 }
 
 /// Has any smoke been growing for longer than `seconds`?
@@ -1341,6 +1417,216 @@ fn screenshot(commands: &mut Commands, target: &ShotTarget, dir: &str, name: &st
         ShotTarget::Image(image) => Screenshot::image(image.clone()),
     };
     commands.spawn(shot).observe(save_to_disk(path));
+}
+
+// ---------------------------------------------------------------------------
+// Touch: drag to look, a thumb stick to move, tap to shoot or press a button.
+// ---------------------------------------------------------------------------
+
+/// How far a finger may move (logical pixels) and for how long it may stay
+/// down (seconds) to count as a tap.
+const TAP_SLOP: f32 = 10.0;
+const TAP_TIME: f32 = 0.35;
+/// How far the thumb stick reaches, and the size of its knob (logical pixels).
+const STICK_RADIUS: f32 = 56.0;
+const KNOB_RADIUS: f32 = 24.0;
+/// Radians the view turns per logical pixel a finger drags.
+const TOUCH_LOOK: f32 = 0.005;
+
+const TOUCH_HELP: &str = "Drag to look, tap to shoot\n\
+                          Thumb on the lower left: move\n\
+                          Look up and push forward to rise";
+
+/// Each finger gets a job when it lands: the button under it, the thumb stick
+/// in the lower left, or else looking around. One that lifts again soon
+/// without moving, anywhere but on a button, shoots where it landed.
+#[derive(Resource, Default)]
+struct TouchControls {
+    /// A finger has touched the screen, or the browser says its main pointer
+    /// is one: the help and the buttons switch to touch.
+    active: bool,
+    fingers: Vec<Finger>,
+    /// The thumb stick, up to 1 each way: x to the right, y down the screen.
+    stick: Vec2,
+    /// How far looking fingers dragged this frame (logical pixels).
+    look: Vec2,
+}
+
+struct Finger {
+    id: u64,
+    job: Job,
+    /// When it landed (seconds), and whether it has since moved further than
+    /// a tap may. Until it does, it neither looks nor moves.
+    since: f32,
+    moved: bool,
+    /// Where the finger was last frame. (Bevy's `Touch::delta` repeats a
+    /// finger's last move for as long as it holds still.)
+    last: Vec2,
+}
+
+enum Job {
+    Button,
+    Stick { centre: Vec2 },
+    Look,
+}
+
+/// Whether a browser's main pointer is a finger (a phone or a tablet), so that
+/// the help shows touch hints from the start.
+fn coarse_pointer() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        web_sys::window()
+            .and_then(|w| w.match_media("(pointer: coarse)").ok().flatten())
+            .is_some_and(|query| query.matches())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    false
+}
+
+fn touch_input(
+    touches: Res<Touches>,
+    time: Res<Time<Real>>,
+    camera: Query<(&Camera, &GlobalTransform), With<FlyCam>>,
+    buttons: Query<(&ToolButton, &ComputedNode, &UiGlobalTransform, &InheritedVisibility)>,
+    mut controls: ResMut<TouchControls>,
+    mut actions: ResMut<Actions>,
+) {
+    let Ok((camera, eye)) = camera.single() else {
+        return;
+    };
+    let size = camera.logical_viewport_size().unwrap_or(Vec2::ONE);
+    let scale = camera.target_scaling_factor().unwrap_or(1.0);
+    let now = time.elapsed_secs();
+    let controls = &mut *controls;
+
+    for touch in touches.iter_just_pressed() {
+        controls.active = true;
+        let at = touch.position();
+        // UI nodes are laid out in physical pixels.
+        let button = buttons
+            .iter()
+            .find(|(_, node, transform, visible)| visible.get() && node.contains_point(**transform, at * scale));
+        let stick_free = !controls.fingers.iter().any(|f| matches!(f.job, Job::Stick { .. }));
+        let job = if let Some((button, ..)) = button {
+            press(*button, &mut actions);
+            Job::Button
+        } else if stick_free && at.x < size.x * 0.5 && at.y > size.y * 0.4 {
+            Job::Stick { centre: at }
+        } else {
+            Job::Look
+        };
+        controls.fingers.push(Finger {
+            id: touch.id(),
+            job,
+            since: now,
+            moved: false,
+            last: at,
+        });
+    }
+
+    for touch in touches.iter_just_released() {
+        let Some(i) = controls.fingers.iter().position(|f| f.id == touch.id()) else {
+            continue;
+        };
+        let finger = controls.fingers.swap_remove(i);
+        if !matches!(finger.job, Job::Button)
+            && !finger.moved
+            && touch.distance().length() <= TAP_SLOP
+            && now - finger.since < TAP_TIME
+            && let Ok(ray) = camera.viewport_to_world(eye, touch.start_position())
+        {
+            actions.shoot.push(*ray.direction);
+        }
+    }
+    // Fingers the system took away (a cancelled touch) do nothing.
+    controls.fingers.retain(|f| touches.get_pressed(f.id).is_some());
+
+    controls.stick = Vec2::ZERO;
+    controls.look = Vec2::ZERO;
+    for finger in &mut controls.fingers {
+        let Some(touch) = touches.get_pressed(finger.id) else {
+            continue;
+        };
+        let at = touch.position();
+        finger.moved |= touch.distance().length() > TAP_SLOP;
+        if finger.moved {
+            match finger.job {
+                Job::Button => {}
+                Job::Stick { centre } => controls.stick = ((at - centre) / STICK_RADIUS).clamp_length_max(1.0),
+                Job::Look => controls.look += at - finger.last,
+            }
+        }
+        finger.last = at;
+    }
+}
+
+/// The thumb stick's ring and knob, shown while a thumb is on it.
+#[derive(Component)]
+enum StickPart {
+    Ring,
+    Knob,
+}
+
+fn setup_stick(mut commands: Commands) {
+    for (part, radius, fill, edge) in [
+        (
+            StickPart::Ring,
+            STICK_RADIUS,
+            Color::srgba(0.0, 0.0, 0.0, 0.18),
+            Color::srgba(1.0, 1.0, 1.0, 0.5),
+        ),
+        (
+            StickPart::Knob,
+            KNOB_RADIUS,
+            Color::srgba(1.0, 1.0, 1.0, 0.45),
+            Color::NONE,
+        ),
+    ] {
+        commands.spawn((
+            part,
+            Node {
+                position_type: PositionType::Absolute,
+                width: px(2.0 * radius),
+                height: px(2.0 * radius),
+                border: UiRect::all(px(2)),
+                border_radius: BorderRadius::MAX,
+                ..default()
+            },
+            BackgroundColor(fill),
+            BorderColor::all(edge),
+            Visibility::Hidden,
+        ));
+    }
+}
+
+fn update_stick(controls: Res<TouchControls>, mut parts: Query<(&StickPart, &mut Node, &mut Visibility)>) {
+    let centre = controls.fingers.iter().find_map(|f| match f.job {
+        Job::Stick { centre } => Some(centre),
+        _ => None,
+    });
+    for (part, mut node, mut visibility) in &mut parts {
+        let Some(centre) = centre else {
+            visibility.set_if_neq(Visibility::Hidden);
+            continue;
+        };
+        let (at, radius) = match part {
+            StickPart::Ring => (centre, STICK_RADIUS),
+            StickPart::Knob => (centre + controls.stick * STICK_RADIUS, KNOB_RADIUS),
+        };
+        node.left = px(at.x - radius);
+        node.top = px(at.y - radius);
+        visibility.set_if_neq(Visibility::Inherited);
+    }
+}
+
+/// Touch hints replace the keyboard's once a finger touches the screen.
+fn update_help(controls: Res<TouchControls>, mut help: Query<&mut Text, With<Help>>, mut done: Local<bool>) {
+    if controls.active && !*done {
+        *done = true;
+        for mut text in &mut help {
+            text.0 = TOUCH_HELP.into();
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

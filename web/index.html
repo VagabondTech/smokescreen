@@ -6,7 +6,11 @@
   <title>Smokescreen demo</title>
   <style>
     :root { color-scheme: dark; }
-    html, body { margin: 0; height: 100%; background: #1b1f24; color: #d8dde3; font: 15px/1.5 system-ui, sans-serif; }
+    /* overscroll-behavior: no rubber-band bounce on a phone. */
+    html, body { margin: 0; height: 100%; background: #1b1f24; color: #d8dde3; font: 15px/1.5 system-ui, sans-serif; overscroll-behavior: none; }
+    /* A long press on a phone neither selects text, with its magnifier, nor opens a menu. The log stays selectable. */
+    body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+    #log pre { -webkit-user-select: text; user-select: text; }
     main { position: fixed; inset: 0; }
     /* touch-action: drags on the scene go to the demo, not to scrolling or zooming the page. */
     canvas { display: block; width: 100%; height: 100%; outline: none; touch-action: none; }

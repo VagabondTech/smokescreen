@@ -8,7 +8,7 @@ Smoke that fills rooms, pours through doorways, stops at walls and blocks sight.
 
 ![A smoke grenade is thrown into a yard, bounces and pops; the cloud floods the yard, bullets carve tunnels through it, and an HE grenade clears a sphere that refills from the edges](https://raw.githubusercontent.com/VagabondTech/smokescreen/main/docs/media/hero.webp)
 
-*The demo (`examples/demo.rs`) on an Apple M4. **[Play it in your browser](https://vagabondtech.github.io/smokescreen/)** (it needs WebGPU: a current Chrome, Edge or Safari 26; it has no touch controls yet), or natively with `cargo run --release --example demo`.*
+*The demo (`examples/demo.rs`) on an Apple M4. **[Play it in your browser](https://vagabondtech.github.io/smokescreen/)** (it needs WebGPU: a current Chrome, Edge or Safari 26; on a phone, drag to look and tap to shoot), or natively with `cargo run --release --example demo`.*
 
 **Volumetric**: soft, light-scattering smoke, lit by the sun and self-shadowed.
 
@@ -299,7 +299,7 @@ Run one with `cargo run --release --example presets`.
 - Smoke fills right up to walls and floors at least a voxel thick (0.3 m by default), wherever they sit on the voxel grid. Against thinner walls it stops at the middle of the first voxel they reach into, so up to about half a voxel can stay clear in front of them, and as much can show past them; picture and rule agree. Level meshes (`SmokeObstacle`) need triangles facing outwards for this, as Bevy's shapes do; against a mesh facing inwards, or a wall made of a single vertical sheet, smoke stops up to half a voxel short. A single sheet facing up (a `Plane3d`, say) counts as ground, solid underneath, so up to a voxel of smoke can show beneath a raised floor made of one: use a box for floors with open air below.
 - Faceted and crystal smoke can still stop up to about a voxel short of walls (see [ROADMAP.md](https://github.com/VagabondTech/smokescreen/blob/main/ROADMAP.md)).
 - With the default 0.8 m rule, faceted and crystal pictures draw thin edges solid where the rule sees through.
-- Tested on an Apple M4 (Metal) and a software rasteriser, and used in a game on an AMD RX 6700 XT (Windows 10); NVIDIA and Intel GPUs haven't been tried yet. The browser demo runs in Chrome on the M4, and draws in Safari 26 on an iPhone 15 Pro but has no touch controls yet; Firefox, Edge and Android haven't been tried yet.
+- Tested on an Apple M4 (Metal) and a software rasteriser, and used in a game on an AMD RX 6700 XT (Windows 10); NVIDIA and Intel GPUs haven't been tried yet. The browser demo runs in Chrome on the M4 and draws in Safari 26 on an iPhone 15 Pro; its touch controls have only been tried with simulated touches in Chrome so far. Firefox, Edge and Android haven't been tried yet.
 - Safari 26 can't compile Bevy 0.20's `StandardMaterial` shader for meshes with UVs: it keeps textures in `let`s, which needs WGSL's `texture_and_sampler_let`, and the screen stays black. That's Bevy's shader, not the smoke's; crystal puffs have no UVs, and neither do the demo's meshes. Textured meshes need a fix in Bevy.
 
 [ROADMAP.md](https://github.com/VagabondTech/smokescreen/blob/main/ROADMAP.md) has the plan. [CONTRIBUTING.md](https://github.com/VagabondTech/smokescreen/blob/main/CONTRIBUTING.md) explains how to build, test and keep the core deterministic.

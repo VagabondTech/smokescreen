@@ -3,6 +3,15 @@
 Changes that alter simulation results (and so break lockstep with older
 versions) are marked **results**.
 
+## Unreleased
+
+- The browser demo has touch controls: drag to look, a thumb stick in the
+  lower left to move, tap to shoot where you tap, and tap the buttons. On a
+  small screen the buttons and the HUD say less, and once a finger touches
+  the screen the help shows touch hints. The page no longer selects text,
+  shows a magnifier or bounces under a finger. Tried with simulated touches
+  in Chrome, not yet on a phone.
+
 ## 0.1.0 (2026-10-17)
 
 The first version, for Bevy 0.20.
