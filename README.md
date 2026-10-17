@@ -112,11 +112,11 @@ Pick a default with `SmokeSettings::style`, or per smoke with `Smoke::with_style
 | Look | soft, light-scattering | hard facets, merged like metaballs | hard, separate tumbling crystals |
 | Drawn by | raymarching at reduced resolution | sphere tracing a distance field | plain meshes (Bevy's PBR) |
 | GPU cost² | low: 1.3 ms at mid-range, 5.9 ms filling the screen; one dial per camera | 5–6× volumetric: 7.3 ms at mid-range, 31 ms filling the screen | about 0.2 ms: a few thousand triangles per cloud |
-| 250 sight checks through 4 of 32 clouds¹ | 0.10 ms | 0.76 ms exact, 0.05 ms with `FacetRule::Core` | 0.04 ms (any contact blocks), 0.07 ms (0.8 m rule) |
+| 250 sight checks through 4 of 32 clouds¹ | 0.10 ms | 0.04 ms, exact or with `FacetRule::Core` | 0.03 ms (any contact blocks), 0.06 ms (0.8 m rule) |
 | Bullets and explosions | tunnels and cleared spheres | hexagonal tunnels, cavities | knock crystals out of the way |
 | Picture against the rule | thin smoke is see-through in both | never shows through what the rule blocks; thin edges drawn solid | exact with `sight_threshold = 0` |
 
-¹ Fully grown clouds, on an Apple M4; the 2-core 2.1 GHz VM this was built on takes about 3× as long. Halfway through a cloud's fade, when many lines are only partly blocked, they cost up to 4× as much; see [Performance](#performance). `cargo bench -p smokescreen` measures it on your CPU.
+¹ Fully grown clouds, on an Apple M4; the 2-core 2.1 GHz VM this was built on takes about 3× as long. Halfway through a cloud's fade, when many lines are only partly blocked, they cost more: 3× for volumetric smoke, 0.7 ms for the exact faceted rule, which traces more of them then; see [Performance](#performance). `cargo bench -p smokescreen` measures it on your CPU.
 ² At the best step of the dial, at 1920×1080 on an Apple M4. Close up, the cheapest step costs a sixth (volumetric) to a quarter (faceted) of that. See [Performance](#performance).
 
 How each look works, and why faceted costs more than volumetric despite its hard edges, is in [docs/design.md](https://github.com/VagabondTech/smokescreen/blob/main/docs/design.md).
@@ -210,17 +210,17 @@ Measured on an Apple M4 (Mac mini), and in brackets on the cloud VM this was bui
 
 The fill budget (`Config::fill_budget`, about 0.2 ms a tick on the VM, under 0.1 ms on the M4: it counts work, not time) grows only when a fill would otherwise not be ready by the time its cloud starts. Faceted and crystal fills need about 0.35 s of ticks, so give those clouds a later `Timeline::start` to keep to the budget.
 
-**Sight checks**: 250 a tick, each through 4 of 32 clouds, in milliseconds:
+**Sight checks**: 250 a tick, each through 4 of 32 clouds, in milliseconds (the median of 11 runs; a 2-core 2.1 GHz VM takes about 3× as long):
 
 | | Growing | Grown | Halfway through the fade | Per-tick snapshot |
 |---|---|---|---|---|
-| Volumetric | 0.10 (0.30) | 0.10 (0.30) | 0.34 (1.1) | 0.001 (0.005) |
-| Faceted, `FacetRule::Exact` | 0.75 (2.5) | 0.76 (2.5) | 1.5 (4.5) | 0.10 (0.3) |
-| Faceted, `FacetRule::Core` | 0.05 (0.2) | 0.05 (0.2) | 0.14 (0.7) | 0.09 (0.2) |
-| Crystal, 0.8 m rule | 0.07 (0.28) | 0.07 (0.28) | 0.09 (0.33) | 0.07 (0.1) |
-| Crystal, any contact blocks | 0.03 (0.11) | 0.04 (0.11) | 0.04 (0.18) | 0.05 (0.1) |
+| Volumetric | 0.10 | 0.10 | 0.31 | 0.001 |
+| Faceted, `FacetRule::Exact` | 0.04 | 0.04 | 0.70 | 0.09 |
+| Faceted, `FacetRule::Core` | 0.04 | 0.04 | 0.12 | 0.08 |
+| Crystal, 0.8 m rule | 0.06 | 0.06 | 0.07 | 0.06 |
+| Crystal, any contact blocks | 0.03 | 0.03 | 0.04 | 0.05 |
 
-Halfway through the fade the clouds are thin, so many lines never reach the threshold and are integrated all the way through. The snapshot is the clouds' state at a tick (puff positions, holes), computed once per tick before the first check.
+Halfway through the fade the clouds are thin, so many lines never reach the threshold and are integrated all the way through. The exact faceted rule settles most lines from exact chord bounds (the puffs' hard polyhedra lie inside the cloud, and the polyhedra grown by the blend radius contain it) and traces only lines within 2 cm of the threshold, which are commoner in the fade. The snapshot is the clouds' state at a tick (puff positions, holes), computed once per tick before the first check.
 
 **On the GPU**: what the smoke adds to a 1920×1080 frame with MSAA on an Apple M4 (10-core GPU), at the best and the cheapest step of the quality dial:
 

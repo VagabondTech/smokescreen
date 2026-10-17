@@ -5,6 +5,16 @@ versions) are marked **results**.
 
 ## Unreleased
 
+- `blocks_sight` through faceted clouds under `FacetRule::Exact` is about
+  17× faster while clouds grow and once they are grown (0.71 → 0.04 ms for
+  250 checks through 4 of 32 clouds on an Apple M4), and 2× faster halfway
+  through the fade. It decides most lines from exact chord bounds (the
+  puffs' hard polyhedra lie inside the cloud, and the polyhedra grown by the
+  blend radius contain it) and sphere-traces only lines within 2 cm of the
+  threshold; `occlusion` still traces. From the first performance review.
+  Results are unchanged: the determinism hashes are the same, and a new
+  test checks `blocks_sight` against `occlusion` on random lines through
+  clouds of every style with holes.
 - The browser demo has touch controls: drag to look, a thumb stick in the
   lower left to move, tap to shoot where you tap, and tap the buttons. On a
   small screen the buttons and the HUD say less, and once a finger touches

@@ -376,3 +376,73 @@ fn insert_matches_pop() {
         assert_eq!(a.occlusion(p, q, tick).to_bits(), b.occlusion(p, q, tick).to_bits());
     }
 }
+
+/// `blocks_sight` says exactly what `occlusion` implies (every cloud adds a
+/// non-negative amount, so stopping early can't change the answer), also
+/// where faceted clouds under the exact rule are settled from chord bounds
+/// rather than traced: random segments, long and short, through clouds of
+/// every style over their whole lives, with bullets and explosions, under
+/// both facet rules and with any contact blocking.
+fn blocks_sight_agrees_with_occlusion(per_tick: usize) {
+    let level = common::level();
+    for (rule, threshold) in [(FacetRule::Exact, 0.8), (FacetRule::Core, 0.8), (FacetRule::Exact, 0.0)] {
+        let mut cfg = config();
+        cfg.tuning.facet_rule = rule;
+        cfg.tuning.sight_threshold = threshold;
+        let mut smokes = Smokes::new(cfg, &level);
+        let mut rng = common::Rng(0xdead_beef_cafe_f00d);
+        let styles = [Style::Volumetric, Style::Faceted, Style::Crystal];
+        for i in 0..24 {
+            let origin = Vec3::new(rng.range(-16.0, 16.0), rng.range(0.0, 3.0), rng.range(-12.0, 16.0));
+            smokes.pop(CloudSpec::new(origin, 20 * i, i as u32 * 7 + 1, styles[i as usize % 3]));
+        }
+        let lo = Vec3::new(-20.0, 0.0, -14.0);
+        let hi = Vec3::new(20.0, 5.0, 18.0);
+        let mut blocked = 0;
+        for tick in 0..(19 * 128) {
+            smokes.advance(tick);
+            if tick % 23 == 0 {
+                let (a, b) = (rng.point(lo, hi), rng.point(lo, hi));
+                smokes.bullet(a, b, tick);
+            }
+            if tick % 301 == 50 {
+                smokes.explosion(rng.point(lo, hi), None, tick);
+            }
+            let view = smokes.view(tick);
+            for _ in 0..per_tick {
+                let a = rng.point(lo, hi);
+                let b = if rng.next_u32().is_multiple_of(4) {
+                    a + rng.point(Vec3::splat(-3.0), Vec3::splat(3.0))
+                } else {
+                    rng.point(lo, hi)
+                };
+                let amount = view.occlusion(a, b);
+                let blocks = view.blocks_sight(a, b);
+                assert_eq!(
+                    blocks,
+                    amount > 0.0 && amount >= threshold,
+                    "{rule:?} at {threshold}: from {a} to {b} at tick {tick}, amount {amount}"
+                );
+                blocked += blocks as usize;
+            }
+        }
+        // The segments must test both answers.
+        let total = 19 * 128 * per_tick;
+        assert!(
+            blocked > total / 5 && blocked < total * 4 / 5,
+            "{rule:?} at {threshold}: {blocked} of {total} blocked"
+        );
+    }
+}
+
+#[test]
+fn blocks_sight_matches_occlusion() {
+    blocks_sight_agrees_with_occlusion(8);
+}
+
+/// About 730,000 queries: `cargo test -p smokescreen --release -- --ignored`.
+#[test]
+#[ignore = "slow: about 730,000 queries"]
+fn blocks_sight_matches_occlusion_thoroughly() {
+    blocks_sight_agrees_with_occlusion(100);
+}

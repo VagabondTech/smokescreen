@@ -69,6 +69,12 @@ both).
 
 ## Rules and looks
 
+- **A faceted rule between Core and Exact.** The lower bound `blocks_sight`
+  uses for faceted clouds (the hard polyhedra clipped to the fill's space,
+  minus a capsule around each hole) is itself a rule: exact, as cheap as
+  the crystal rule, and conservative like `FacetRule::Core` while counting
+  about twice as much of each puff. A new `FacetRule` variant breaks the
+  API, so it waits for 0.2.
 - **Walls thinner than a voxel.** Smoke stops at the middle of the first
   voxel such a wall reaches into, so up to 12 cm can stay clear in front of
   it and as much can show past it (15 cm with meshes). Padding can't help

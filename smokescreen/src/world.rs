@@ -5,7 +5,7 @@ use std::sync::Arc;
 use glam::{UVec3, Vec3};
 
 use crate::{
-    chords::{CoreField, CrystalField},
+    chords::{ChordBounds, CoreField, CrystalField},
     facets::{FacetField, FacetRule, FacetSettings, LivePuff},
     fill::{CloudShape, FillJob, FillSpec, Source, Work},
     holes::{HOLE_BUFFER, HoleKind, HoleSettings, HoleShape, holes_near},
@@ -362,6 +362,9 @@ struct Snapshot {
     stamp: u64,
     len: usize,
     states: Vec<CloudState>,
+    /// A faceted cloud is present whose puffs are big enough for the chord
+    /// bounds to be worth trying (see `View::facet_bounds`).
+    facets_to_bound: bool,
 }
 
 /// Every cloud of a match, and the gameplay queries against them.
@@ -704,6 +707,7 @@ impl<L: Level> Smokes<L> {
                 stamp: 0,
                 len: 0,
                 states: Vec::new(),
+                facets_to_bound: false,
             });
             self.snapshots.len() - 1
         } else {
@@ -785,6 +789,9 @@ impl<L: Level> Smokes<L> {
             states.rotate_left(snap.len - max_clouds);
             snap.len = max_clouds;
         }
+        snap.facets_to_bound = snap.states[..snap.len]
+            .iter()
+            .any(|st| st.dissolve <= LATE_FADE && clouds[st.cloud].spec.style == Style::Faceted);
         slot
     }
 
@@ -799,6 +806,7 @@ impl<L: Level> Smokes<L> {
             states: &snap.states[..snap.len],
             clouds: &self.clouds,
             config: &self.config,
+            facets_to_bound: snap.facets_to_bound,
         }
     }
 
@@ -809,8 +817,15 @@ impl<L: Level> Smokes<L> {
     }
 
     /// Does the segment `from..to` pass through at least
-    /// [`Tuning::sight_threshold`] of cloud at `tick`? Exactly
-    /// `occlusion > 0 && occlusion >= threshold`, but stops counting early.
+    /// [`Tuning::sight_threshold`] of cloud at `tick`? The answer
+    /// `occlusion > 0 && occlusion >= threshold` gives, but it stops
+    /// counting early. Through faceted clouds under [`FacetRule::Exact`] it
+    /// decides most lines from exact bounds on the amount instead of the
+    /// sphere trace: the puffs' hard polyhedra lie inside the cloud, and the
+    /// polyhedra grown by the blend radius contain it. Only lines within
+    /// 2 cm of the threshold are traced. The trace places each surface
+    /// crossing to about 5 mm, so the two could only differ on a line that
+    /// crosses the surface many times; none did in 730,000 random lines.
     pub fn blocks_sight(&mut self, from: Vec3, to: Vec3, tick: u64) -> bool {
         self.view(tick).blocks_sight(from, to)
     }
@@ -998,6 +1013,22 @@ fn make_fill_spec(t: &Tuning, level_voxel: f32, units: &Units, spec: &CloudSpec)
     }
 }
 
+/// Slack (metres) the chord bounds keep from the sight threshold, so they
+/// never contradict the sphere trace, which locates each surface crossing
+/// to about [`crate::facets::MIN_STEP`]: a few crossings' worth.
+const FACET_MARGIN: f32 = 0.02;
+
+/// Dissolve past which faceted clouds are traced without trying the bounds.
+const LATE_FADE: f32 = 0.7;
+
+/// What the chord bounds settled (see `View::facet_bounds`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Verdict {
+    Blocked,
+    Clear,
+    Trace,
+}
+
 /// What a world knows about one cloud.
 #[derive(Clone, Copy)]
 pub struct CloudInfo<'a> {
@@ -1050,6 +1081,7 @@ pub struct View<'a> {
     states: &'a [CloudState],
     clouds: &'a [Cloud],
     config: &'a Config,
+    facets_to_bound: bool,
 }
 
 /// One cloud at the view's tick.
@@ -1145,6 +1177,11 @@ impl<'a> View<'a> {
 
     /// See [`Smokes::blocks_sight`].
     pub fn blocks_sight(&self, from: Vec3, to: Vec3) -> bool {
+        // Faceted clouds under the exact rule: decide from chord bounds
+        // where they settle it (see `facet_bounds`).
+        if self.facets_to_bound && self.config.tuning.facet_rule == FacetRule::Exact {
+            return self.blocks_sight_bounded(from, to);
+        }
         let units = self.config.units;
         let threshold = self.config.tuning.sight_threshold;
         let mut acc = 0.0;
@@ -1152,6 +1189,136 @@ impl<'a> View<'a> {
             let amount = units.length_from_internal(acc);
             amount > 0.0 && amount >= threshold
         })
+    }
+
+    /// [`Self::blocks_sight`] with faceted clouds under the exact rule: from
+    /// the chord bounds where they settle it, tracing the segment only
+    /// where they don't. Kept out of line so that the plain path above
+    /// compiles as it did without it.
+    #[inline(never)]
+    fn blocks_sight_bounded(&self, from: Vec3, to: Vec3) -> bool {
+        let units = self.config.units;
+        let threshold = self.config.tuning.sight_threshold;
+        let stop = |acc: f32| {
+            let amount = units.length_from_internal(acc);
+            amount > 0.0 && amount >= threshold
+        };
+        match self.facet_bounds(from, to, &stop) {
+            Verdict::Blocked => true,
+            Verdict::Clear => false,
+            Verdict::Trace => {
+                let mut acc = 0.0;
+                self.integrate(from, to, &mut acc, &stop)
+            }
+        }
+    }
+
+    /// `blocks_sight` by bounds: every cloud's amount is at least its
+    /// lower bound (crystal, core and volumetric clouds integrated as usual,
+    /// faceted ones by [`ChordBounds`]) and at most its upper bound, so the
+    /// segment is blocked once the lower bounds reach the threshold and
+    /// clear if the upper bounds never do. The sphere trace locates each
+    /// surface crossing to about [`crate::facets::MIN_STEP`]; a margin of
+    /// [`FACET_MARGIN`] keeps the bounds on its side of the threshold, so a
+    /// segment is only left to the trace when it is within that of blocked.
+    fn facet_bounds(&self, from: Vec3, to: Vec3, stop: &dyn Fn(f32) -> bool) -> Verdict {
+        let units = &self.config.units;
+        let margin = FACET_MARGIN;
+        let a = units.to_internal(from);
+        let delta = units.to_internal(to) - a;
+        let len = delta.length();
+        if len.is_nan() || len <= 0.0 {
+            return Verdict::Clear;
+        }
+        let rd = delta / len;
+        let inv = safe_recip(rd);
+        let (mut lower, mut upper) = (0.0f32, 0.0f32);
+        let mut crossed = false;
+        let mut buf = [HoleShape::NONE; HOLE_BUFFER];
+        for state in self.states {
+            let (lo, hi) = state.bounds;
+            let (t0, t1) = slab(a, inv, lo, hi);
+            let (t0, t1) = (t0.max(0.0), t1.min(len));
+            if t1 <= t0 {
+                continue;
+            }
+            let Some((alo, ahi)) = state.active else {
+                continue;
+            };
+            let (u0, u1) = slab(a, inv, alo, ahi);
+            let (u0, u1) = (u0.max(t0), u1.min(t1));
+            if u1 < u0 {
+                continue;
+            }
+            let cloud = &self.clouds[state.cloud];
+            let Some(ready) = cloud.ready() else {
+                continue;
+            };
+            let shape = &ready.shape;
+            crossed = true;
+            // Faceted: chord bounds. Any other cloud: its exact amount,
+            // which serves as both bounds.
+            let mut part = 0.0;
+            let stopped = match &shape.facets {
+                Some(_) if cloud.spec.style == Style::Faceted && state.dissolve > LATE_FADE => {
+                    // Late in the fade the puffs left are small next to
+                    // the blend radius, so the bounds seldom settle a line;
+                    // the trace is cheap then anyway.
+                    return Verdict::Trace;
+                }
+                Some(_) if cloud.spec.style == Style::Faceted && state.holes.len() > HOLE_BUFFER => {
+                    // More holes than the bounds keep on the stack: they
+                    // would leave some out, so the trace decides.
+                    return Verdict::Trace;
+                }
+                Some(f) if cloud.spec.style == Style::Faceted => {
+                    // Over the whole box, like the trace: a grown polyhedron
+                    // can reach a little past what the puffs occupy.
+                    let holes = holes_near(&state.holes, a, inv, t0, t1, |h| h.radius * 0.2, &mut buf);
+                    let b = ChordBounds {
+                        bins: &f.bins,
+                        live: &state.live,
+                        puffs: &f.puffs,
+                        blend: f.settings.blend,
+                        holes,
+                    }
+                    .amount_until(a, rd, t0, t1, &|l| stop(lower + l - margin));
+                    upper += b.upper - b.lower;
+                    part = b.lower;
+                    stop(lower + part - margin)
+                }
+                Some(f) => CrystalField {
+                    bins: &f.bins,
+                    live: &state.live,
+                }
+                .amount(a, rd, u0, u1, &mut part, &|p| stop(lower + p - margin)),
+                None => {
+                    let holes = holes_near(&state.holes, a, inv, t0, t1, |_| 0.0, &mut buf);
+                    VolumeField {
+                        grid: &shape.grid,
+                        growth: state.growth,
+                        dissolve: state.dissolve,
+                        holes,
+                    }
+                    .amount(a, rd, t0, t1, &mut part, &|p| stop(lower + p - margin))
+                }
+            };
+            lower += part;
+            upper += part;
+            if stopped {
+                return Verdict::Blocked;
+            }
+        }
+        // Nothing crossed, or the bounds settle it (with the margin: the
+        // amounts of the other clouds were summed in a different order
+        // from the trace's, which can differ in the last bit).
+        if !crossed || !stop(upper + margin) {
+            Verdict::Clear
+        } else if stop(lower - margin) {
+            Verdict::Blocked
+        } else {
+            Verdict::Trace
+        }
     }
 
     /// See [`Smokes::density_at`].

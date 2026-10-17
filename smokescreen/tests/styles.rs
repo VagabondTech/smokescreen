@@ -255,11 +255,15 @@ fn pop_order_does_not_matter() {
 }
 
 /// Crystal and core checks are cheaper than exact faceted ones (they visit
-/// far fewer puffs); a rough guard against regressions, not a benchmark.
+/// far fewer puffs), and the exact rule's `blocks_sight` is cheaper still
+/// than its amounts, since chord bounds settle most lines without tracing
+/// them; a rough guard against regressions, not a benchmark.
 #[test]
 fn crystal_and_core_checks_are_cheap() {
     use std::time::Instant;
-    let time = |style: Style, rule: FacetRule| {
+    // Best of five: 200 segments through 8 grown clouds, counting the lines
+    // blocked by `blocks_sight` or (`amounts`) by `occlusion`.
+    let time = |style: Style, rule: FacetRule, amounts: bool| {
         let mut cfg = config();
         cfg.tuning.facet_rule = rule;
         let mut smokes = Smokes::new(cfg, FlatGround::default());
@@ -277,15 +281,24 @@ fn crystal_and_core_checks_are_cheap() {
         let mut best = f64::MAX;
         for _ in 0..5 {
             let t = Instant::now();
-            let n = segs.iter().filter(|(a, b)| view.blocks_sight(*a, *b)).count();
+            let n = if amounts {
+                segs.iter().filter(|(a, b)| view.occlusion(*a, *b) >= 0.8).count()
+            } else {
+                segs.iter().filter(|(a, b)| view.blocks_sight(*a, *b)).count()
+            };
             best = best.min(t.elapsed().as_secs_f64());
             assert!(n > 150, "{style:?} {rule:?}: only {n} blocked");
         }
         best
     };
-    let exact = time(Style::Faceted, FacetRule::Exact);
-    let core = time(Style::Faceted, FacetRule::Core);
-    let crystal = time(Style::Crystal, FacetRule::Exact);
+    let exact = time(Style::Faceted, FacetRule::Exact, true);
+    let core = time(Style::Faceted, FacetRule::Core, true);
+    let crystal = time(Style::Crystal, FacetRule::Exact, true);
+    let bounded = time(Style::Faceted, FacetRule::Exact, false);
     assert!(core < exact * 0.6, "core {core} vs exact {exact}");
     assert!(crystal < exact * 0.6, "crystal {crystal} vs exact {exact}");
+    assert!(
+        bounded < exact * 0.5,
+        "exact blocks_sight {bounded} vs exact amounts {exact}"
+    );
 }
