@@ -155,19 +155,21 @@ To pin individual knobs instead, set `SmokeCamera::facets` or `SmokeCamera::volu
 
 ![The dial](dial.jpg)
 
+*The pictures, and the costs relative to ultra written on them, are from the software rasteriser this was first built on, at 960×540. The table has an Apple M4's.*
+
 | Step (`quality`) | Faceted | Cost¹ | Volumetric | Cost² |
 |---|---|---|---|---|
-| ultra (1.0) | full resolution, traced shadows and occlusion | 1.00 | full resolution, 128 steps of 0.07 m | 1.00 |
-| high (0.8) | coarse 2×2, traced shadows and occlusion | 0.52 | ⅔ resolution, 96 steps | 0.51 |
-| medium (0.6) | coarse 2×2, baked shadows, traced occlusion | 0.42 | ½ resolution, 72 steps | 0.44 |
-| low (0.4) | coarse 2×2, baked lighting | 0.36 | ½ resolution, 48 steps | 0.29 |
-| lower (0.2) | coarse 4×4, baked lighting | 0.29 | ¼ resolution, 40 steps | 0.19 |
-| minimum (0.0) | coarse 4×4, baked lighting, looser hit tolerance | 0.27 | ¼ resolution, 28 steps | 0.16 |
+| ultra (1.0) | full resolution, traced shadows and occlusion | 31.2 ms | full resolution, 128 steps of 0.07 m | 1.33 ms |
+| high (0.8) | coarse 2×2, traced shadows and occlusion | 15.0 ms (0.48) | ⅔ resolution, 96 steps | 0.88 ms (0.66) |
+| medium (0.6) | coarse 2×2, baked shadows, traced occlusion | 11.1 ms (0.36) | ½ resolution, 72 steps | 0.69 ms (0.52) |
+| low (0.4) | coarse 2×2, baked lighting | 10.2 ms (0.33) | ½ resolution, 48 steps | 0.59 ms (0.44) |
+| lower (0.2) | coarse 4×4, baked lighting | 8.0 ms (0.26) | ¼ resolution, 40 steps | 0.56 ms (0.42) |
+| minimum (0.0) | coarse 4×4, baked lighting, looser hit tolerance | 7.9 ms (0.25) | ¼ resolution, 28 steps | 0.48 ms (0.36) |
 
-¹ GPU time relative to ultra with the smoke filling the screen. At mid-range the reduced resolutions don't apply (see above) and the faceted steps cost 1.0 / 0.99 / 0.66 / 0.59 / 0.56 / 0.53 of ultra.
-² With the smoke at mid-range. Close up, where it fills the screen, the steps cost 1.0 / 0.38 / 0.22 / 0.18 / 0.10 / 0.09.
+¹ With the smoke covering two-thirds of the screen; in brackets, relative to ultra. At mid-range the reduced resolutions don't apply (see above) and the steps cost 7.3 / 5.2 / 4.0 / 3.5 / 3.4 / 3.4 ms (1.0 / 0.71 / 0.54 / 0.49 / 0.47 / 0.46).
+² With the smoke at mid-range. Close up, covering two-thirds of the screen, the steps cost 5.9 / 3.1 / 2.0 / 1.8 / 1.1 / 1.0 ms (1.0 / 0.52 / 0.34 / 0.29 / 0.18 / 0.17).
 
-These were measured at 960×540 with the demo's tier sweep (`SMOKE_DEMO_SCRIPT=tiers`) on a CPU software rasteriser, so only the ratios mean anything, and a real GPU will differ. Run the same sweep on your target hardware. The budget controller only uses these ratios to guess what a step change will save; it learns the absolute cost from your GPU.
+What the smoke adds to a 1920×1080 frame with MSAA on an Apple M4, from the demo's tier sweep (`SMOKE_DEMO_SCRIPT=tiers`), the median of five runs. Metal's GPU timestamp queries lose the device, so there the sweep times whole frames instead, each waiting for the GPU, and subtracts the same view without smoke; that counts the CPU's share of drawing the smoke too. On the software rasteriser, the faceted steps cost 1.00 / 0.52 / 0.42 / 0.36 / 0.29 / 0.27 of ultra close up, and the volumetric ones 1.00 / 0.51 / 0.44 / 0.29 / 0.19 / 0.16 at mid-range. Run the same sweep on your target hardware. The budget controller only uses ratios like these to guess what a step change will save; it learns the absolute cost from your GPU.
 
 ## Fairness
 
@@ -182,20 +184,24 @@ A step may change how precisely smoke is drawn, never its shape. The shape decid
 
 ![Fairness check](fairness.jpg)
 
+On an Apple M4 at 1920×1080 the sweep finds the same: nothing missing beyond the band at any step or distance, and close up the cheapest step adds 4,370 pixels around 1.3 million of smoke.
+
 ### The picture against the rule
 
-`tools/agreement.py` compares the picture with the core, pixel by pixel, from four places (`SMOKE_DEMO_SCRIPT=agreement`, with `SMOKE_DEMO_STYLE=faceted` or `crystal`): for the segment from the eye to the scene behind each pixel, it asks the core for `occlusion` and `blocks_sight` at the default 0.8 m. Results on 960×540 frames, not counting the one-pixel band along silhouettes and depth edges:
+`tools/agreement.py` compares the picture with the core, pixel by pixel, from four places (`SMOKE_DEMO_SCRIPT=agreement`, with `SMOKE_DEMO_STYLE=faceted` or `crystal`): for the segment from the eye to the scene behind each pixel, it asks the core for `occlusion` and `blocks_sight` at the default 0.8 m. Results on 960×540 frames on an Apple M4, in the demo's current level (the low wall now stands in front of the smoke), not counting the one-pixel band along silhouettes and depth edges:
 
 | View | Style | Smoke drawn (pixels) | Touched by cloud, drawn clear | Drawn, touches no cloud | Blocked by the 0.8 m rule, drawn clear | Drawn, 0.8 m rule says visible |
 |---|---|---|---|---|---|---|
-| far | faceted | 13,205 | 0 | 0 | 0 | 129 |
-| front | faceted | 59,712 | 0 | 0 | 0 | 3,819 |
-| close | faceted | 400,864 | 0 | 0 | 0 | 57,392 |
-| edge | faceted | 89,016 | 0 | 0 | 0 | 12,005 |
-| far | crystal | 10,956 | 0 | 0 | 0 | 219 |
-| front | crystal | 45,711 | 0 | 0 | 0 | 3,228 |
-| close | crystal | 274,344 | 0 | 0 | 0 | 40,433 |
-| edge | crystal | 71,870 | 0 | 0 | 0 | 9,435 |
+| far | faceted | 11,687 | 0 | 0 | 0 | 129 |
+| front | faceted | 51,274 | 0 | 0 | 0 | 3,389 |
+| close | faceted | 336,613 | 0 | 0 | 0 | 55,395 |
+| edge | faceted | 85,361 | 0 | 0 | 0 | 9,666 |
+| far | crystal | 10,168 | 0 | 0 | 0 | 97 |
+| front | crystal | 42,451 | 0 | 0 | 0 | 2,036 |
+| close | crystal | 262,399 | 0 | 0 | 0 | 34,921 |
+| edge | crystal | 73,970 | 0 | 0 | 0 | 11,003 |
+
+The software rasteriser gave the same zeros in the old level.
 
 Both pictures match the core's surface exactly (the two "touch" columns): with `sight_threshold = 0`, what players see is what blocks. With the 0.8 m threshold the picture never shows through anything the rule blocks, but it draws thin edges and corners (less than 0.8 m of cloud) as solid smoke that the rule, and so a server or a bot, sees through. See `ROADMAP.md`.
 
@@ -215,9 +221,9 @@ Rough cost model per camera (volumetric, "high" step, 1080p):
   - per frame, a few microseconds of bookkeeping, the snapshot of the tick being drawn (microseconds for volumetric smokes, about 20 ns per faceted or crystal puff), and moving the crystal puff entities;
   - at startup, ~0.6 s of CPU time for the noise texture, spread over all cores on a background thread while the window and GPU device are created.
 
-The faceted style costs more per covered pixel than the volumetric one (it is sphere tracing polyhedra rather than sampling a texture), roughly 3–5× at the same dial step on the software rasteriser. Its cost also depends on distance: close up, big flat facets are mostly shaded from the coarse samples; at mid-range many small facets mean many silhouettes and creases. Crystal clouds are a few hundred small meshes each: a few thousand triangles, plus shadow-map draws.
+The faceted style costs more per covered pixel than the volumetric one (it is sphere tracing polyhedra rather than sampling a texture): roughly 3–5× at the same dial step on the software rasteriser, 5–8× on an Apple M4. Its cost also depends on distance: close up, big flat facets are mostly shaded from the coarse samples; at mid-range many small facets mean many silhouettes and creases. Crystal clouds are a few hundred small meshes each: a few thousand triangles, plus shadow-map draws.
 
-On a current desktop GPU the volumetric style should land in the tenths of a millisecond, but **measure it on your hardware**. The demo HUD shows per-pass GPU timings from Bevy's `RenderDiagnosticsPlugin`:
+On an Apple M4 at 1920×1080 the volumetric style costs 0.3–0.5 ms for a distant smoke and 1–6 ms for one covering two-thirds of the screen, depending on the dial step (see the table above and the README's Performance section); a desktop GPU should do better. **Measure it on your hardware.** Where the GPU supports timestamp queries (not Metal, so far), the demo HUD shows per-pass GPU timings from Bevy's `RenderDiagnosticsPlugin`:
 
 - `smoke_bake`;
 - volumetric: `smoke_march`, `smoke_composite`;
