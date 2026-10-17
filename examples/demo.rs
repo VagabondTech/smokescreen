@@ -32,11 +32,13 @@
 //!   `SMOKE_DEMO_SCRIPT` picks the sequence:
 //!   `showcase` (default; `SMOKE_DEMO_HUD=1` keeps the HUD in the shots),
 //!   `tiers` (cost of every dial step, plus silhouette masks for the fairness
-//!   check), `budget` (budget mode while a smoke comes close and goes away
-//!   again), `agreement` (faceted or crystal silhouette masks next to the
-//!   CPU query for every pixel; compare with `tools/agreement.py`) or `video`
-//!   (every frame of short captioned clips, 30 a second, into
-//!   `<dir>/<clip>/`; `SMOKE_DEMO_CLIPS=hero,ledge` records only those).
+//!   check; without GPU timings it times whole frames, each waiting for the
+//!   GPU, against the same view without smoke), `budget` (budget mode while
+//!   a smoke comes close and goes away again), `agreement` (faceted or
+//!   crystal silhouette masks next to the CPU query for every pixel; compare
+//!   with `tools/agreement.py`) or `video` (every frame of short captioned
+//!   clips, 30 a second, into `<dir>/<clip>/`; `SMOKE_DEMO_CLIPS=hero,ledge`
+//!   records only those).
 
 use std::{fmt::Write as _, sync::Arc, time::Duration};
 
@@ -53,8 +55,10 @@ use bevy::{
     platform::time::Instant,
     prelude::*,
     render::{
+        Render, RenderApp, RenderSystems,
         diagnostic::RenderDiagnosticsPlugin,
-        render_resource::TextureFormat,
+        render_resource::{PollType, TextureFormat},
+        renderer::RenderDevice,
         view::screenshot::{Screenshot, save_to_disk},
     },
     time::TimeUpdateStrategy,
@@ -167,6 +171,7 @@ fn main() {
     if gpu_timings {
         app.add_plugins(RenderDiagnosticsPlugin);
     }
+    app.insert_resource(GpuTimings(gpu_timings));
 
     if let Some(dir) = capture {
         std::fs::create_dir_all(&dir).ok();
@@ -178,6 +183,11 @@ fn main() {
             "tiers" => {
                 app.insert_resource(Sweep::new(dir))
                     .add_systems(Update, tier_sweep.in_set(Step::Script));
+                // Without GPU timings the sweep times whole frames instead:
+                // make every frame wait for the GPU, so they include its work.
+                if !gpu_timings && let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+                    render_app.add_systems(Render, wait_for_gpu.in_set(RenderSystems::Cleanup));
+                }
             }
             "budget" => {
                 app.insert_resource(BudgetRun::new(dir))
@@ -1568,6 +1578,10 @@ struct Sweep {
     stage_frame: u32,
     /// Total and per-pass milliseconds of each measured frame.
     samples: Vec<(f64, [f64; CAMERA_PASSES.len()])>,
+    /// Wall-clock milliseconds of each measured frame.
+    frames: Vec<f64>,
+    /// Per view, the median frame time without smoke.
+    empty_ms: [f64; SWEEP_VIEWS.len()],
     timings: Timings,
     csv: String,
 }
@@ -1580,10 +1594,33 @@ impl Sweep {
             stage: 0,
             stage_frame: 0,
             samples: Vec::new(),
+            frames: Vec::new(),
+            empty_ms: [0.0; SWEEP_VIEWS.len()],
             timings: Timings::default(),
-            csv: format!("view,tier,tier_name,gpu_ms,samples,{}\n", CAMERA_PASSES.join(",")),
+            csv: format!(
+                "view,tier,tier_name,gpu_ms,samples,{},frame_ms,empty_frame_ms\n",
+                CAMERA_PASSES.join(",")
+            ),
         }
     }
+}
+
+/// Whether GPU timestamp diagnostics are on (`SMOKE_DEMO_GPU_TIMINGS`).
+#[derive(Resource)]
+struct GpuTimings(bool);
+
+/// Blocks until the GPU has finished the frame (the tier sweep's frame times).
+fn wait_for_gpu(device: Res<RenderDevice>) {
+    let _ = device.poll(PollType::Wait {
+        submission_index: None,
+        timeout: None,
+    });
+}
+
+fn median(values: &[f64]) -> f64 {
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    sorted[sorted.len() / 2]
 }
 
 const SWEEP_VIEWS: [(&str, Vec3, Vec3); 3] = [
@@ -1602,6 +1639,7 @@ fn tier_sweep(
     mut virtual_time: ResMut<Time<Virtual>>,
     mut settings: ResMut<SmokeSettings>,
     diagnostics: Res<DiagnosticsStore>,
+    (gpu, mut last_frame): (Res<GpuTimings>, Local<Option<Instant>>),
     world: Res<SmokeWorld>,
     clock: Res<SmokeClock>,
     mut finish: ResMut<Finish>,
@@ -1628,7 +1666,16 @@ fn tier_sweep(
         sweep.stage += 1;
         sweep.stage_frame = 0;
         sweep.samples.clear();
+        sweep.frames.clear();
     };
+    // Wall-clock frame times too (`Time<Real>` follows the manual time step).
+    // Offscreen, nothing else paces the frames, so a frame with smoke minus
+    // the same view without it measures what the smoke costs, where GPU
+    // timings aren't available (Metal, browsers).
+    let now = Instant::now();
+    let frame_ms = last_frame.map_or(0.0, |t| (now - t).as_secs_f64() * 1e3);
+    *last_frame = Some(now);
+    const FRAMES: usize = 60;
     match sweep.stage {
         0 => {
             if sweep.stage_frame > 40 {
@@ -1644,6 +1691,10 @@ fn tier_sweep(
                 screenshot(&mut commands, &target, &sweep.dir, &format!("{name}_empty"));
             }
             if sweep.stage_frame > 10 {
+                sweep.frames.push(frame_ms);
+            }
+            if sweep.frames.len() == FRAMES {
+                sweep.empty_ms[s - 1] = median(&sweep.frames);
                 advance(sweep);
             }
         }
@@ -1669,22 +1720,35 @@ fn tier_sweep(
                 sweep.timings.passes = Default::default();
             }
             // Let pipelines compile and timings settle, then collect.
-            if sweep.stage_frame > 12
-                && let Some(ms) = fresh
-            {
-                sweep.samples.push((ms, sweep.timings.passes));
+            if sweep.stage_frame > 12 && sweep.stage_frame < 10_000 {
+                sweep.frames.push(frame_ms);
+                if let Some(ms) = fresh {
+                    sweep.samples.push((ms, sweep.timings.passes));
+                }
             }
             const WANTED: usize = 16;
-            if sweep.samples.len() == WANTED && sweep.stage_frame < 10_000 {
-                let mut sorted = sweep.samples.clone();
-                sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
-                let (median, passes) = sorted[WANTED / 2];
-                let passes: Vec<String> = passes.iter().map(|ms| format!("{ms:.3}")).collect();
+            let measured = if gpu.0 {
+                sweep.samples.len() == WANTED
+            } else {
+                sweep.frames.len() == FRAMES
+            };
+            if measured && sweep.stage_frame < 10_000 {
+                let (gpu_ms, passes) = if gpu.0 {
+                    let mut sorted = sweep.samples.clone();
+                    sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    let (median, passes) = sorted[WANTED / 2];
+                    (format!("{median:.4}"), passes.map(|ms| format!("{ms:.3}")))
+                } else {
+                    (String::new(), Default::default())
+                };
                 let _ = writeln!(
                     sweep.csv,
-                    "{name},{tier},{},{median:.4},{WANTED},{}",
+                    "{name},{tier},{},{gpu_ms},{},{},{:.4},{:.4}",
                     quality::TIER_NAMES[tier],
-                    passes.join(",")
+                    sweep.samples.len(),
+                    passes.join(","),
+                    median(&sweep.frames),
+                    sweep.empty_ms[k / tiers],
                 );
                 screenshot(&mut commands, &target, &sweep.dir, &format!("{name}_tier{tier}"));
                 sweep.stage_frame = 10_000;
@@ -1701,7 +1765,14 @@ fn tier_sweep(
             }
             if sweep.stage_frame == 1500 {
                 warn!("no GPU timings for {name} tier {tier}; skipping");
-                let _ = writeln!(sweep.csv, "{name},{tier},{},,0", quality::TIER_NAMES[tier]);
+                let _ = writeln!(
+                    sweep.csv,
+                    "{name},{tier},{},,0,{},{:.4},{:.4}",
+                    quality::TIER_NAMES[tier],
+                    [""; CAMERA_PASSES.len()].join(","),
+                    median(&sweep.frames),
+                    sweep.empty_ms[k / tiers],
+                );
                 advance(sweep);
             }
         }

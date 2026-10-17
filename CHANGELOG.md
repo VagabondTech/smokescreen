@@ -57,7 +57,9 @@ For anyone already running a copy from before the repository existed:
 - The demo's scripted captures draw offscreen (`SMOKE_DEMO_WINDOW=1` for a
   window), take a size (`SMOKE_DEMO_SIZE`), and wait for every screenshot
   to be written before exiting. A `video` script records captioned clips
-  frame by frame.
+  frame by frame. Without GPU timings (macOS, where they lose the Metal
+  device), the `tiers` sweep times whole frames, each waiting for the GPU,
+  against the same view without smoke; `tools/fairness.py` reads either.
 
 ### smokescreen
 
