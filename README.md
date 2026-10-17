@@ -198,7 +198,7 @@ In Bevy, `SmokeWorld` is the `Smokes` the plugin runs, and `SmokeClock` sets the
 
 ## Performance
 
-Measured on an Apple M4 (Mac mini) at 128 ticks a second. Run `cargo bench -p smokescreen` on your own hardware. A 2-core 2.1 GHz cloud VM takes 2.5 to 3.5 times as long (the figures in brackets, for 0.1.0; its numbers vary by ±30 % between runs). On x86-64, building with `-C target-cpu=x86-64-v2` or newer turns rounding into single instructions instead of library calls; results are the same on every CPU target.
+Measured on an Apple M4 (Mac mini) at 128 ticks a second. Run `cargo bench -p smokescreen` on your own hardware. A 2-core 2.1 GHz cloud VM takes 2.5 to 3.5 times as long. On x86-64, building with `-C target-cpu=x86-64-v2` or newer turns rounding into single instructions instead of library calls; results are the same on every CPU target.
 
 **Fills**, per cloud, in a voxelised level (the median of 11 runs):
 
@@ -210,7 +210,7 @@ Measured on an Apple M4 (Mac mini) at 128 ticks a second. Run `cargo bench -p sm
 
 The fill budget (`Config::fill_budget`, about 0.2 ms a tick on the VM, under 0.1 ms on the M4: it counts work, not time) grows only when a fill would otherwise not be ready by the time its cloud starts. Faceted and crystal fills need about 0.33 s of ticks, so give those clouds a later `Timeline::start` to keep to the budget.
 
-**Sight checks**: 250 a tick, each through 4 of 32 clouds, in milliseconds (the median of 11 runs; a 2-core 2.1 GHz VM takes about 3× as long):
+**Sight checks**: 250 a tick, each through 4 of 32 clouds, in milliseconds (the median of 11 runs):
 
 | | Growing | Grown | Halfway through the fade | Per-tick snapshot |
 |---|---|---|---|---|
