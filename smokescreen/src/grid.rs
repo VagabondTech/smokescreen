@@ -120,6 +120,69 @@ pub(crate) fn sample_channel(channel: &[u8], min: Vec3, voxel_size: f32, dims: U
 /// mask ([`Grid::open_texels`]).
 #[inline]
 pub(crate) fn sample_open(channel: &[u8], occ: &[u8], min: Vec3, voxel_size: f32, dims: UVec3, p: Vec3) -> f32 {
+    let solid = |k: usize| occ.get(k) == Some(&occupancy::SOLID);
+    sample_open_by(channel, occ, min, voxel_size, dims, p, |_, corners| {
+        corners.iter().any(|&k| solid(k))
+    })
+}
+
+/// [`sample_open`] with the grid's near-solid flags (see
+/// [`near_solid_cells`]): the same value, with one byte tested instead of
+/// eight to find the common case, away from walls.
+#[inline]
+pub(crate) fn sample_open_near(
+    channel: &[u8],
+    occ: &[u8],
+    near: &[u8],
+    min: Vec3,
+    voxel_size: f32,
+    dims: UVec3,
+    p: Vec3,
+) -> f32 {
+    sample_open_by(channel, occ, min, voxel_size, dims, p, |i, _| {
+        near.get(i).is_some_and(|&f| f != 0)
+    })
+}
+
+/// Per voxel, for the cell of eight voxels starting at it (the ones a
+/// trilinear sample between them reads): 1 if any of the eight is solid,
+/// else 0. Empty if `occ` is. Built once per cloud, so a sample can tell
+/// the common case, away from walls, from one byte.
+pub(crate) fn near_solid_cells(occ: &[u8], dims: UVec3) -> Vec<u8> {
+    if occ.is_empty() {
+        return Vec::new();
+    }
+    let mut near = vec![0u8; occ.len()];
+    let (dx, dxy) = (dims.x as usize, (dims.x * dims.y) as usize);
+    for (i, _) in occ.iter().enumerate().filter(|&(_, &o)| o == occupancy::SOLID) {
+        let c = IVec3::new((i % dx) as i32, ((i % dxy) / dx) as i32, (i / dxy) as i32);
+        // The cells with this voxel among their corners: the one starting
+        // here and the ones starting a voxel back along any axes. (At the
+        // far edge a cell reads its own voxel twice, so the voxel is a
+        // corner of its own cell either way.)
+        for n in 0..8 {
+            let k = c - IVec3::new(n & 1, (n >> 1) & 1, n >> 2);
+            if k.cmpge(IVec3::ZERO).all() {
+                near[k.x as usize + dx * (k.y as usize + dims.y as usize * k.z as usize)] = 1;
+            }
+        }
+    }
+    near
+}
+
+/// The open-voxel average of [`sample_open`], with `any_solid(i, corners)`
+/// deciding whether a solid voxel is among the eight corners (voxel `i`
+/// and its neighbours): if not, plain trilinear filtering.
+#[inline(always)]
+fn sample_open_by(
+    channel: &[u8],
+    occ: &[u8],
+    min: Vec3,
+    voxel_size: f32,
+    dims: UVec3,
+    p: Vec3,
+    any_solid: impl FnOnce(usize, &[usize; 8]) -> bool,
+) -> f32 {
     let g = (p - min) * (1.0 / voxel_size) - 0.5;
     let max = (dims - 1).as_vec3();
     let g = g.clamp(Vec3::ZERO, max);
@@ -145,7 +208,7 @@ pub(crate) fn sample_open(channel: &[u8], occ: &[u8], min: Vec3, voxel_size: f32
     ];
     let d = |k: usize| BYTE_TO_UNIT[channel[k] as usize];
     let solid = |k: usize| occ.get(k) == Some(&occupancy::SOLID);
-    if !corners.iter().any(|&k| solid(k)) {
+    if !any_solid(i, &corners) {
         // The common case, away from walls: plain trilinear filtering.
         let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
         let x00 = lerp(d(corners[0]), d(corners[1]), f.x);
@@ -546,6 +609,48 @@ mod tests {
             // Before the voxel in x-fastest order.
             assert!((o.z, o.y, o.x) < (0, 0, 0));
         }
+    }
+
+    /// The near-solid flags find exactly the cells with a solid corner,
+    /// and the flagged sample gives the very bits of the plain one.
+    #[test]
+    fn near_solid_flags_give_the_same_samples() {
+        let dims = UVec3::new(12, 8, 8);
+        let n = (dims.x * dims.y * dims.z) as usize;
+        let hash = crate::math::hash_u32;
+        let distance: Vec<u8> = (0..n).map(|i| (hash(i as u32) % 300).min(255) as u8).collect();
+        let occ: Vec<u8> = (0..n)
+            .map(|i| match hash(i as u32 ^ 0x5bd1_e995) % 11 {
+                0 => occupancy::SOLID,
+                1 => occupancy::PADDED,
+                2 => occupancy::UNKNOWN,
+                _ => occupancy::OPEN,
+            })
+            .collect();
+        let near = near_solid_cells(&occ, dims);
+        let (dx, dxy) = (dims.x as usize, (dims.x * dims.y) as usize);
+        for i in 0..n {
+            let c = UVec3::new((i % dx) as u32, ((i % dxy) / dx) as u32, (i / dxy) as u32);
+            let ox = (c.x + 1 < dims.x) as usize;
+            let oy = (c.y + 1 < dims.y) as usize * dx;
+            let oz = (c.z + 1 < dims.z) as usize * dxy;
+            let solid = [0, ox, oy, oy + ox, oz, oz + ox, oz + oy, oz + oy + ox]
+                .iter()
+                .any(|&o| occ[i + o] == occupancy::SOLID);
+            assert_eq!(near[i] != 0, solid, "cell {c:?}");
+        }
+        assert!(near.contains(&1) && near.contains(&0));
+        let (min, v) = (Vec3::new(-1.0, 0.5, 2.0), 0.3);
+        let extent = dims.as_vec3() * v;
+        for k in 0..4000u32 {
+            let r = |s: u32| (hash(k.wrapping_mul(3) ^ s) >> 8) as f32 / (1u32 << 24) as f32;
+            // Inside the grid and a little around it (clamp-to-edge).
+            let p = min + Vec3::new(r(1), r(2), r(3)) * (extent + v) - v * 0.5;
+            let plain = sample_open(&distance, &occ, min, v, dims, p);
+            let flagged = sample_open_near(&distance, &occ, &near, min, v, dims, p);
+            assert_eq!(plain.to_bits(), flagged.to_bits(), "at {p:?}");
+        }
+        assert!(near_solid_cells(&[], dims).is_empty());
     }
 
     #[test]
