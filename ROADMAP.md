@@ -1,9 +1,9 @@
 # Roadmap
 
-What is done, what a first public release still needs, and ideas after
-that. Measured numbers come from a 2-core 2.1 GHz cloud VM with a software
-rasteriser unless said otherwise; an Apple M4 is 2.5 to 5 times faster on
-the CPU (the README has both).
+What is done, what comes next, and ideas after that. Measured numbers come
+from a 2-core 2.1 GHz cloud VM with a software rasteriser unless said
+otherwise; an Apple M4 is 2.5 to 5 times faster on the CPU (the README has
+both).
 
 ## Done
 
@@ -37,8 +37,12 @@ the CPU (the README has both).
 - **The README's media** are recorded by the demo (`SMOKE_DEMO_SCRIPT=video`)
   on a real GPU and encoded with `tools/encode_clips.sh`, so they can be
   remade whenever the look changes.
+- **crates.io:** `smokescreen` and `bevy_smokescreen` 0.1.0, published on
+  2026-10-17 (tag `v0.1.0`), with their API docs on docs.rs.
+- **Touch controls** for the browser demo: drag to look, a thumb stick to
+  move, tap to shoot. Checked on an iPhone 15 Pro (Safari 26).
 
-## Before a first public release
+## Next
 
 1. **Real GPUs.** Done on an Apple M4 (Metal): the showcase, the README's
    clips, the `tiers` sweep with `tools/fairness.py`, and the `agreement`
@@ -52,18 +56,13 @@ the CPU (the README has both).
    style, grenades, shooting and the dial, with no changes for WebGPU's
    limits. `.github/workflows/web.yml` builds it for pull requests and
    publishes `main` to <https://vagabondtech.github.io/smokescreen/>.
-   It draws in Safari 26 on an iPhone 15 Pro now that its meshes have no
-   UVs (Bevy 0.20's PBR shader keeps textures in `let`s, which Safari
-   can't compile: report that to Bevy), and it has touch controls, tried
-   so far only with simulated touches in Chrome. Still to do: the touch
-   controls on a real phone, Firefox, Edge and Android, other GPUs, and the
+   It runs in Safari 26 on an iPhone 15 Pro too, touch controls included,
+   now that its meshes have no UVs (Bevy 0.20's PBR shader keeps textures
+   in `let`s, which Safari can't compile: report that to Bevy). Still to
+   do: Firefox, Edge and Android, Safari on a Mac, other GPUs, and the
    click-to-look pointer lock with someone at the keyboard (tried only on
    a locked screen, where Chrome refuses it).
-3. **crates.io.** Make README image and file links absolute (crates.io
-   doesn't resolve relative ones), publish `smokescreen` first, then
-   `bevy_smokescreen`, and switch the README's install lines from git to
-   version numbers. Add a table of supported Bevy versions to the README.
-4. **CI for the Bevy crate on macOS and Windows** (only Linux checks it
+3. **CI for the Bevy crate on macOS and Windows** (only Linux checks it
    today), and the picture-against-rule check in CI on a software
    rasteriser (Mesa lavapipe runs on GitHub's Linux runners). The demo's
    captures draw offscreen now, so that needs no virtual display.

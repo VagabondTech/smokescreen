@@ -9,8 +9,8 @@ versions) are marked **results**.
   lower left to move, tap to shoot where you tap, and tap the buttons. On a
   small screen the buttons and the HUD say less, and once a finger touches
   the screen the help shows touch hints. The page no longer selects text,
-  shows a magnifier or bounces under a finger. Tried with simulated touches
-  in Chrome, not yet on a phone.
+  shows a magnifier or bounces under a finger. Checked on an iPhone 15 Pro
+  (Safari 26).
 
 ## 0.1.0 (2026-10-17)
 
