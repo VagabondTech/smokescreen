@@ -22,6 +22,8 @@ versions) are marked **results**.
   Results are unchanged: the determinism hashes are the same, and a new
   test checks `blocks_sight` against `occlusion` on random lines through
   clouds of every style with holes.
+- The demo starts with the quality dial at medium (it was high), in every
+  look; its scripted captures still start at high.
 - The browser demo has touch controls: drag to look, a thumb stick in the
   lower left to move, tap to shoot where you tap, and tap the buttons. On a
   small screen the buttons and the HUD say less, and once a finger touches
