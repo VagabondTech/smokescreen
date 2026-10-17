@@ -3,10 +3,10 @@
 A deterministic smoke simulation for games and their servers, with no engine
 in it: smoke grenades, smoke walls, gas and fog banks that flood rooms, pour
 through doorways and stop at walls, and the rule that decides whether smoke
-hides one point from another. Every machine computes the same clouds and the
-same answers, bit for bit.
+hides one point from another. It gives the same clouds and the same answers,
+bit for bit, on x86-64 and ARM (checked in CI).
 
-It is the simulation behind [`bevy_smokescreen`](../README.md), which draws
+It is the simulation behind [`bevy_smokescreen`](https://github.com/VagabondTech/smokescreen), which draws
 it in Bevy. Use this crate on its own for a dedicated server, bots, a replay
 tool or another engine.
 
@@ -28,12 +28,11 @@ assert!(view.blocks_sight(Vec3::new(-400.0, 0.0, 64.0), Vec3::new(400.0, 0.0, 64
 
 `examples/server.rs` is a complete headless loop with 250 bots.
 
-Until it is on crates.io, add it from the repository (only this crate is
-built, not Bevy):
+It needs Rust 1.88 or newer, and depends only on `glam` and `libm`:
 
 ```toml
 [dependencies]
-smokescreen = { git = "https://github.com/VagabondTech/smokescreen" }
+smokescreen = "0.1"
 ```
 
 ## What it does
@@ -102,4 +101,5 @@ measures it on your machine.
 
 ## Licence
 
-MIT or Apache 2.0, at your option.
+[MIT](https://github.com/VagabondTech/smokescreen/blob/main/LICENSE-MIT) or [Apache 2.0](https://github.com/VagabondTech/smokescreen/blob/main/LICENSE-APACHE), at
+your option.

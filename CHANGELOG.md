@@ -3,7 +3,7 @@
 Changes that alter simulation results (and so break lockstep with older
 versions) are marked **results**.
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-10-17)
 
 The first version, for Bevy 0.20.
 
