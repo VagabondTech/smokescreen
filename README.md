@@ -1,10 +1,12 @@
 # Smokescreen
 
+[![CI](https://github.com/VagabondTech/smokescreen/actions/workflows/ci.yml/badge.svg)](https://github.com/VagabondTech/smokescreen/actions/workflows/ci.yml)
+
 Smoke that fills rooms, pours through doorways, stops at walls and blocks sight. **`bevy_smokescreen`** brings it to **Bevy 0.20**: smoke grenades, smoke walls, poison gas, fog banks and steam, in three looks, with gameplay queries that agree with what players see. Underneath is **`smokescreen`**, an engine-free simulation that gives bit-identical answers on every machine, so it works for multiplayer games and dedicated servers too.
 
 ![A smoke grenade is thrown into a yard, bounces and pops; the cloud floods the yard, bullets carve tunnels through it, and an HE grenade clears a sphere that refills from the edges](docs/media/hero.webp)
 
-*The demo (`examples/demo.rs`) on an Apple M4. Play it natively, or [in a browser](web/README.md) with WebGPU.*
+*The demo (`examples/demo.rs`) on an Apple M4. **[Play it in your browser](https://vagabondtech.github.io/smokescreen/)** (it needs WebGPU: a current Chrome or Edge), or natively with `cargo run --release --example demo`.*
 
 **Volumetric**: soft, light-scattering smoke, lit by the sun and self-shadowed.
 
@@ -275,7 +277,7 @@ These come from the demo's tier sweep (`SMOKE_DEMO_SCRIPT=tiers`): frame time wi
 |---|---|
 | `minimal` | The smallest integration: a grenade, bullets, explosions, a bot's line of sight |
 | `presets` | Every preset and look, in a yard made of `SmokeObstacle` meshes |
-| `demo` | A playable test range, also [in a browser](web/README.md): throw smoke and HE grenades (G, H), shoot, switch looks (F), turn the dial (1–6), budget mode (B); GPU timings in the HUD; scripted captures, and the clips in this README |
+| `demo` | A playable test range, also [in your browser](https://vagabondtech.github.io/smokescreen/) ([how it's built](web/README.md)): throw smoke and HE grenades (G, H), shoot, switch looks (F), turn the dial (1–6), budget mode (B); GPU timings in the HUD; scripted captures, and the clips in this README |
 | `viewmodel` | A first-person weapon that stays visible inside smoke (a second camera) |
 | `units` | The same scene in Y-up metres and Z-up inches |
 | `smokescreen/examples/server` | A headless server loop in Z-up inches with 250 bots |

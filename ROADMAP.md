@@ -50,17 +50,15 @@ the CPU (the README has both).
    and TAA on and off with HDR and LDR cameras.
 2. **Web demo.** It runs in Chrome 155 (WebGPU) on an Apple M4: every
    style, grenades, shooting and the dial, with no changes for WebGPU's
-   limits. `.github/workflows/web.yml` builds it on every push and
-   publishes it to GitHub Pages when run by hand, but the repository is
-   private, so Pages needs a public repository or a paid plan. Still to do:
-   Safari, Firefox and Edge, other GPUs, and the click-to-look pointer lock
-   with someone at the keyboard (tried only on a locked screen, where
-   Chrome refuses it); touch controls for phones.
+   limits. `.github/workflows/web.yml` builds it for pull requests and
+   publishes `main` to <https://vagabondtech.github.io/smokescreen/>.
+   Still to do: Safari, Firefox and Edge, other GPUs, and the click-to-look
+   pointer lock with someone at the keyboard (tried only on a locked
+   screen, where Chrome refuses it); touch controls for phones.
 3. **crates.io.** Make README image and file links absolute (crates.io
-   doesn't resolve relative ones), set `homepage` in `Cargo.toml` once the
-   browser demo runs, publish `smokescreen` first, then `bevy_smokescreen`,
-   and switch the README's install lines from git to version numbers. Add a
-   table of supported Bevy versions to the README.
+   doesn't resolve relative ones), publish `smokescreen` first, then
+   `bevy_smokescreen`, and switch the README's install lines from git to
+   version numbers. Add a table of supported Bevy versions to the README.
 4. **CI for the Bevy crate on macOS and Windows** (only Linux checks it
    today), and the picture-against-rule check in CI on a software
    rasteriser (Mesa lavapipe runs on GitHub's Linux runners). The demo's

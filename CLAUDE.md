@@ -161,8 +161,10 @@ cargo run --example presets                 # every preset and look; also minima
   runs after transform propagation, so it writes `GlobalTransform` itself.
 - `SmokeObstacle` voxelisation runs on a background task; until the first
   level exists, new `Smoke` entities wait before popping.
-- The sandbox this was written in had only a software rasteriser: all GPU
-  timings so far are relative. Real-GPU testing is on the roadmap.
+- GPU timings exist for an Apple M4 (Metal) and, as ratios only, for a
+  software rasteriser. Metal's GPU timestamp queries lose the device, so on
+  macOS the demo's tier sweep times whole frames instead; NVIDIA, AMD and
+  Intel GPUs are still to try (`ROADMAP.md`).
 - Prose style in docs and comments: plain words, short sentences, British
   spelling.
 

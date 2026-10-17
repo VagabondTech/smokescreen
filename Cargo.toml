@@ -10,8 +10,8 @@ readme = "README.md"
 keywords = ["bevy", "smoke", "volumetric", "gamedev", "multiplayer"]
 categories = ["game-development", "rendering", "simulation"]
 repository = "https://github.com/VagabondTech/smokescreen"
-# Once the browser demo runs (see ROADMAP.md):
-# homepage = "https://vagabondtech.github.io/smokescreen"
+# The demo, in a browser.
+homepage = "https://vagabondtech.github.io/smokescreen/"
 exclude = ["docs/*.jpg", "docs/media/", "tools/", "web/", ".github/"]
 
 [workspace]
