@@ -4,15 +4,19 @@
 //! `web/README.md`.
 //!
 //! Controls
-//! - Hold right mouse: look around. WASD: move, Space/Ctrl: up/down, Shift: fast
+//! - Click to look around with the mouse (Esc lets go of it), or hold the
+//!   right mouse button. WASD: move, Space/C: up/down, Shift: fast
 //! - Left mouse: shoot (bullets carve tunnels through smoke)
-//! - G: throw a smoke where you're aiming
-//! - H: throw an HE grenade where you're aiming (clears a sphere that refills)
+//! - G: throw a smoke grenade; it pops where it comes to rest
+//! - H: throw an HE grenade (it clears a sphere that refills)
+//! - X: clear all smokes
 //! - F: cycle the style: volumetric, faceted, crystal (re-throws current smokes)
 //! - 1-6: the quality dial, cheapest to best
 //! - B: budget mode (the dial turns itself to fit a GPU budget), [ and ]: budget -/+
 //! - M: toggle MSAA, T: toggle TAA (enables temporal jitter on the smoke)
-//! - F1: toggle this help
+//! - F1: toggle the help
+//!
+//! The buttons at the top right throw, clear, and step the style and the dial.
 //!
 //! Environment variables
 //! - `SMOKE_DEMO_STYLE=faceted` or `crystal` starts in that style.
@@ -21,35 +25,62 @@
 //!   off (HUD timings, budget mode, the tier sweep). Default: on, except on
 //!   macOS, where they have lost the Metal device.
 //! - `SMOKE_DEMO_CAPTURE=<dir>` runs a scripted sequence that saves screenshots
-//!   (and measurements) into `<dir>` and exits. `SMOKE_DEMO_SCRIPT` picks it:
+//!   (and measurements) into `<dir>` and exits. It draws offscreen, without a
+//!   window, so it also works on a locked screen or a machine without a
+//!   display; `SMOKE_DEMO_WINDOW=1` draws into a window instead.
+//!   `SMOKE_DEMO_SIZE=<width>x<height>` sets the size (default 960x540).
+//!   `SMOKE_DEMO_SCRIPT` picks the sequence:
 //!   `showcase` (default; `SMOKE_DEMO_HUD=1` keeps the HUD in the shots),
 //!   `tiers` (cost of every dial step, plus silhouette masks for the fairness
 //!   check), `budget` (budget mode while a smoke comes close and goes away
-//!   again) or `agreement` (faceted or crystal silhouette masks next to the
-//!   CPU query for every pixel; compare with `tools/agreement.py`).
+//!   again), `agreement` (faceted or crystal silhouette masks next to the
+//!   CPU query for every pixel; compare with `tools/agreement.py`) or `video`
+//!   (every frame of short captioned clips, 30 a second, into
+//!   `<dir>/<clip>/`; `SMOKE_DEMO_CLIPS=hero,ledge` records only those).
 
 use std::{fmt::Write as _, sync::Arc, time::Duration};
 
 use bevy::{
     anti_alias::taa::TemporalAntiAliasing,
-    camera::Exposure,
+    app::ScheduleRunnerPlugin,
+    asset::RenderAssetUsages,
+    camera::{Exposure, RenderTarget, ShadowLodOrigin},
     diagnostic::{DiagnosticPath, DiagnosticsStore, FrameTimeDiagnosticsPlugin},
+    gizmos::config::{DefaultGizmoConfigGroup, GizmoConfigStore},
     input::mouse::AccumulatedMouseMotion,
     light::{GlobalAmbientLight, light_consts::lux},
+    mesh::{Indices, PrimitiveTopology},
     platform::time::Instant,
     prelude::*,
     render::{
         diagnostic::RenderDiagnosticsPlugin,
+        render_resource::TextureFormat,
         view::screenshot::{Screenshot, save_to_disk},
     },
     time::TimeUpdateStrategy,
+    ui::{IsDefaultUiCamera, RelativeCursorPosition},
+    window::{CursorGrabMode, CursorOptions, ExitCondition, PrimaryWindow},
+    winit::WinitPlugin,
 };
-use bevy_smokescreen::{prelude::*, quality};
+use bevy_smokescreen::{prelude::*, quality, smokescreen::math::hash_u32};
 
 fn main() {
     let capture = std::env::var("SMOKE_DEMO_CAPTURE").ok();
     let script = std::env::var("SMOKE_DEMO_SCRIPT").unwrap_or_else(|_| "showcase".into());
-    let resolution = if capture.is_some() { (960, 540) } else { (1600, 900) };
+    // Captures draw offscreen unless asked for a window: a window's
+    // screenshots come out black while the screen is locked.
+    let offscreen = capture.is_some() && std::env::var("SMOKE_DEMO_WINDOW").is_err();
+    let size = std::env::var("SMOKE_DEMO_SIZE")
+        .ok()
+        .and_then(|s| {
+            let (w, h) = s.split_once('x')?;
+            Some(UVec2::new(w.parse().ok()?, h.parse().ok()?))
+        })
+        .unwrap_or(if capture.is_some() {
+            UVec2::new(960, 540)
+        } else {
+            UVec2::new(1600, 900)
+        });
     let style = match std::env::var("SMOKE_DEMO_STYLE").as_deref() {
         Ok("faceted") => SmokeStyle::Faceted,
         Ok("crystal") => SmokeStyle::Crystal,
@@ -68,33 +99,70 @@ fn main() {
         .unwrap_or(!cfg!(any(target_os = "macos", target_arch = "wasm32")));
 
     let mut app = App::new();
-    app.add_plugins(DefaultPlugins.set(WindowPlugin {
-        primary_window: Some(Window {
-            title: "Smokescreen demo".into(),
-            resolution: resolution.into(),
-            // On the web (see web/index.html): draw into the page's canvas,
-            // sized by the page.
-            canvas: cfg!(target_arch = "wasm32").then(|| "#bevy".into()),
-            fit_canvas_to_parent: true,
+    if offscreen {
+        app.add_plugins((
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: None,
+                    exit_condition: ExitCondition::DontExit,
+                    ..default()
+                })
+                .disable::<WinitPlugin>(),
+            ScheduleRunnerPlugin::run_loop(Duration::ZERO),
+        ));
+        let image = Image::new_target_texture(size.x, size.y, TextureFormat::Rgba8UnormSrgb, None);
+        let image = app.world_mut().resource_mut::<Assets<Image>>().add(image);
+        app.insert_resource(ShotTarget::Image(image));
+    } else {
+        app.add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "Smokescreen demo".into(),
+                resolution: (size.x, size.y).into(),
+                // On the web (see web/index.html): draw into the page's canvas,
+                // sized by the page.
+                canvas: cfg!(target_arch = "wasm32").then(|| "#bevy".into()),
+                fit_canvas_to_parent: true,
+                ..default()
+            }),
             ..default()
-        }),
-        ..default()
-    }))
-    .add_plugins((SmokePlugin::default(), FrameTimeDiagnosticsPlugin::default()))
-    .insert_resource(SmokeSettings { style, ..default() })
-    .insert_resource(DemoBudget(budget_ms))
-    .insert_resource(GlobalAmbientLight {
-        color: Color::srgb(0.75, 0.82, 1.0),
-        brightness: 350.0,
-        ..default()
-    })
-    .insert_resource(ClearColor(Color::srgb(0.55, 0.68, 0.85)))
-    .init_resource::<Effects>()
-    .add_systems(Startup, (setup_level, setup_camera_and_hud))
-    .add_systems(
-        Update,
-        (fly_camera, weapons, quality_keys, style_key, update_effects, update_hud),
-    );
+        }))
+        .insert_resource(ShotTarget::Window);
+    }
+    app.add_plugins((SmokePlugin::default(), FrameTimeDiagnosticsPlugin::default()))
+        .insert_resource(SmokeSettings { style, ..default() })
+        .insert_resource(DemoBudget(budget_ms))
+        .insert_resource(GlobalAmbientLight {
+            color: Color::srgb(0.75, 0.82, 1.0),
+            brightness: 350.0,
+            ..default()
+        })
+        .insert_resource(ClearColor(Color::srgb(0.55, 0.68, 0.85)))
+        .init_resource::<Effects>()
+        .init_resource::<Actions>()
+        .init_resource::<MouseLook>()
+        .configure_sets(Update, (Step::Input, Step::Script, Step::Act).chain())
+        .add_systems(
+            Startup,
+            (setup_level, setup_camera_and_hud, setup_grenades, setup_toolbar),
+        )
+        .add_systems(Update, (mouse_capture, toolbar).chain().in_set(Step::Input))
+        .add_systems(
+            Update,
+            (
+                fly_camera,
+                weapons,
+                fly_grenades,
+                quality_keys,
+                style_key,
+                clear_smokes,
+                update_effects,
+                update_hud,
+                update_toolbar,
+            )
+                .in_set(Step::Act),
+        );
+    #[cfg(target_arch = "wasm32")]
+    app.add_systems(Update, (browser_pointer_lock.before(mouse_capture), mark_ready));
 
     if gpu_timings {
         app.add_plugins(RenderDiagnosticsPlugin);
@@ -102,33 +170,70 @@ fn main() {
 
     if let Some(dir) = capture {
         std::fs::create_dir_all(&dir).ok();
-        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(1.0 / 20.0)));
+        let step = if script == "video" { 1.0 / VIDEO_FPS } else { 1.0 / 20.0 };
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(step)))
+            .init_resource::<Finish>()
+            .add_systems(Update, finish.after(Step::Act));
         match script.as_str() {
             "tiers" => {
                 app.insert_resource(Sweep::new(dir))
-                    .add_systems(Update, tier_sweep.before(weapons));
+                    .add_systems(Update, tier_sweep.in_set(Step::Script));
             }
             "budget" => {
                 app.insert_resource(BudgetRun::new(dir))
-                    .add_systems(Update, budget_run.before(weapons));
+                    .add_systems(Update, budget_run.in_set(Step::Script));
             }
             "agreement" => {
                 app.insert_resource(AgreementRun::new(dir))
-                    .add_systems(Update, agreement_run.before(weapons));
+                    .add_systems(Update, agreement_run.in_set(Step::Script));
+            }
+            "video" => {
+                app.insert_resource(Video::new(dir, size))
+                    .init_resource::<Sightlines>()
+                    .add_systems(Startup, setup_bots)
+                    .add_systems(
+                        Update,
+                        (video_script.in_set(Step::Script), draw_sightlines.in_set(Step::Act)),
+                    );
             }
             _ => {
-                app.insert_resource(Capture {
-                    dir,
-                    step: 0,
-                    pending: Actions::default(),
-                })
-                .add_systems(Update, capture_script.before(weapons));
+                app.insert_resource(Capture { dir, step: 0 })
+                    .add_systems(Update, capture_script.in_set(Step::Script));
             }
         }
     } else {
         app.add_systems(Update, opening_smoke);
     }
     app.run();
+}
+
+/// The order of the demo's own systems within a frame: input, then a capture
+/// script, then everything that acts on what they asked for.
+#[derive(SystemSet, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum Step {
+    Input,
+    Script,
+    Act,
+}
+
+/// Where screenshots come from: the window, or the image an offscreen camera
+/// draws into.
+#[derive(Resource, Clone)]
+enum ShotTarget {
+    Window,
+    Image(Handle<Image>),
+}
+
+/// Set by a capture script when it's done: the demo exits once every
+/// screenshot has been written. (Offscreen, nothing holds the CPU back, so it
+/// can be many frames ahead of the GPU.)
+#[derive(Resource, Default)]
+struct Finish(bool);
+
+fn finish(finish: Res<Finish>, pending: Query<(), With<Screenshot>>, mut exit: MessageWriter<AppExit>) {
+    if finish.0 && pending.is_empty() {
+        exit.write(AppExit::Success);
+    }
 }
 
 /// Budget used when budget mode is switched on.
@@ -149,29 +254,26 @@ fn setup_level(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let concrete = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.62, 0.6, 0.56),
-        perceptual_roughness: 0.9,
-        ..default()
-    });
-    let plaster = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.78, 0.72, 0.62),
-        perceptual_roughness: 0.85,
-        ..default()
-    });
-    let crate_wood = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.52, 0.38, 0.22),
-        perceptual_roughness: 0.8,
-        ..default()
-    });
-    let red = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.7, 0.12, 0.1),
-        ..default()
-    });
+    let mut material = |r: f32, g: f32, b: f32, roughness: f32| {
+        materials.add(StandardMaterial {
+            base_color: Color::srgb(r, g, b),
+            perceptual_roughness: roughness,
+            ..default()
+        })
+    };
+    let concrete = material(0.62, 0.6, 0.56, 0.9);
+    let dark_concrete = material(0.42, 0.42, 0.43, 0.8);
+    let plaster = material(0.78, 0.72, 0.62, 0.85);
+    let cool_plaster = material(0.66, 0.7, 0.74, 0.85);
+    let brick = material(0.56, 0.34, 0.26, 0.9);
+    let crate_wood = material(0.52, 0.38, 0.22, 0.8);
+    let pale_wood = material(0.64, 0.5, 0.32, 0.8);
+    let red = material(0.7, 0.12, 0.1, 0.5);
 
-    // Ground.
+    // Ground: concrete slabs in slightly different shades, so distance and
+    // camera moves read on screen.
     commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(90.0, 90.0))),
+        Mesh3d(meshes.add(slab_ground(90.0, 2.0))),
         MeshMaterial3d(concrete.clone()),
     ));
 
@@ -180,35 +282,63 @@ fn setup_level(
     let mut boxes: Vec<(Vec3, Vec3, Handle<StandardMaterial>)> = Vec::new();
     let mut wall = |min: Vec3, max: Vec3, mat: &Handle<StandardMaterial>| {
         boxes.push(((min + max) * 0.5, max - min, mat.clone()));
+        boxes.len() - 1
     };
     let h = 4.0;
-    // Front wall of a building at z = 6, with a 2 m doorway (lintel above).
-    wall(Vec3::new(-9.0, 0.0, 5.8), Vec3::new(-1.0, h, 6.2), &plaster);
+    // Front wall of a building at z = 6: a 2 m doorway (lintel above) and,
+    // to its left, a window.
+    wall(Vec3::new(-9.0, 0.0, 5.8), Vec3::new(-6.5, h, 6.2), &plaster);
+    wall(Vec3::new(-6.5, 0.0, 5.8), Vec3::new(-4.5, 1.1, 6.2), &plaster);
+    wall(Vec3::new(-6.5, 2.3, 5.8), Vec3::new(-4.5, h, 6.2), &plaster);
+    wall(Vec3::new(-4.5, 0.0, 5.8), Vec3::new(-1.0, h, 6.2), &plaster);
     wall(Vec3::new(1.0, 0.0, 5.8), Vec3::new(9.0, h, 6.2), &plaster);
     wall(Vec3::new(-1.0, 2.6, 5.8), Vec3::new(1.0, h, 6.2), &plaster);
-    // Side walls, back wall and roof: an indoor room the sun can't reach.
+    // Side walls, back wall and roof: rooms the sun can't reach.
     wall(Vec3::new(-9.0, 0.0, 6.2), Vec3::new(-8.6, h, 15.0), &plaster);
     wall(Vec3::new(8.6, 0.0, 6.2), Vec3::new(9.0, h, 15.0), &plaster);
     wall(Vec3::new(-9.0, 0.0, 14.6), Vec3::new(9.0, h, 15.0), &plaster);
-    wall(Vec3::new(-9.0, h, 5.8), Vec3::new(9.0, h + 0.3, 15.0), &concrete);
+    let roof = wall(Vec3::new(-9.0, h, 5.8), Vec3::new(9.0, h + 0.3, 15.0), &concrete);
+    // A partition with a doorway at the back: a second, smaller room.
+    wall(Vec3::new(3.0, 0.0, 6.2), Vec3::new(3.4, h, 10.5), &cool_plaster);
+    wall(Vec3::new(3.0, 0.0, 12.0), Vec3::new(3.4, h, 14.6), &cool_plaster);
+    wall(Vec3::new(3.0, 2.4, 10.5), Vec3::new(3.4, h, 12.0), &cool_plaster);
     // A 2.4 m corridor to the right, open at both ends.
     wall(Vec3::new(11.0, 0.0, -10.0), Vec3::new(11.4, 3.2, 4.0), &concrete);
     wall(Vec3::new(13.8, 0.0, -10.0), Vec3::new(14.2, 3.2, 4.0), &concrete);
-    // Cover: crates and a pillar in the open.
+    // A raised platform to the left, 1.5 m high with steps, for smoke to pour
+    // off. (A cloud's grid reaches 1.8 m below where it pops: higher ledges
+    // would cut the smoke off in mid-air.)
+    wall(Vec3::new(-21.0, 0.0, -6.0), Vec3::new(-13.0, 1.5, 4.0), &brick);
+    for k in 0..3 {
+        let x = -13.0 + 0.5 * k as f32;
+        wall(
+            Vec3::new(x, 0.0, -6.0),
+            Vec3::new(x + 0.5, 1.125 - 0.375 * k as f32, -4.0),
+            &dark_concrete,
+        );
+    }
+    wall(Vec3::new(-18.5, 1.5, 1.0), Vec3::new(-17.3, 2.7, 2.2), &pale_wood);
+    // Cover: crates, a pillar and a low wall in the open.
     wall(Vec3::new(-4.6, 0.0, 0.4), Vec3::new(-3.4, 1.2, 1.6), &crate_wood);
-    wall(Vec3::new(-4.4, 1.2, 0.6), Vec3::new(-3.6, 2.0, 1.4), &crate_wood);
+    wall(Vec3::new(-4.4, 1.2, 0.6), Vec3::new(-3.6, 2.0, 1.4), &pale_wood);
     wall(Vec3::new(3.0, 0.0, -2.5), Vec3::new(4.2, 1.2, -1.3), &crate_wood);
-    wall(Vec3::new(5.5, 0.0, 2.0), Vec3::new(6.3, 3.5, 2.8), &concrete);
+    wall(Vec3::new(9.2, 0.0, -6.6), Vec3::new(10.4, 1.2, -5.4), &pale_wood);
+    wall(Vec3::new(8.9, 0.0, -5.2), Vec3::new(9.9, 1.0, -4.2), &crate_wood);
+    wall(Vec3::new(5.5, 0.0, 2.0), Vec3::new(6.3, 3.5, 2.8), &dark_concrete);
+    wall(Vec3::new(-3.2, 0.0, 1.0), Vec3::new(-0.8, 0.9, 1.3), &concrete);
     // Something bright to hide behind the smoke.
     wall(Vec3::new(-0.4, 0.0, 9.6), Vec3::new(0.4, 1.8, 10.4), &red);
 
     let mut obstacle_boxes = Vec::new();
-    for (center, size, mat) in boxes {
-        commands.spawn((
+    for (i, (center, size, mat)) in boxes.into_iter().enumerate() {
+        let mut entity = commands.spawn((
             Mesh3d(meshes.add(Cuboid::from_size(size))),
             MeshMaterial3d(mat),
             Transform::from_translation(center),
         ));
+        if i == roof {
+            entity.insert(Roof);
+        }
         obstacle_boxes.push(ObstacleBox::from_center_size(center, size));
     }
     let level = Arc::new(BoxObstacles::new(obstacle_boxes));
@@ -235,6 +365,36 @@ fn setup_level(
     ));
 }
 
+/// The building's roof, hidden for the video's cutaway (it still blocks smoke).
+#[derive(Component)]
+struct Roof;
+
+/// A square of `size` metres made of `slab`-metre slabs, each a slightly
+/// different shade (vertex colours times the material's colour).
+fn slab_ground(size: f32, slab: f32) -> Mesh {
+    let n = (size / slab) as u32;
+    let half = size * 0.5;
+    let (mut positions, mut colors, mut indices) = (Vec::new(), Vec::new(), Vec::new());
+    for i in 0..n {
+        for j in 0..n {
+            let (x, z) = (-half + i as f32 * slab, -half + j as f32 * slab);
+            let shade = 0.88 + 0.16 * (hash_u32(i * 7919 + j * 104_729) % 1024) as f32 / 1024.0;
+            let first = positions.len() as u32;
+            for (dx, dz) in [(0.0, 0.0), (slab, 0.0), (slab, slab), (0.0, slab)] {
+                positions.push([x + dx, 0.0, z + dz]);
+                colors.push([shade, shade, shade, 1.0]);
+            }
+            indices.extend([first, first + 2, first + 1, first, first + 3, first + 2]);
+        }
+    }
+    let normals = vec![[0.0, 1.0, 0.0]; positions.len()];
+    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
+        .with_inserted_indices(Indices::U32(indices))
+}
+
 #[derive(Component)]
 struct FlyCam {
     yaw: f32,
@@ -247,7 +407,7 @@ struct Hud;
 #[derive(Component)]
 struct Help;
 
-fn setup_camera_and_hud(mut commands: Commands) {
+fn setup_camera_and_hud(mut commands: Commands, target: Res<ShotTarget>) {
     let eye = Vec3::new(-2.5, 1.7, -9.0);
     let look = Transform::from_translation(eye).looking_at(Vec3::new(0.0, 1.4, 5.0), Vec3::Y);
     let (yaw, pitch, _) = look.rotation.to_euler(EulerRot::YXZ);
@@ -258,10 +418,17 @@ fn setup_camera_and_hud(mut commands: Commands) {
         SmokeCamera::HIGH,
         look,
         FlyCam { yaw, pitch },
+        // The HUD's camera, window or not.
+        IsDefaultUiCamera,
     ));
     // SMOKE_DEMO_LDR=1 exercises the non-HDR composite path.
     if std::env::var("SMOKE_DEMO_LDR").is_err() {
         camera.insert(bevy::camera::Hdr);
+    }
+    if let ShotTarget::Image(image) = target.as_ref() {
+        // Without a window, Bevy wants telling which camera point light
+        // shadows are detailed around.
+        camera.insert((RenderTarget::Image(image.clone().into()), ShadowLodOrigin));
     }
 
     // Crosshair.
@@ -301,8 +468,8 @@ fn setup_camera_and_hud(mut commands: Commands) {
     ));
     commands.spawn((
         Text::new(
-            "RMB look  WASD move  Space/Ctrl up/down  Shift fast\n\
-             LMB shoot  G smoke  H HE grenade  F style\n\
+            "Click to look around (Esc lets go), or hold RMB  WASD move  Space/C up/down  Shift fast\n\
+             LMB shoot  G smoke grenade  H HE grenade  X clear  F style\n\
              1-6 quality dial  B budget mode  [ ] budget -/+  M MSAA  T TAA  F1 hide help",
         ),
         TextFont {
@@ -332,12 +499,13 @@ fn fly_camera(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
+    look: Res<MouseLook>,
     mut cameras: Query<(&mut Transform, &mut FlyCam)>,
 ) {
     let Ok((mut transform, mut cam)) = cameras.single_mut() else {
         return;
     };
-    if buttons.pressed(MouseButton::Right) {
+    if look.captured || buttons.pressed(MouseButton::Right) {
         cam.yaw -= motion.delta.x * 0.003;
         cam.pitch = (cam.pitch - motion.delta.y * 0.003).clamp(-1.5, 1.5);
     }
@@ -360,7 +528,8 @@ fn fly_camera(
     if keys.pressed(KeyCode::Space) {
         dir += Vec3::Y;
     }
-    if keys.pressed(KeyCode::ControlLeft) {
+    // Not Ctrl: in a browser, Ctrl+W closes the tab.
+    if keys.pressed(KeyCode::KeyC) {
         dir -= Vec3::Y;
     }
     let speed = if keys.pressed(KeyCode::ShiftLeft) { 12.0 } else { 4.0 };
@@ -380,13 +549,21 @@ struct Flash {
     peak: f32,
 }
 
-/// Inputs that the capture script can also trigger.
-#[derive(Default)]
+/// What to do this frame, asked for by the toolbar or a capture script (the
+/// keyboard is read where it's used).
+#[derive(Resource, Default)]
 struct Actions {
+    /// Bullets from the camera, in these directions.
     shoot: Vec<Vec3>,
+    /// Throw a smoke grenade from the camera.
     smoke: bool,
+    /// Throw an HE grenade from the camera.
     explode: bool,
+    /// An explosion right here.
     explode_at: Option<Vec3>,
+    cycle_style: bool,
+    cycle_quality: bool,
+    clear: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -394,80 +571,514 @@ fn weapons(
     mut commands: Commands,
     buttons: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
+    look: Res<MouseLook>,
     camera: Query<&GlobalTransform, With<FlyCam>>,
     level: Res<Level>,
+    grenades: Res<GrenadeAssets>,
+    mut actions: ResMut<Actions>,
     mut bullets: MessageWriter<SmokeBullet>,
     mut explosions: MessageWriter<SmokeExplosion>,
     mut effects: ResMut<Effects>,
-    capture: Option<ResMut<Capture>>,
 ) {
     let Ok(cam) = camera.single() else {
         return;
     };
     let origin = cam.translation();
     let forward = cam.forward().as_vec3();
-    let mut actions = capture.map(|mut c| std::mem::take(&mut c.pending)).unwrap_or_default();
-    if buttons.just_pressed(MouseButton::Left) {
+    // The click that grabbed the mouse doesn't also shoot.
+    if look.captured && !look.just_captured && buttons.just_pressed(MouseButton::Left) {
         actions.shoot.push(forward);
     }
     actions.smoke |= keys.just_pressed(KeyCode::KeyG);
     actions.explode |= keys.just_pressed(KeyCode::KeyH);
 
-    for dir in actions.shoot {
-        let dir = dir.normalize();
-        let dist = level.raycast(origin, dir, 120.0).unwrap_or(120.0);
-        let end = origin + dir * dist;
-        bullets.write(SmokeBullet { start: origin, end });
-        effects.tracers.push((origin + dir * 0.6 - Vec3::Y * 0.1, end, 0.0));
-        // Muzzle flash: lights smoke you're standing in.
-        commands.spawn((
-            PointLight {
-                intensity: 0.0,
-                range: 6.0,
-                color: Color::srgb(1.0, 0.75, 0.4),
-                shadow_maps_enabled: false,
-                ..default()
-            },
-            Transform::from_translation(origin + dir * 0.8),
-            Flash {
-                age: 0.0,
-                life: 0.06,
-                peak: 60_000.0,
-            },
-        ));
+    for dir in std::mem::take(&mut actions.shoot) {
+        shoot(&mut commands, &level, &mut bullets, &mut effects, origin, dir);
     }
+    // Grenades leave from the right hand, a little below the eye, in an arc.
+    let hand = origin + forward * 0.5 + cam.right().as_vec3() * 0.2 - Vec3::Y * 0.2;
+    let velocity = forward * 13.0 + Vec3::Y * 2.5;
+    if std::mem::take(&mut actions.smoke) {
+        throw(&mut commands, &grenades, GrenadeKind::Smoke, hand, velocity);
+    }
+    if std::mem::take(&mut actions.explode) {
+        throw(&mut commands, &grenades, GrenadeKind::He, hand, velocity);
+    }
+    if let Some(p) = actions.explode_at.take() {
+        explode(&mut commands, &mut explosions, p);
+    }
+}
 
-    let target = || {
-        let dist = level.raycast(origin, forward, 60.0).unwrap_or(30.0);
-        let hit = origin + forward * (dist - 0.3).max(0.5);
-        // Drop to the floor below the hit point.
-        let floor = level.raycast(hit, Vec3::NEG_Y, 20.0).unwrap_or(hit.y);
-        Vec3::new(hit.x, hit.y - floor, hit.z)
+/// A bullet from `origin` along `dir` to the first wall, with a tracer and a
+/// muzzle flash.
+fn shoot(
+    commands: &mut Commands,
+    level: &Level,
+    bullets: &mut MessageWriter<SmokeBullet>,
+    effects: &mut Effects,
+    origin: Vec3,
+    dir: Vec3,
+) {
+    let dir = dir.normalize();
+    let dist = level.raycast(origin, dir, 120.0).unwrap_or(120.0);
+    let end = origin + dir * dist;
+    bullets.write(SmokeBullet { start: origin, end });
+    effects.tracers.push((origin + dir * 0.6 - Vec3::Y * 0.1, end, 0.0));
+    // Muzzle flash: lights smoke you're standing in.
+    commands.spawn((
+        PointLight {
+            intensity: 0.0,
+            range: 6.0,
+            color: Color::srgb(1.0, 0.75, 0.4),
+            shadow_maps_enabled: false,
+            ..default()
+        },
+        Transform::from_translation(origin + dir * 0.8),
+        Flash {
+            age: 0.0,
+            life: 0.06,
+            peak: 60_000.0,
+        },
+    ));
+}
+
+/// An HE explosion at `p`: a cleared sphere in the smoke and a flash.
+fn explode(commands: &mut Commands, explosions: &mut MessageWriter<SmokeExplosion>, p: Vec3) {
+    explosions.write(SmokeExplosion {
+        center: p,
+        radius: None,
+    });
+    commands.spawn((
+        PointLight {
+            intensity: 0.0,
+            range: 18.0,
+            color: Color::srgb(1.0, 0.6, 0.25),
+            shadow_maps_enabled: false,
+            ..default()
+        },
+        Transform::from_translation(p + Vec3::Y * 0.5),
+        Flash {
+            age: 0.0,
+            life: 0.45,
+            peak: 4_000_000.0,
+        },
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Grenades: thrown, bounced off the level, then a smoke pops where one comes
+// to rest, or an HE goes off after its fuse.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum GrenadeKind {
+    Smoke,
+    He,
+}
+
+#[derive(Component)]
+struct Grenade {
+    kind: GrenadeKind,
+    velocity: Vec3,
+    age: f32,
+    /// Seconds spent lying still.
+    still: f32,
+    /// Seconds left of counting as on a floor since it last touched one.
+    on_floor: f32,
+}
+
+#[derive(Resource)]
+struct GrenadeAssets {
+    smoke: (Handle<Mesh>, Handle<StandardMaterial>),
+    he: (Handle<Mesh>, Handle<StandardMaterial>),
+}
+
+const GRENADE_RADIUS: f32 = 0.07;
+const GRAVITY: f32 = 9.81;
+const HE_FUSE: f32 = 1.6;
+
+fn setup_grenades(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let mut material = |color: Color| {
+        materials.add(StandardMaterial {
+            base_color: color,
+            perceptual_roughness: 0.5,
+            metallic: 0.3,
+            ..default()
+        })
     };
-    if actions.smoke {
-        commands.spawn((Smoke::default(), Transform::from_translation(target())));
+    commands.insert_resource(GrenadeAssets {
+        smoke: (
+            meshes.add(Cylinder::new(GRENADE_RADIUS * 0.75, GRENADE_RADIUS * 2.2)),
+            material(Color::srgb(0.25, 0.32, 0.2)),
+        ),
+        he: (
+            meshes.add(Sphere::new(GRENADE_RADIUS)),
+            material(Color::srgb(0.2, 0.22, 0.2)),
+        ),
+    });
+}
+
+fn throw(commands: &mut Commands, assets: &GrenadeAssets, kind: GrenadeKind, from: Vec3, velocity: Vec3) {
+    let (mesh, material) = match kind {
+        GrenadeKind::Smoke => &assets.smoke,
+        GrenadeKind::He => &assets.he,
+    };
+    commands.spawn((
+        Mesh3d(mesh.clone()),
+        MeshMaterial3d(material.clone()),
+        Transform::from_translation(from),
+        Grenade {
+            kind,
+            velocity,
+            age: 0.0,
+            still: 0.0,
+            on_floor: 0.0,
+        },
+    ));
+}
+
+/// The velocity that takes a grenade from `from` to `to` in `seconds`.
+fn lob(from: Vec3, to: Vec3, seconds: f32) -> Vec3 {
+    let d = to - from;
+    Vec3::new(d.x, d.y + 0.5 * GRAVITY * seconds * seconds, d.z) / seconds
+}
+
+fn fly_grenades(
+    mut commands: Commands,
+    time: Res<Time>,
+    level: Res<Level>,
+    mut grenades: Query<(Entity, &mut Grenade, &mut Transform)>,
+    mut explosions: MessageWriter<SmokeExplosion>,
+) {
+    let dt = time.delta_secs();
+    for (entity, mut grenade, mut transform) in &mut grenades {
+        grenade.age += dt;
+        // Short steps, so a fast grenade can't pass through a thin wall.
+        let steps = ((dt * 240.0).ceil() as u32).clamp(1, 32);
+        let h = dt / steps as f32;
+        let mut p = transform.translation;
+        let mut v = grenade.velocity;
+        let mut resting = false;
+        for _ in 0..steps {
+            v.y -= GRAVITY * h;
+            let motion = v * h;
+            if let Some((t, normal)) = sweep(&level.0, p, motion, GRENADE_RADIUS) {
+                p += motion * t + normal * 0.001;
+                let into = v.dot(normal);
+                let along = v - normal * into;
+                // A bounce loses most of the speed into the surface; a graze
+                // just slides along it.
+                v = if into < -1.0 {
+                    along * 0.55 - normal * into * 0.25
+                } else {
+                    along
+                };
+                if normal.y > 0.7 {
+                    grenade.on_floor = 0.05;
+                }
+            } else {
+                p += motion;
+            }
+            // Rolling friction while on a floor (it hops off it between contacts).
+            if grenade.on_floor > 0.0 {
+                grenade.on_floor -= h;
+                let damp = (1.0 - 6.0 * h).max(0.0);
+                (v.x, v.z) = (v.x * damp, v.z * damp);
+                if v.length() < 0.25 {
+                    v = Vec3::ZERO;
+                    resting = true;
+                }
+            }
+        }
+        // Tumble while flying.
+        let spin = v.cross(Vec3::Y).normalize_or_zero();
+        if spin != Vec3::ZERO {
+            transform.rotate(Quat::from_axis_angle(spin, -v.length() * dt * 2.0));
+        }
+        transform.translation = p;
+        grenade.velocity = v;
+        grenade.still = if resting || v.length() < 0.05 {
+            grenade.still + dt
+        } else {
+            0.0
+        };
+        let go_off = match grenade.kind {
+            GrenadeKind::Smoke => grenade.still > 0.3 || grenade.age > 8.0,
+            GrenadeKind::He => grenade.age > HE_FUSE,
+        };
+        if !go_off {
+            continue;
+        }
+        commands.entity(entity).despawn();
+        match grenade.kind {
+            GrenadeKind::Smoke => {
+                let floor = p - Vec3::Y * GRENADE_RADIUS;
+                commands.spawn((Smoke::default(), Transform::from_translation(floor)));
+            }
+            GrenadeKind::He => explode(&mut commands, &mut explosions, p),
+        }
     }
-    if actions.explode || actions.explode_at.is_some() {
-        let p = actions.explode_at.unwrap_or_else(|| target() + Vec3::Y * 0.4);
-        explosions.write(SmokeExplosion {
-            center: p,
-            radius: None,
+}
+
+/// First contact of a sphere of radius `r` moving by `motion` from `from`
+/// with the level's boxes and ground: how far along the motion (0 to 1), and
+/// the surface's normal. Boxes the sphere starts inside are ignored.
+fn sweep(level: &BoxObstacles, from: Vec3, motion: Vec3, r: f32) -> Option<(f32, Vec3)> {
+    let mut best: Option<(f32, Vec3)> = None;
+    let mut consider = |t: f32, normal: Vec3| {
+        if best.is_none_or(|(b, _)| t < b) {
+            best = Some((t, normal));
+        }
+    };
+    if level.ground.is_some() && motion.y < 0.0 && from.y >= r - 1e-4 {
+        let t = (r - from.y) / motion.y;
+        if t <= 1.0 {
+            consider(t.max(0.0), Vec3::Y);
+        }
+    }
+    'boxes: for b in &level.boxes {
+        let (min, max) = (b.min - r, b.max + r);
+        let (mut near, mut far, mut normal) = (0.0f32, 1.0f32, Vec3::ZERO);
+        for axis in 0..3 {
+            let (o, d) = (from[axis], motion[axis]);
+            if d.abs() < 1e-9 {
+                if o < min[axis] || o > max[axis] {
+                    continue 'boxes;
+                }
+                continue;
+            }
+            let (mut t0, mut t1) = ((min[axis] - o) / d, (max[axis] - o) / d);
+            if t0 > t1 {
+                std::mem::swap(&mut t0, &mut t1);
+            }
+            if t0 > near {
+                near = t0;
+                normal = Vec3::ZERO;
+                normal[axis] = -d.signum();
+            }
+            far = far.min(t1);
+            if near > far {
+                continue 'boxes;
+            }
+        }
+        if normal != Vec3::ZERO {
+            consider(near, normal);
+        }
+    }
+    best
+}
+
+// ---------------------------------------------------------------------------
+// Mouse capture and the toolbar.
+// ---------------------------------------------------------------------------
+
+/// Click to look around with the mouse; Esc lets go of it.
+#[derive(Resource, Default)]
+struct MouseLook {
+    captured: bool,
+    /// The mouse was captured by this frame's click (which shouldn't also shoot).
+    just_captured: bool,
+}
+
+fn mouse_capture(
+    mouse: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    toolbar: Query<&RelativeCursorPosition, With<ToolButton>>,
+    mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
+    mut look: ResMut<MouseLook>,
+) {
+    look.just_captured = false;
+    let Ok(mut cursor) = cursor.single_mut() else {
+        return;
+    };
+    if look.captured && keys.just_pressed(KeyCode::Escape) {
+        look.captured = false;
+        cursor.grab_mode = CursorGrabMode::None;
+        cursor.visible = true;
+    } else if !look.captured
+        && mouse.just_pressed(MouseButton::Left)
+        && !toolbar.iter().any(RelativeCursorPosition::cursor_over)
+    {
+        look.captured = true;
+        look.just_captured = true;
+        cursor.grab_mode = CursorGrabMode::Locked;
+        cursor.visible = false;
+    }
+}
+
+/// In a browser, the page decides: Esc ends the pointer lock without the app
+/// hearing of it, and the page may refuse a lock (an unfocused window, say).
+/// So the mouse counts as captured only while the page holds the lock, and
+/// once a lock ends, or never comes, the cursor is let go so that the next
+/// click asks again.
+#[cfg(target_arch = "wasm32")]
+fn browser_pointer_lock(
+    time: Res<Time<Real>>,
+    mut look: ResMut<MouseLook>,
+    mut asked_at: Local<Option<f32>>,
+    mut granted: Local<bool>,
+    mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
+) {
+    let locked = web_sys::window()
+        .and_then(|w| w.document())
+        .is_some_and(|d| d.pointer_lock_element().is_some());
+    look.captured = locked;
+    let Ok(mut cursor) = cursor.single_mut() else {
+        return;
+    };
+    if cursor.grab_mode == CursorGrabMode::None {
+        *asked_at = None;
+        *granted = false;
+        return;
+    }
+    let now = time.elapsed_secs();
+    let asked = *asked_at.get_or_insert(now);
+    *granted |= locked;
+    if !locked && (*granted || now - asked > 0.5) {
+        cursor.grab_mode = CursorGrabMode::None;
+        cursor.visible = true;
+    }
+}
+
+/// Tells the page (web/index.html) the demo is drawing, so it can drop its
+/// loading message.
+#[cfg(target_arch = "wasm32")]
+fn mark_ready(mut frames: Local<u32>) {
+    *frames += 1;
+    if *frames == 5
+        && let Some(canvas) = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.get_element_by_id("bevy"))
+    {
+        canvas.set_attribute("data-ready", "").ok();
+    }
+}
+
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+enum ToolButton {
+    Smoke,
+    He,
+    Clear,
+    Style,
+    Quality,
+}
+
+/// The text of a toolbar button.
+#[derive(Component)]
+struct ToolLabel(ToolButton);
+
+const BUTTON: Color = Color::srgba(0.08, 0.09, 0.11, 0.72);
+const BUTTON_HOVERED: Color = Color::srgba(0.22, 0.25, 0.3, 0.85);
+
+fn setup_toolbar(mut commands: Commands) {
+    let buttons = [
+        (ToolButton::Smoke, "Smoke grenade (G)"),
+        (ToolButton::He, "HE grenade (H)"),
+        (ToolButton::Clear, "Clear (X)"),
+        (ToolButton::Style, "Style (F)"),
+        (ToolButton::Quality, "Quality (1-6)"),
+    ];
+    commands
+        .spawn(Node {
+            position_type: PositionType::Absolute,
+            top: px(10),
+            right: px(12),
+            column_gap: px(6),
+            ..default()
+        })
+        .with_children(|bar| {
+            for (button, label) in buttons {
+                bar.spawn((
+                    button,
+                    Node {
+                        padding: UiRect::axes(px(10), px(6)),
+                        border_radius: BorderRadius::all(px(5)),
+                        ..default()
+                    },
+                    BackgroundColor(BUTTON),
+                    RelativeCursorPosition::default(),
+                ))
+                .with_child((
+                    Text::new(label),
+                    TextFont {
+                        font_size: FontSize::Px(14.0),
+                        ..default()
+                    },
+                    ToolLabel(button),
+                ));
+            }
         });
-        commands.spawn((
-            PointLight {
-                intensity: 0.0,
-                range: 18.0,
-                color: Color::srgb(1.0, 0.6, 0.25),
-                shadow_maps_enabled: false,
-                ..default()
-            },
-            Transform::from_translation(p + Vec3::Y * 0.5),
-            Flash {
-                age: 0.0,
-                life: 0.45,
-                peak: 4_000_000.0,
-            },
-        ));
+}
+
+fn toolbar(
+    mouse: Res<ButtonInput<MouseButton>>,
+    look: Res<MouseLook>,
+    mut buttons: Query<(&ToolButton, &RelativeCursorPosition, &mut BackgroundColor)>,
+    mut actions: ResMut<Actions>,
+) {
+    for (button, cursor, mut color) in &mut buttons {
+        let over = cursor.cursor_over() && !look.captured;
+        let wanted = if over { BUTTON_HOVERED } else { BUTTON };
+        if color.0 != wanted {
+            color.0 = wanted;
+        }
+        if over && mouse.just_pressed(MouseButton::Left) {
+            match button {
+                ToolButton::Smoke => actions.smoke = true,
+                ToolButton::He => actions.explode = true,
+                ToolButton::Clear => actions.clear = true,
+                ToolButton::Style => actions.cycle_style = true,
+                ToolButton::Quality => actions.cycle_quality = true,
+            }
+        }
+    }
+}
+
+/// The style and dial buttons say what's on.
+fn update_toolbar(
+    settings: Res<SmokeSettings>,
+    cameras: Query<&SmokeQuality>,
+    mut labels: Query<(&ToolLabel, &mut Text)>,
+) {
+    let tier = cameras.single().map_or("-", |q| q.tier_name());
+    for (label, mut text) in &mut labels {
+        let wanted = match label.0 {
+            ToolButton::Style => format!("Style: {} (F)", style_name(settings.style)),
+            ToolButton::Quality => format!("Quality: {tier} (1-6)"),
+            _ => continue,
+        };
+        if text.0 != wanted {
+            text.0 = wanted;
+        }
+    }
+}
+
+fn style_name(style: SmokeStyle) -> &'static str {
+    match style {
+        SmokeStyle::Volumetric => "volumetric",
+        SmokeStyle::Faceted => "faceted",
+        SmokeStyle::Crystal => "crystal",
+    }
+}
+
+/// Smokes and grenades: what clearing removes.
+type Clearable = Or<(With<Smoke>, With<Grenade>)>;
+
+/// X (or the toolbar): every smoke and grenade goes.
+fn clear_smokes(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut actions: ResMut<Actions>,
+    things: Query<Entity, Clearable>,
+) {
+    if std::mem::take(&mut actions.clear) | keys.just_pressed(KeyCode::KeyX) {
+        for entity in &things {
+            commands.entity(entity).despawn();
+        }
     }
 }
 
@@ -501,13 +1112,25 @@ fn update_effects(
 fn quality_keys(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
-    mut cameras: Query<(Entity, &mut SmokeCamera, &mut Msaa, Has<TemporalAntiAliasing>)>,
+    mut cameras: Query<(
+        Entity,
+        &mut SmokeCamera,
+        &SmokeQuality,
+        &mut Msaa,
+        Has<TemporalAntiAliasing>,
+    )>,
     mut help: Query<&mut Visibility, With<Help>>,
     mut budget: ResMut<DemoBudget>,
+    mut actions: ResMut<Actions>,
 ) {
-    let Ok((entity, mut smoke, mut msaa, has_taa)) = cameras.single_mut() else {
+    let Ok((entity, mut smoke, status, mut msaa, has_taa)) = cameras.single_mut() else {
         return;
     };
+    // The toolbar steps the dial up, round to the cheapest after the best.
+    if std::mem::take(&mut actions.cycle_quality) {
+        smoke.quality = quality::quality_of_tier((status.tier + 1) % quality::TIERS);
+        smoke.budget_ms = None;
+    }
     let digits = [
         KeyCode::Digit1,
         KeyCode::Digit2,
@@ -561,10 +1184,11 @@ fn quality_keys(
 fn style_key(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
+    mut actions: ResMut<Actions>,
     mut settings: ResMut<SmokeSettings>,
     smokes: Query<(Entity, &Smoke, &Transform)>,
 ) {
-    if !keys.just_pressed(KeyCode::KeyF) {
+    if !(std::mem::take(&mut actions.cycle_style) | keys.just_pressed(KeyCode::KeyF)) {
         return;
     }
     settings.style = match settings.style {
@@ -668,9 +1292,13 @@ fn place(eye: Vec3, at: Vec3, transform: &mut Transform, cam: &mut FlyCam) {
     cam.pitch = pitch;
 }
 
-fn screenshot(commands: &mut Commands, dir: &str, name: &str) {
+fn screenshot(commands: &mut Commands, target: &ShotTarget, dir: &str, name: &str) {
     let path = format!("{dir}/{name}.png");
-    commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
+    let shot = match target {
+        ShotTarget::Window => Screenshot::primary_window(),
+        ShotTarget::Image(image) => Screenshot::image(image.clone()),
+    };
+    commands.spawn(shot).observe(save_to_disk(path));
 }
 
 // ---------------------------------------------------------------------------
@@ -681,17 +1309,18 @@ fn screenshot(commands: &mut Commands, dir: &str, name: &str) {
 struct Capture {
     dir: String,
     step: usize,
-    pending: Actions,
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn capture_script(
     mut commands: Commands,
     time: Res<Time>,
+    target: Res<ShotTarget>,
     mut capture: ResMut<Capture>,
+    mut actions: ResMut<Actions>,
     mut camera: Query<(Entity, &mut Transform, &mut FlyCam, &mut SmokeCamera, &mut Msaa)>,
     mut ui: Query<&mut Visibility, Or<(With<Hud>, With<Help>, With<Node>)>>,
-    mut exit: MessageWriter<AppExit>,
+    mut finish: ResMut<Finish>,
 ) {
     if std::env::var("SMOKE_DEMO_HUD").is_err() {
         for mut v in &mut ui {
@@ -833,11 +1462,11 @@ fn capture_script(
                 let eye = transform.translation;
                 for (dx, dy) in [(-1.5, 0.3), (-0.5, -0.2), (0.4, 0.6), (1.2, 0.0), (0.0, 1.4)] {
                     let aim = Vec3::new(dx, 1.2 + dy, 5.0);
-                    capture.pending.shoot.push(aim - eye);
+                    actions.shoot.push(aim - eye);
                 }
             }
             "explode" => {
-                capture.pending.explode_at = Some(Vec3::new(-0.6, 0.6, 3.6));
+                actions.explode_at = Some(Vec3::new(-0.6, 0.6, 3.6));
             }
             "side" => place(side.0, side.1, &mut transform, &mut cam),
             "corridor" => place(corridor.0, corridor.1, &mut transform, &mut cam),
@@ -880,9 +1509,9 @@ fn capture_script(
                 *msaa = Msaa::Sample4;
             }
             "exit" => {
-                exit.write(AppExit::Success);
+                finish.0 = true;
             }
-            shot => screenshot(&mut commands, &capture.dir, shot),
+            shot => screenshot(&mut commands, &target, &capture.dir, shot),
         }
     }
 }
@@ -966,6 +1595,7 @@ const SWEEP_VIEWS: [(&str, Vec3, Vec3); 3] = [
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn tier_sweep(
     mut commands: Commands,
+    target: Res<ShotTarget>,
     mut sweep: ResMut<Sweep>,
     mut camera: Query<(&mut Transform, &mut FlyCam, &mut SmokeCamera)>,
     mut ui: Query<&mut Visibility, Or<(With<Hud>, With<Help>, With<Node>)>>,
@@ -974,7 +1604,7 @@ fn tier_sweep(
     diagnostics: Res<DiagnosticsStore>,
     world: Res<SmokeWorld>,
     clock: Res<SmokeClock>,
-    mut exit: MessageWriter<AppExit>,
+    mut finish: ResMut<Finish>,
 ) {
     let Ok((mut transform, mut cam, mut smoke_cam)) = camera.single_mut() else {
         return;
@@ -1011,7 +1641,7 @@ fn tier_sweep(
                 place(eye, at, &mut transform, &mut cam);
             }
             if sweep.stage_frame == 6 {
-                screenshot(&mut commands, &sweep.dir, &format!("{name}_empty"));
+                screenshot(&mut commands, &target, &sweep.dir, &format!("{name}_empty"));
             }
             if sweep.stage_frame > 10 {
                 advance(sweep);
@@ -1056,14 +1686,14 @@ fn tier_sweep(
                     quality::TIER_NAMES[tier],
                     passes.join(",")
                 );
-                screenshot(&mut commands, &sweep.dir, &format!("{name}_tier{tier}"));
+                screenshot(&mut commands, &target, &sweep.dir, &format!("{name}_tier{tier}"));
                 sweep.stage_frame = 10_000;
             }
             if sweep.stage_frame == 10_003 {
                 settings.debug_silhouette = true;
             }
             if sweep.stage_frame == 10_006 {
-                screenshot(&mut commands, &sweep.dir, &format!("{name}_tier{tier}_mask"));
+                screenshot(&mut commands, &target, &sweep.dir, &format!("{name}_tier{tier}_mask"));
             }
             if sweep.stage_frame == 10_009 {
                 settings.debug_silhouette = false;
@@ -1081,7 +1711,7 @@ fn tier_sweep(
                 info!("tier sweep:\n{}", sweep.csv);
             }
             if sweep.stage_frame > 8 {
-                exit.write(AppExit::Success);
+                finish.0 = true;
             }
         }
     }
@@ -1113,6 +1743,7 @@ impl BudgetRun {
 #[allow(clippy::too_many_arguments)]
 fn budget_run(
     mut commands: Commands,
+    target: Res<ShotTarget>,
     mut run: ResMut<BudgetRun>,
     mut camera: Query<(&mut Transform, &mut FlyCam, &mut SmokeCamera, &SmokeQuality)>,
     budget: Res<DemoBudget>,
@@ -1120,7 +1751,7 @@ fn budget_run(
     diagnostics: Res<DiagnosticsStore>,
     world: Res<SmokeWorld>,
     clock: Res<SmokeClock>,
-    mut exit: MessageWriter<AppExit>,
+    mut finish: ResMut<Finish>,
 ) {
     let Ok((mut transform, mut cam, mut smoke_cam, status)) = camera.single_mut() else {
         return;
@@ -1129,7 +1760,7 @@ fn budget_run(
     run.frame += 1;
     let f = run.frame;
     let fresh = run.timings.fresh(&diagnostics);
-    let target = Vec3::new(0.0, 1.2, 4.6);
+    let smoke_centre = Vec3::new(0.0, 1.2, 4.6);
     if f == 40 {
         commands.spawn((Smoke::default().with_seed(7), Transform::from_xyz(0.0, 0.0, 4.6)));
         smoke_cam.budget_ms = Some(budget.0);
@@ -1146,7 +1777,7 @@ fn budget_run(
         _ => 24.0,
     };
     let dir = Vec3::new(-0.25, 0.05, -1.0).normalize();
-    place(target + dir * d, target, &mut transform, &mut cam);
+    place(smoke_centre + dir * d, smoke_centre, &mut transform, &mut cam);
     if f > 40 {
         let _ = writeln!(
             run.csv,
@@ -1159,14 +1790,14 @@ fn budget_run(
     }
     for (frame, name) in [(280, "budget_far"), (650, "budget_close"), (1000, "budget_far_again")] {
         if f == frame {
-            screenshot(&mut commands, &run.dir, name);
+            screenshot(&mut commands, &target, &run.dir, name);
         }
     }
     if f == 1010 {
         std::fs::write(format!("{}/budget.csv", run.dir), &run.csv).ok();
     }
     if f > 1015 {
-        exit.write(AppExit::Success);
+        finish.0 = true;
     }
 }
 
@@ -1216,6 +1847,7 @@ fn scene_distance(level: &Level, eye: Vec3, dir: Vec3) -> f32 {
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn agreement_run(
     mut commands: Commands,
+    target: Res<ShotTarget>,
     mut run: ResMut<AgreementRun>,
     mut camera: Query<(&mut Transform, &mut FlyCam, &mut SmokeCamera, &Camera, &GlobalTransform)>,
     mut ui: Query<&mut Visibility, Or<(With<Hud>, With<Help>, With<Node>)>>,
@@ -1224,7 +1856,7 @@ fn agreement_run(
     mut world: ResMut<SmokeWorld>,
     clock: Res<SmokeClock>,
     level: Res<Level>,
-    mut exit: MessageWriter<AppExit>,
+    mut finish: ResMut<Finish>,
 ) {
     let Ok((mut transform, mut cam, mut smoke_cam, camera, global)) = camera.single_mut() else {
         return;
@@ -1264,9 +1896,9 @@ fn agreement_run(
                     place(eye, at, &mut transform, &mut cam);
                     settings.debug_silhouette = false;
                 }
-                12 => screenshot(&mut commands, &run.dir, &format!("{name}_lit")),
+                12 => screenshot(&mut commands, &target, &run.dir, &format!("{name}_lit")),
                 16 => settings.debug_silhouette = true,
-                20 => screenshot(&mut commands, &run.dir, &format!("{name}_gpu_mask")),
+                20 => screenshot(&mut commands, &target, &run.dir, &format!("{name}_gpu_mask")),
                 24 => {
                     settings.debug_silhouette = false;
                     // The core's answers at the tick on screen.
@@ -1338,8 +1970,527 @@ fn agreement_run(
         }
         _ => {
             if run.stage_frame > 4 {
-                exit.write(AppExit::Success);
+                finish.0 = true;
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Video: every frame of short captioned clips, for the README's animations.
+// ---------------------------------------------------------------------------
+
+const VIDEO_FPS: f32 = 30.0;
+
+/// A scripted clip: what happens, where the camera goes, what the caption says.
+struct Clip {
+    name: &'static str,
+    style: SmokeStyle,
+    /// Seconds before recording starts; events at negative times happen in it.
+    pre_roll: f32,
+    /// Seconds recorded.
+    length: f32,
+    camera: CameraPath,
+    events: Vec<(f32, Event)>,
+    /// From, to (seconds), text.
+    captions: Vec<(f32, f32, &'static str)>,
+}
+
+enum CameraPath {
+    /// Eye and look-at point at the given times, eased in between.
+    Keys(Vec<(f32, Vec3, Vec3)>),
+    /// Round `center`, `radius` away and at `height`, from angle `from` to
+    /// `to` (radians; 0 is on the −z side) over the clip.
+    Orbit {
+        center: Vec3,
+        radius: f32,
+        height: f32,
+        from: f32,
+        to: f32,
+    },
+}
+
+impl CameraPath {
+    fn at(&self, t: f32, length: f32) -> (Vec3, Vec3) {
+        let ease = |u: f32| {
+            let u = u.clamp(0.0, 1.0);
+            u * u * (3.0 - 2.0 * u)
+        };
+        match self {
+            CameraPath::Keys(keys) => {
+                let mut pose = (keys[0].1, keys[0].2);
+                for pair in keys.windows(2) {
+                    let ((t0, eye0, at0), (t1, eye1, at1)) = (pair[0], pair[1]);
+                    if t >= t0 {
+                        let s = ease((t - t0) / (t1 - t0));
+                        pose = (eye0.lerp(eye1, s), at0.lerp(at1, s));
+                    }
+                }
+                pose
+            }
+            &CameraPath::Orbit {
+                center,
+                radius,
+                height,
+                from,
+                to,
+            } => {
+                let a = from + (to - from) * ease(t / length);
+                let eye = Vec3::new(center.x + radius * a.sin(), height, center.z - radius * a.cos());
+                (eye, center)
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+enum Event {
+    /// A smoke pops here.
+    Smoke(Smoke, Vec3),
+    /// A grenade thrown from here to land there after so many seconds.
+    Throw(GrenadeKind, Vec3, Vec3, f32),
+    /// Bullets from the camera at these points.
+    Shoot(Vec<Vec3>),
+    /// A bullet from one point towards another.
+    Bullet(Vec3, Vec3),
+    Explode(Vec3),
+    Roof(bool),
+    /// Bots and their sight lines.
+    Bots(bool),
+}
+
+/// The bots' eyes and the head they look at, for the sight line clip.
+const BOT_EYES: [Vec3; 5] = [
+    Vec3::new(12.0, 1.6, -22.5),
+    Vec3::new(12.0, 1.6, -20.25),
+    Vec3::new(12.0, 1.6, -18.0),
+    Vec3::new(12.0, 1.6, -15.75),
+    Vec3::new(12.0, 1.6, -13.5),
+];
+const SIGHT_TARGET: Vec3 = Vec3::new(28.0, 1.6, -18.0);
+
+fn clips() -> Vec<Clip> {
+    use SmokeStyle::{Crystal, Faceted, Volumetric};
+    let doorway = Vec3::new(0.0, 0.0, 4.6);
+    let volley = || {
+        [(-1.5, 0.3), (-0.5, -0.2), (0.4, 0.6), (1.2, 0.0), (0.0, 1.4)]
+            .map(|(dx, dy)| Vec3::new(dx, 1.2 + dy, 5.0))
+            .to_vec()
+    };
+    let look = |name, style, caption| Clip {
+        name,
+        style,
+        pre_roll: 3.4,
+        length: 7.0,
+        camera: CameraPath::Orbit {
+            center: Vec3::new(0.0, 1.0, 4.6),
+            radius: 9.5,
+            height: 1.9,
+            from: -0.5,
+            to: 0.35,
+        },
+        events: vec![
+            (-3.4, Event::Smoke(Smoke::default().with_seed(5), doorway)),
+            (1.6, Event::Shoot(volley())),
+            (3.8, Event::Explode(Vec3::new(-0.6, 0.6, 3.6))),
+        ],
+        captions: vec![(0.0, 7.0, caption)],
+    };
+    vec![
+        Clip {
+            name: "hero",
+            style: Volumetric,
+            pre_roll: 0.6,
+            length: 15.0,
+            camera: CameraPath::Keys(vec![
+                (0.0, Vec3::new(-7.5, 1.6, -6.5), Vec3::new(0.0, 1.2, 4.0)),
+                (7.5, Vec3::new(-3.0, 1.9, -8.5), Vec3::new(0.3, 1.3, 4.0)),
+                (15.0, Vec3::new(2.0, 2.1, -8.0), Vec3::new(0.5, 1.3, 4.0)),
+            ]),
+            events: vec![
+                (
+                    0.2,
+                    Event::Throw(
+                        GrenadeKind::Smoke,
+                        Vec3::new(-6.2, 1.3, -5.8),
+                        Vec3::new(-0.3, GRENADE_RADIUS, 2.6),
+                        1.4,
+                    ),
+                ),
+                (5.0, Event::Shoot(volley())),
+                (
+                    8.0,
+                    Event::Throw(
+                        GrenadeKind::He,
+                        Vec3::new(-3.5, 1.5, -5.0),
+                        Vec3::new(-0.2, GRENADE_RADIUS, 1.9),
+                        1.2,
+                    ),
+                ),
+            ],
+            captions: vec![
+                (
+                    0.0,
+                    4.8,
+                    "A thrown smoke grenade pops where it stops and floods the yard",
+                ),
+                (4.8, 8.0, "Bullets carve tunnels that close again"),
+                (8.0, 12.8, "An HE grenade clears a sphere, which refills from the edges"),
+            ],
+        },
+        look(
+            "volumetric",
+            Volumetric,
+            "Volumetric: soft, lit by the sun, self-shadowed",
+        ),
+        look("faceted", Faceted, "Faceted: hard polyhedra, merged like metaballs"),
+        look("crystal", Crystal, "Crystal: separate polyhedra, drawn as plain meshes"),
+        Clip {
+            name: "ledge",
+            style: Volumetric,
+            pre_roll: 0.5,
+            length: 9.0,
+            camera: CameraPath::Keys(vec![
+                (0.0, Vec3::new(-4.0, 1.3, -8.0), Vec3::new(-13.0, 1.2, -0.5)),
+                (9.0, Vec3::new(-5.0, 1.1, -6.0), Vec3::new(-13.0, 1.1, -0.5)),
+            ]),
+            events: vec![(
+                0.0,
+                Event::Smoke(
+                    Smoke::default().with_grow_time(6.0).with_seed(9),
+                    Vec3::new(-13.8, 1.5, -1.0),
+                ),
+            )],
+            captions: vec![(0.0, 9.0, "It spreads like a fluid, pouring off ledges")],
+        },
+        Clip {
+            name: "rooms",
+            style: Volumetric,
+            pre_roll: 0.5,
+            length: 10.0,
+            camera: CameraPath::Keys(vec![
+                (0.0, Vec3::new(-7.6, 2.0, 13.8), Vec3::new(0.5, 1.0, 6.5)),
+                (10.0, Vec3::new(-6.6, 1.8, 12.6), Vec3::new(0.5, 1.0, 6.5)),
+            ]),
+            events: vec![(
+                0.0,
+                Event::Smoke(
+                    Smoke::default().with_grow_time(4.5).with_volume(140.0).with_seed(4),
+                    Vec3::new(0.0, 0.0, 4.3),
+                ),
+            )],
+            captions: vec![(
+                0.0,
+                10.0,
+                "Indoors through the doorway, darker where the sky can't reach",
+            )],
+        },
+        Clip {
+            name: "cutaway",
+            style: Volumetric,
+            pre_roll: 0.5,
+            length: 10.0,
+            // Steep, so the 4 m front wall doesn't hide the smoke just inside it.
+            camera: CameraPath::Keys(vec![
+                (0.0, Vec3::new(2.5, 32.0, -3.5), Vec3::new(3.5, 0.0, 3.5)),
+                (10.0, Vec3::new(5.0, 31.0, -2.5), Vec3::new(3.5, 0.0, 3.5)),
+            ]),
+            events: vec![
+                (-0.5, Event::Roof(false)),
+                (
+                    0.0,
+                    Event::Smoke(
+                        Smoke::default().with_grow_time(6.0).with_volume(160.0).with_seed(6),
+                        Vec3::new(0.0, 0.0, 4.9),
+                    ),
+                ),
+                (
+                    0.8,
+                    Event::Smoke(
+                        Smoke::default().with_grow_time(6.0).with_seed(8),
+                        Vec3::new(12.6, 0.0, -3.0),
+                    ),
+                ),
+            ],
+            captions: vec![(
+                0.0,
+                10.0,
+                "The fill follows the level, round walls and down corridors (roof hidden)",
+            )],
+        },
+        Clip {
+            name: "sightlines",
+            style: Volumetric,
+            pre_roll: 0.5,
+            length: 12.0,
+            camera: CameraPath::Keys(vec![
+                (0.0, Vec3::new(20.0, 10.5, -33.0), Vec3::new(20.0, 0.6, -18.0)),
+                (12.0, Vec3::new(17.5, 9.5, -32.0), Vec3::new(20.0, 0.6, -18.0)),
+            ]),
+            events: vec![
+                (-0.5, Event::Bots(true)),
+                (
+                    0.8,
+                    Event::Smoke(Smoke::default().with_seed(2), Vec3::new(20.0, 0.0, -18.0)),
+                ),
+                (6.5, Event::Bullet(BOT_EYES[2], SIGHT_TARGET)),
+                (9.0, Event::Bullet(BOT_EYES[3], SIGHT_TARGET)),
+            ],
+            captions: vec![
+                (
+                    0.0,
+                    6.3,
+                    "Gameplay sees the same smoke: blocks_sight() for each bot, red when hidden",
+                ),
+                (6.3, 12.0, "A bullet's tunnel opens a line of sight until it closes"),
+            ],
+        },
+    ]
+}
+
+#[derive(Resource)]
+struct Video {
+    dir: String,
+    clips: Vec<Clip>,
+    clip: usize,
+    /// Frames since the current clip's pre-roll began.
+    frame: u32,
+    /// Frames since the start, while every style's pipelines warm up.
+    warmup: u32,
+    caption_size: f32,
+}
+
+impl Video {
+    fn new(dir: String, size: UVec2) -> Self {
+        let only = std::env::var("SMOKE_DEMO_CLIPS").ok();
+        let clips = clips()
+            .into_iter()
+            .filter(|c| only.as_deref().is_none_or(|o| o.split(',').any(|n| n == c.name)))
+            .collect();
+        Self {
+            dir,
+            clips,
+            clip: 0,
+            frame: 0,
+            warmup: 0,
+            caption_size: size.y as f32 * 0.034,
+        }
+    }
+}
+
+/// The caption box and its text.
+#[derive(Component)]
+struct Caption;
+
+/// The sight line clip's bots and their target.
+#[derive(Component)]
+struct Bot;
+
+/// Whether to draw the bots' sight lines.
+#[derive(Resource, Default)]
+struct Sightlines(bool);
+
+fn setup_bots(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut gizmos: ResMut<GizmoConfigStore>,
+    video: Res<Video>,
+) {
+    let (config, _) = gizmos.config_mut::<DefaultGizmoConfigGroup>();
+    config.line.width = (video.caption_size * 0.15).max(2.0);
+    let body = meshes.add(Capsule3d::new(0.25, 1.1));
+    let blue = materials.add(Color::srgb(0.3, 0.4, 0.62));
+    let orange = materials.add(Color::srgb(0.92, 0.45, 0.12));
+    for (eye, material) in BOT_EYES.iter().map(|e| (*e, &blue)).chain([(SIGHT_TARGET, &orange)]) {
+        commands.spawn((
+            Mesh3d(body.clone()),
+            MeshMaterial3d(material.clone()),
+            Transform::from_translation(eye - Vec3::Y * 0.8),
+            Visibility::Hidden,
+            Bot,
+        ));
+    }
+    let pad = video.caption_size * 0.5;
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(pad * 1.5),
+                bottom: px(pad * 1.5),
+                padding: UiRect::axes(px(pad), px(pad * 0.6)),
+                border_radius: BorderRadius::all(px(pad * 0.5)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.04, 0.05, 0.07, 0.72)),
+            Visibility::Hidden,
+            Caption,
+        ))
+        .with_child((
+            Text::new(""),
+            TextFont {
+                font_size: FontSize::Px(video.caption_size),
+                ..default()
+            },
+            Caption,
+        ));
+}
+
+/// Green while a bot can see the target's head, red once smoke hides it.
+fn draw_sightlines(sightlines: Res<Sightlines>, mut vision: SmokeVision, mut gizmos: Gizmos) {
+    if !sightlines.0 {
+        return;
+    }
+    for eye in BOT_EYES {
+        let color = if vision.blocks_sight(eye, SIGHT_TARGET) {
+            Color::srgb(0.95, 0.18, 0.12)
+        } else {
+            Color::srgb(0.25, 0.9, 0.35)
+        };
+        gizmos.line(eye, SIGHT_TARGET, color);
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn video_script(
+    mut commands: Commands,
+    target: Res<ShotTarget>,
+    mut video: ResMut<Video>,
+    mut actions: ResMut<Actions>,
+    mut settings: ResMut<SmokeSettings>,
+    mut sightlines: ResMut<Sightlines>,
+    mut camera: Query<(&mut Transform, &mut FlyCam, &mut SmokeCamera)>,
+    mut ui: Query<&mut Visibility, (With<Node>, Without<Caption>)>,
+    mut caption: Query<(&mut Visibility, Option<&mut Text>), With<Caption>>,
+    mut props: Query<(&mut Visibility, Has<Roof>), (Or<(With<Roof>, With<Bot>)>, Without<Node>, Without<Caption>)>,
+    things: Query<Entity, Clearable>,
+    (grenades, level, mut bullets, mut effects): (
+        Res<GrenadeAssets>,
+        Res<Level>,
+        MessageWriter<SmokeBullet>,
+        ResMut<Effects>,
+    ),
+    mut finish: ResMut<Finish>,
+) {
+    let Ok((mut transform, mut cam, mut smoke_cam)) = camera.single_mut() else {
+        return;
+    };
+    for mut v in &mut ui {
+        *v = Visibility::Hidden;
+    }
+    let video = video.as_mut();
+    // Warm up: draw every style once, so no pipeline compiles mid-clip.
+    if video.warmup < 90 {
+        video.warmup += 1;
+        if video.warmup == 1 {
+            smoke_cam.quality = 1.0;
+            place(
+                Vec3::new(-2.5, 1.7, -9.0),
+                Vec3::new(0.0, 1.4, 5.0),
+                &mut transform,
+                &mut cam,
+            );
+            for (x, style) in [
+                (-4.0, SmokeStyle::Volumetric),
+                (0.0, SmokeStyle::Faceted),
+                (4.0, SmokeStyle::Crystal),
+            ] {
+                commands.spawn((Smoke::default().with_style(style), Transform::from_xyz(x, 0.0, 2.0)));
+            }
+        } else if video.warmup == 80 {
+            actions.clear = true;
+        }
+        return;
+    }
+    let Some(clip) = video.clips.get(video.clip) else {
+        finish.0 = true;
+        return;
+    };
+    let pre = (clip.pre_roll * VIDEO_FPS).round() as u32;
+    let len = (clip.length * VIDEO_FPS).round() as u32;
+    let f = video.frame;
+    let t = (f as f32 - pre as f32) / VIDEO_FPS;
+    if f == 0 {
+        // A clean slate, before this frame's events: despawned here rather
+        // than through `Actions::clear`, which would also catch the smokes
+        // those events spawn.
+        for entity in &things {
+            commands.entity(entity).despawn();
+        }
+        settings.style = clip.style;
+        sightlines.0 = false;
+        for (mut v, roof) in &mut props {
+            *v = if roof {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            };
+        }
+    }
+    let (eye, at) = clip.camera.at(t.max(0.0), clip.length);
+    place(eye, at, &mut transform, &mut cam);
+
+    for (time, event) in &clip.events {
+        if ((time + clip.pre_roll) * VIDEO_FPS).round() as u32 != f {
+            continue;
+        }
+        match event.clone() {
+            Event::Smoke(smoke, p) => {
+                commands.spawn((smoke, Transform::from_translation(p)));
+            }
+            Event::Throw(kind, from, to, seconds) => {
+                throw(&mut commands, &grenades, kind, from, lob(from, to, seconds));
+            }
+            Event::Shoot(points) => actions.shoot.extend(points.iter().map(|p| *p - eye)),
+            Event::Bullet(from, to) => shoot(&mut commands, &level, &mut bullets, &mut effects, from, to - from),
+            Event::Explode(p) => actions.explode_at = Some(p),
+            Event::Roof(on) => {
+                for (mut v, roof) in &mut props {
+                    if roof {
+                        *v = if on { Visibility::Inherited } else { Visibility::Hidden };
+                    }
+                }
+            }
+            Event::Bots(on) => {
+                sightlines.0 = on;
+                for (mut v, roof) in &mut props {
+                    if !roof {
+                        *v = if on { Visibility::Inherited } else { Visibility::Hidden };
+                    }
+                }
+            }
+        }
+    }
+
+    let text = clip
+        .captions
+        .iter()
+        .find(|(from, to, _)| t >= *from && t < *to)
+        .map_or("", |c| c.2);
+    for (mut visibility, label) in &mut caption {
+        match label {
+            Some(mut label) if label.0 != text => label.0 = text.into(),
+            Some(_) => {}
+            None => {
+                *visibility = if text.is_empty() {
+                    Visibility::Hidden
+                } else {
+                    Visibility::Inherited
+                }
+            }
+        }
+    }
+
+    if f >= pre {
+        let dir = format!("{}/{}", video.dir, clip.name);
+        if f == pre {
+            std::fs::create_dir_all(&dir).ok();
+        }
+        screenshot(&mut commands, &target, &dir, &format!("{:05}", f - pre));
+    }
+    video.frame += 1;
+    if video.frame >= pre + len {
+        video.clip += 1;
+        video.frame = 0;
     }
 }

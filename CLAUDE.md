@@ -50,8 +50,11 @@ cargo run --example presets                 # every preset and look; also minima
 - Scripted captures (screenshots, measurements) are driven by environment
   variables; see the module docs at the top of `examples/demo.rs`,
   `examples/units.rs`, `examples/presets.rs` and `examples/viewmodel.rs`.
-  On a headless Linux machine `xvfb-run -a cargo run --example demo` works
-  with a software Vulkan driver (llvmpipe), slowly.
+  The demo's captures draw offscreen, without a window, so they work on a
+  locked screen and without a display (a window's screenshots come out
+  black while a Mac's screen is locked); its `video` script records the
+  README's clips frame by frame. The other examples' captures need a
+  window: on a headless Linux machine, `xvfb-run -a`.
 - `tools/fairness.py` and `tools/agreement.py` (numpy, Pillow) turn the
   demo's `tiers` and `agreement` captures into reports.
 - For quicker local builds you can add a `.cargo/config.toml` (ignored by
@@ -137,7 +140,7 @@ cargo run --example presets                 # every preset and look; also minima
 | `src/obstacles.rs` | `SmokeObstacle`: voxelises marked meshes into the level |
 | `src/quality.rs` | The dial and the budget controller |
 | `src/shaders/` | WGSL (`.wesl`); `smoke_common.wesl` mirrors the `Gpu*` structs and limits in `render.rs` |
-| `examples/` | `minimal`, `presets`, `demo` (also scripted captures), `viewmodel`, `units` |
+| `examples/` | `minimal`, `presets`, `demo` (also scripted captures and the README's clips), `viewmodel`, `units` |
 | `tools/` | `agreement.py`, `fairness.py`: reports from the demo's captures |
 | `web/` | The page that hosts the browser build of the demo |
 | `docs/design.md` | How it works, measurements; keep it in step with the code |
@@ -178,9 +181,10 @@ Cloud sandboxes may have an older Rust and no access to rustup's servers.
   `rustc -vV` prints, from GitHub) into
   `$(rustc --print sysroot)/lib/rustlib/src/rust/library`, and build with
   `RUSTC_BOOTSTRAP=1 cargo … -Zbuild-std=std,panic_abort --target …`.
-- Without a GPU, `xvfb-run -a` and Mesa's software Vulkan driver (llvmpipe)
-  run the examples and their scripted captures, slowly. Use dev builds:
-  release builds of Bevy can take longer than a tool call allows.
+- Without a GPU, Mesa's software Vulkan driver (llvmpipe) runs the examples
+  and their scripted captures, slowly; the windowed ones also need
+  `xvfb-run -a`. Use dev builds: release builds of Bevy can take longer than
+  a tool call allows.
 - The browser build can't be tried in such a sandbox yet: headless
   Chromium 141 offers WebGPU only through SwiftShader, whose device is lost
   at startup ("A valid external Instance reference no longer exists"), even
