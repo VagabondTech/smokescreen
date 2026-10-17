@@ -1,6 +1,6 @@
-# Builds the demo for browsers with WebGPU (see web/README.md). Run it by hand
-# (Actions → web → Run workflow) to publish it to GitHub Pages; turn Pages on
-# first (Settings → Pages → Source: GitHub Actions).
+# Builds the demo for browsers with WebGPU (see web/README.md), and publishes
+# main to GitHub Pages: https://vagabondtech.github.io/smokescreen/. Turn Pages
+# on first (Settings → Pages → Source: GitHub Actions), or the deploy fails.
 name: web
 
 on:
@@ -19,16 +19,16 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    # A newer push to the same branch or pull request makes this build moot.
+    concurrency:
+      group: web-build-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -48,13 +48,19 @@ jobs:
           wasm-bindgen --no-typescript --remove-name-section --target web --out-dir web/pkg --out-name demo
           target/wasm32-unknown-unknown/web/examples/demo.wasm
       - uses: actions/upload-pages-artifact@v4
+        if: github.ref == 'refs/heads/main'
         with:
           path: web
 
+  # Only main is published. Deploys queue rather than cancel each other, so
+  # none is stopped half-way.
   deploy:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     permissions:
       pages: write
       id-token: write

@@ -30,10 +30,10 @@ out when chasing a panic.
 
 ## GitHub Pages
 
-`.github/workflows/web.yml` builds the same thing on every push, and
-publishes it to GitHub Pages when run by hand (Actions → web → Run
-workflow), at <https://vagabondtech.github.io/smokescreen/>. Turn Pages on
-first: Settings → Pages → Source: GitHub Actions.
+`.github/workflows/web.yml` builds the same thing for every pull request
+that touches the demo, and publishes `main` to GitHub Pages, at
+<https://vagabondtech.github.io/smokescreen/>. Turn Pages on first
+(Settings → Pages → Source: GitHub Actions), or the deploy fails.
 
 The browser build is single-threaded, so fills, lighting and voxelising run
 on the main thread between frames; the first smokes can hitch a little.
