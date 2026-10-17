@@ -1,24 +1,26 @@
 # Smokescreen
 
-[![CI](https://github.com/VagabondTech/smokescreen/actions/workflows/ci.yml/badge.svg)](https://github.com/VagabondTech/smokescreen/actions/workflows/ci.yml)
+[![CI](https://github.com/VagabondTech/smokescreen/actions/workflows/ci.yml/badge.svg)](https://github.com/VagabondTech/smokescreen/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/bevy_smokescreen.svg)](https://crates.io/crates/bevy_smokescreen) [![docs.rs](https://docs.rs/bevy_smokescreen/badge.svg)](https://docs.rs/bevy_smokescreen)
 
-Smoke that fills rooms, pours through doorways, stops at walls and blocks sight. **`bevy_smokescreen`** brings it to **Bevy 0.20**: smoke grenades, smoke walls, poison gas, fog banks and steam, in three looks, with gameplay queries that agree with what players see. Underneath is **`smokescreen`**, an engine-free simulation that gives bit-identical answers on every machine, so it works for multiplayer games and dedicated servers too.
+Smoke that fills rooms, pours through doorways, stops at walls and blocks sight. **`bevy_smokescreen`** brings it to **Bevy 0.20**: smoke grenades, smoke walls, poison gas, fog banks and steam, in three looks, with gameplay queries that agree with what players see. Underneath is **`smokescreen`**, an engine-free simulation that gives bit-identical answers on x86-64 and ARM (checked in CI), so it works for multiplayer games and dedicated servers too.
 
-![A smoke grenade is thrown into a yard, bounces and pops; the cloud floods the yard, bullets carve tunnels through it, and an HE grenade clears a sphere that refills from the edges](docs/media/hero.webp)
+**Status:** early (0.1), for Bevy 0.20 only. Tested on an Apple M4 (macOS) and a software rasteriser, and used in a game on an AMD RX 6700 XT (Windows 10); NVIDIA and Intel GPUs haven't been tried yet.
 
-*The demo (`examples/demo.rs`) on an Apple M4. **[Play it in your browser](https://vagabondtech.github.io/smokescreen/)** (it needs WebGPU: a current Chrome or Edge), or natively with `cargo run --release --example demo`.*
+![A smoke grenade is thrown into a yard, bounces and pops; the cloud floods the yard, bullets carve tunnels through it, and an HE grenade clears a sphere that refills from the edges](https://raw.githubusercontent.com/VagabondTech/smokescreen/main/docs/media/hero.webp)
+
+*The demo (`examples/demo.rs`) on an Apple M4. **[Play it in your browser](https://vagabondtech.github.io/smokescreen/)** (it needs WebGPU: a current Chrome, Edge or Safari 26; it has no touch controls yet), or natively with `cargo run --release --example demo`.*
 
 **Volumetric**: soft, light-scattering smoke, lit by the sun and self-shadowed.
 
-![Volumetric smoke seen from a slow orbit: bullet tunnels, then an HE grenade's cleared sphere](docs/media/volumetric.webp)
+![Volumetric smoke seen from a slow orbit: bullet tunnels, then an HE grenade's cleared sphere](https://raw.githubusercontent.com/VagabondTech/smokescreen/main/docs/media/volumetric.webp)
 
 **Faceted**: hard-edged, tumbling polyhedral puffs merged like metaballs.
 
-![Faceted smoke: hexagonal bullet tunnels, then an HE grenade's cavity](docs/media/faceted.webp)
+![Faceted smoke: hexagonal bullet tunnels, then an HE grenade's cavity](https://raw.githubusercontent.com/VagabondTech/smokescreen/main/docs/media/faceted.webp)
 
 **Crystal**: tumbling polyhedra that don't merge, drawn as ordinary meshes. The cheapest look to draw and to check, and what players see is exactly what blocks.
 
-![Crystal smoke: bullets and an HE grenade knock the crystals out of the way](docs/media/crystal.webp)
+![Crystal smoke: bullets and an HE grenade knock the crystals out of the way](https://raw.githubusercontent.com/VagabondTech/smokescreen/main/docs/media/crystal.webp)
 
 *Recorded frame by frame by the demo (`SMOKE_DEMO_SCRIPT=video`); `tools/encode_clips.sh` turns the frames into these animations.*
 
@@ -31,13 +33,13 @@ Smoke that fills rooms, pours through doorways, stops at walls and blocks sight.
 - **Gameplay sees the same smoke.** `blocks_sight(a, b)` and `occlusion(a, b)` for AI, server-side visibility and audio; `density_at(p)` for gas damage.
 - **Level setup without collision code:** mark your level's meshes with `SmokeObstacle`.
 - **One performance dial per camera**, or a GPU millisecond budget that turns it for you. No dial step changes a cloud's shape, so a cheaper setting never shows through smoke a better one hides.
-- **Multiplayer-ready core** (`smokescreen`): engine-free, runs on your ticks and in your units, bit-identical on x86-64 and ARM, with a per-tick CPU budget.
+- **Deterministic core for multiplayer** (`smokescreen`): engine-free, runs on your ticks and in your units, bit-identical on x86-64 and ARM, with a per-tick CPU budget.
 
 | Round walls and down corridors | Indoors, through a doorway | Off a ledge |
 |---|---|---|
-| ![From above, with the roof hidden: one cloud fills a corridor, another pours into a building](docs/media/cutaway.webp) | ![From inside a room: smoke pours in through the doorway, darker indoors](docs/media/rooms.webp) | ![A cloud on a raised platform pours down its edge to the ground](docs/media/ledge.webp) |
+| ![From above, with the roof hidden: one cloud fills a corridor, another pours into a building](https://raw.githubusercontent.com/VagabondTech/smokescreen/main/docs/media/cutaway.webp) | ![From inside a room: smoke pours in through the doorway, darker indoors](https://raw.githubusercontent.com/VagabondTech/smokescreen/main/docs/media/rooms.webp) | ![A cloud on a raised platform pours down its edge to the ground](https://raw.githubusercontent.com/VagabondTech/smokescreen/main/docs/media/ledge.webp) |
 
-![Presets](docs/presets.jpg)
+![Presets](https://raw.githubusercontent.com/VagabondTech/smokescreen/main/docs/presets.jpg)
 
 *`examples/presets.rs`: three grenades (volumetric, faceted, crystal), a smoke wall behind a low wall, gas kept in a room, a fog bank and a steam vent. The walls and floor are plain meshes marked `SmokeObstacle`.*
 
@@ -46,10 +48,14 @@ Smoke that fills rooms, pours through doorways, stops at walls and blocks sight.
 ```toml
 [dependencies]
 bevy = "0.20"
-bevy_smokescreen = { git = "https://github.com/VagabondTech/smokescreen" } # not on crates.io yet
+bevy_smokescreen = "0.1"
 ```
 
-Bevy 0.20 needs Rust 1.97.1. Smoke needs compute shaders: native (Vulkan, Metal, DX12) or WebGPU, not WebGL2.
+| `bevy_smokescreen` | Bevy | Minimum Rust |
+|---|---|---|
+| 0.1 | 0.20 | 1.97.1 |
+
+Smoke needs compute shaders: native (Vulkan, Metal, DX12) or WebGPU, not WebGL2.
 
 ```rust,no_run
 use bevy::prelude::*;
@@ -111,7 +117,7 @@ Pick a default with `SmokeSettings::style`, or per smoke with `Smoke::with_style
 ¹ Fully grown clouds, on an Apple M4; the 2-core 2.1 GHz VM this was built on takes about 3× as long. Halfway through a cloud's fade, when many lines are only partly blocked, they cost up to 4× as much; see [Performance](#performance). `cargo bench -p smokescreen` measures it on your CPU.
 ² At the best step of the dial, at 1920×1080 on an Apple M4. Close up, the cheapest step costs a sixth (volumetric) to a quarter (faceted) of that. See [Performance](#performance).
 
-How each look works, and why faceted costs more than volumetric despite its hard edges, is in [docs/design.md](docs/design.md).
+How each look works, and why faceted costs more than volumetric despite its hard edges, is in [docs/design.md](https://github.com/VagabondTech/smokescreen/blob/main/docs/design.md).
 
 ## Presets and sources
 
@@ -150,7 +156,7 @@ All of them take the builders `with_style`, `with_volume`, `with_lifetime`, `wit
 - `transmittance(a, b)`: fraction of light that gets through, for audio and other soft effects.
 - `density_at(p)`: how dense the smoke is at a point, for gas damage.
 
-![Five bots look at a target across open ground; their sight lines turn red as a smoke grows between them, and a bullet fired along one line briefly turns it green again](docs/media/sightlines.webp)
+![Five bots look at a target across open ground; their sight lines turn red as a smoke grows between them, and a bullet fired along one line briefly turns it green again](https://raw.githubusercontent.com/VagabondTech/smokescreen/main/docs/media/sightlines.webp)
 
 *Each line is green while `blocks_sight` says the bot can see the target's head. Holes count: a bullet's tunnel opens a line of sight until it closes.*
 
@@ -158,7 +164,7 @@ The rule is the same function on every machine and in every look's terms: for vo
 
 ## Multiplayer and servers
 
-The simulation is its own crate, `smokescreen`, with no Bevy in it. A dedicated server links just that:
+The simulation is its own crate, `smokescreen` (`smokescreen = "0.1"`, Rust 1.88 or newer), with no Bevy in it. A dedicated server links just that:
 
 ```rust,ignore
 use smokescreen::*;
@@ -178,13 +184,13 @@ let hidden = view.blocks_sight(eye, enemy_head);
 
 - **Your ticks.** A cloud at tick *t* is a pure function of its `CloudSpec` (origin, pop tick, seed, style, source, volume, timeline), the level, the `Tuning` and *t*; holes are events with ticks. Events can arrive late or in any order, late joiners compute the same clouds from the same events, and a `view` of a recent tick answers as it would have then (lag compensation).
 - **Your units.** `Units { up, metres_per_unit }`: Y-up metres, Z-up inches, or anything else.
-- **Bit-identical everywhere.** Only exact float arithmetic in a fixed order, `libm` for transcendental functions, no fused multiply-add, no SIMD types, no hash-map iteration; `smokescreen/clippy.toml` enforces it. `smokescreen/tests/determinism.rs` hashes 10,000 query results across all styles, and a level voxelised from meshes with clouds filled in it; the hashes match on x86-64 (debug, release, `-C target-cpu=native`) and aarch64. CI runs them on macOS, Linux and Windows.
+- **Bit-identical on x86-64 and ARM.** Only exact float arithmetic in a fixed order, `libm` for transcendental functions, no fused multiply-add, no SIMD types, no hash-map iteration; `smokescreen/clippy.toml` enforces it. `smokescreen/tests/determinism.rs` hashes 10,000 query results across all styles, and a level voxelised from meshes with clouds filled in it; the hashes match on x86-64 (debug, release, `-C target-cpu=native`) and aarch64. CI runs them on macOS, Linux and Windows.
 - **A per-tick CPU budget.** A cloud's fill runs a little each tick (`Config::fill_budget`, about 0.2 ms); it speeds up only if the cloud is about to start growing. The finished cloud is the same however the work is split.
 - **Networking.** Send the `CloudSpec` of each pop (a couple of dozen bytes) and each bullet and explosion with its tick; every machine computes the same clouds, as long as they share the `Tuning` and the same level answers. For mesh-based levels, voxelise once and ship the voxels (`VoxelObstacles::to_bytes`). A level voxelised at the tuning's voxel size (`VoxelObstacles::from_level`) gives exactly the clouds its source level would, faster: cloud grids lie on the same world lattice. Or run the fill on the server with `fill_cloud` and send the result for `Smokes::insert`.
 
 In Bevy, `SmokeWorld` is the `Smokes` the plugin runs, and `SmokeClock` sets the tick (by default from Bevy's virtual time; set `auto: false` to drive it from your netcode, with `draw_tick` for an interpolation delay). `SmokePlugin { config }` takes the same `Config`, so a Bevy client in Z-up inches works too:
 
-![Units](docs/units.jpg)
+![Units](https://raw.githubusercontent.com/VagabondTech/smokescreen/main/docs/units.jpg)
 
 *`examples/units.rs`: the same scene built in Y-up metres (left) and in Z-up inches (right), volumetric above and faceted below, gives the same smoke.*
 
@@ -222,7 +228,7 @@ Halfway through the fade the clouds are thin, so many lines never reach the thre
 | mid-range (14 m) | 1.3 → 0.48 ms | 7.3 → 3.4 ms | 0.13 ms |
 | close, covering two-thirds of the screen | 5.9 → 1.0 ms | 31 → 7.9 ms | 0.2 ms |
 
-These come from the demo's tier sweep (`SMOKE_DEMO_SCRIPT=tiers`): frame time with the smoke minus the same view without, every frame waiting for the GPU, the median of five runs. (Metal's GPU timestamp queries lose the device, so the sweep times whole frames on macOS; with GPU timestamps, on Vulkan or DX12, it and the demo's HUD report each pass's GPU time.) The dial is per camera (`SmokeCamera::quality`, or `SmokeCamera::budget(ms)` to fit a GPU time budget); [docs/design.md](docs/design.md#the-performance-dial) has every step. Crystal smoke is ordinary geometry, with no dial.
+These come from the demo's tier sweep (`SMOKE_DEMO_SCRIPT=tiers`): frame time with the smoke minus the same view without, every frame waiting for the GPU, the median of five runs. (Metal's GPU timestamp queries lose the device, so the sweep times whole frames on macOS; with GPU timestamps, on Vulkan or DX12, it and the demo's HUD report each pass's GPU time.) The dial is per camera (`SmokeCamera::quality`, or `SmokeCamera::budget(ms)` to fit a GPU time budget); [docs/design.md](https://github.com/VagabondTech/smokescreen/blob/main/docs/design.md#the-performance-dial) has every step. Crystal smoke is ordinary geometry, with no dial.
 
 ## Tuning
 
@@ -277,7 +283,7 @@ These come from the demo's tier sweep (`SMOKE_DEMO_SCRIPT=tiers`): frame time wi
 |---|---|
 | `minimal` | The smallest integration: a grenade, bullets, explosions, a bot's line of sight |
 | `presets` | Every preset and look, in a yard made of `SmokeObstacle` meshes |
-| `demo` | A playable test range, also [in your browser](https://vagabondtech.github.io/smokescreen/) ([how it's built](web/README.md)): throw smoke and HE grenades (G, H), shoot, switch looks (F), turn the dial (1–6), budget mode (B); GPU timings in the HUD; scripted captures, and the clips in this README |
+| `demo` | A playable test range, also [in your browser](https://vagabondtech.github.io/smokescreen/) ([how it's built](https://github.com/VagabondTech/smokescreen/blob/main/web/README.md)): throw smoke and HE grenades (G, H), shoot, switch looks (F), turn the dial (1–6), budget mode (B); GPU timings in the HUD; scripted captures, and the clips in this README |
 | `viewmodel` | A first-person weapon that stays visible inside smoke (a second camera) |
 | `units` | The same scene in Y-up metres and Z-up inches |
 | `smokescreen/examples/server` | A headless server loop in Z-up inches with 250 bots |
@@ -291,15 +297,15 @@ Run one with `cargo run --release --example presets`.
 - Orthographic cameras aren't supported.
 - Clouds don't drift with wind, and doors closing on a smoke don't re-shape it.
 - Smoke fills right up to walls and floors at least a voxel thick (0.3 m by default), wherever they sit on the voxel grid. Against thinner walls it stops at the middle of the first voxel they reach into, so up to about half a voxel can stay clear in front of them, and as much can show past them; picture and rule agree. Level meshes (`SmokeObstacle`) need triangles facing outwards for this, as Bevy's shapes do; against a mesh facing inwards, or a wall made of a single vertical sheet, smoke stops up to half a voxel short. A single sheet facing up (a `Plane3d`, say) counts as ground, solid underneath, so up to a voxel of smoke can show beneath a raised floor made of one: use a box for floors with open air below.
-- Faceted and crystal smoke can still stop up to about a voxel short of walls (see [ROADMAP.md](ROADMAP.md)).
+- Faceted and crystal smoke can still stop up to about a voxel short of walls (see [ROADMAP.md](https://github.com/VagabondTech/smokescreen/blob/main/ROADMAP.md)).
 - With the default 0.8 m rule, faceted and crystal pictures draw thin edges solid where the rule sees through.
-- Tested on a software rasteriser and on an Apple M4 (Metal); NVIDIA, AMD and Intel GPUs haven't been tried yet. The browser demo runs in Chrome on the M4; Safari, Firefox and Edge haven't been tried yet.
+- Tested on an Apple M4 (Metal) and a software rasteriser, and used in a game on an AMD RX 6700 XT (Windows 10); NVIDIA and Intel GPUs haven't been tried yet. The browser demo runs in Chrome on the M4, and draws in Safari 26 on an iPhone 15 Pro but has no touch controls yet; Firefox, Edge and Android haven't been tried yet.
 - Safari 26 can't compile Bevy 0.20's `StandardMaterial` shader for meshes with UVs: it keeps textures in `let`s, which needs WGSL's `texture_and_sampler_let`, and the screen stays black. That's Bevy's shader, not the smoke's; crystal puffs have no UVs, and neither do the demo's meshes. Textured meshes need a fix in Bevy.
 
-[ROADMAP.md](ROADMAP.md) has the plan. [CONTRIBUTING.md](CONTRIBUTING.md) explains how to build, test and keep the core deterministic.
+[ROADMAP.md](https://github.com/VagabondTech/smokescreen/blob/main/ROADMAP.md) has the plan. [CONTRIBUTING.md](https://github.com/VagabondTech/smokescreen/blob/main/CONTRIBUTING.md) explains how to build, test and keep the core deterministic.
 
 ## License
 
-Dual-licensed under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE), at your option.
+Dual-licensed under [MIT](https://github.com/VagabondTech/smokescreen/blob/main/LICENSE-MIT) or [Apache 2.0](https://github.com/VagabondTech/smokescreen/blob/main/LICENSE-APACHE), at your option.
 
 Smokescreen is made by [VagabondTech](https://github.com/VagabondTech).
