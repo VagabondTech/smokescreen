@@ -43,6 +43,20 @@ versions) are marked **results**.
   fetches of empty steps inside the march, per brick as the rule does,
   was tried and measured as a cost on the M4: a lane that skips a fetch
   saves nothing while the rest of its SIMD group fetches.)
+- Queries look only at the clouds a segment could touch: the per-tick
+  snapshot keeps a coarse grid over the clouds' boxes with a bit per cloud
+  in each cell, and a query reads the cells its segment's box covers, in
+  index order, instead of testing every cloud's box. Volumetric clouds also
+  carry a per-voxel flag saying whether a solid voxel is among the eight a
+  sample reads, so the common case, away from walls, tests one byte instead
+  of eight. Results are unchanged: the determinism hashes are the same and
+  the thorough differential test passes. On an Apple M4, 250 volumetric
+  checks through 4 of 32 clouds take 0.07 ms instead of 0.10 while the
+  clouds grow and once they are grown, and 0.22 ms instead of 0.30 halfway
+  through the fade (medians of 11 alternated runs); checks that cross
+  clouds' boxes but no cloud take half the time; crystal checks a little
+  less than before. The per-tick snapshot costs about 0.3 µs more for 32
+  clouds.
 - The demo starts with the quality dial at medium (it was high), in every
   look; its scripted captures still start at high.
 - The browser demo has touch controls: drag to look, a thumb stick in the
