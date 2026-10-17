@@ -2,7 +2,8 @@
 
 What is done, what a first public release still needs, and ideas after
 that. Measured numbers come from a 2-core 2.1 GHz cloud VM with a software
-rasteriser unless said otherwise.
+rasteriser unless said otherwise; an Apple M4 is 2.5 to 5 times faster on
+the CPU (the README has both).
 
 ## Done
 
@@ -33,24 +34,28 @@ rasteriser unless said otherwise.
 - **Repository:** README and design notes for a general audience, the
   README's examples compiled as doc tests, CI for the core (three OSes,
   determinism hash, MSRV), the plugin (Linux) and the browser build.
+- **The README's media** are recorded by the demo (`SMOKE_DEMO_SCRIPT=video`)
+  on a real GPU and encoded with `tools/encode_clips.sh`, so they can be
+  remade whenever the look changes.
 
 ## Before a first public release
 
-1. **Real GPUs.** Run the demo on NVIDIA, AMD, Intel and Apple GPUs: the
-   showcase, the `tiers` sweep (`tools/fairness.py`), `budget` mode and the
-   `agreement` run (`tools/agreement.py`), with MSAA and TAA on and off, HDR
-   and LDR cameras. Record absolute GPU timings in the README. Nothing has
-   run on a real GPU yet.
-2. **Web demo.** `.github/workflows/web.yml` builds the demo for WebGPU on
-   every push and publishes it to GitHub Pages when run by hand (turn Pages
-   on first; see `web/README.md`). It builds for wasm32 and loads, but it
-   has never rendered in a browser: in the sandbox it was built in, the
-   only browser was Chromium 141 with SwiftShader's WebGPU, which loses
-   its device at startup even for a plain Bevy 0.20 scene without smoke
-   (and for a few lines of plain JavaScript). Check it in Chrome, Edge,
-   Safari and Firefox on real GPUs. Likely work: WebGPU's stricter limits
-   and validation, the single-threaded fills and voxelising, browser key
-   and mouse handling.
+1. **Real GPUs.** Done on an Apple M4 (Metal): the showcase, the README's
+   clips, the `tiers` sweep with `tools/fairness.py`, and the `agreement`
+   run with `tools/agreement.py`; the README has the GPU costs. Metal's GPU
+   timestamp queries lose the device ("Cannot allocate sample buffer"), so
+   on macOS the sweep times whole frames that wait for the GPU, and
+   `budget` mode has no measurements to steer by. Still to do: NVIDIA, AMD
+   and Intel GPUs (with timestamps), `budget` mode on a real GPU, and MSAA
+   and TAA on and off with HDR and LDR cameras.
+2. **Web demo.** It runs in Chrome 155 (WebGPU) on an Apple M4: every
+   style, grenades, shooting and the dial, with no changes for WebGPU's
+   limits. `.github/workflows/web.yml` builds it on every push and
+   publishes it to GitHub Pages when run by hand, but the repository is
+   private, so Pages needs a public repository or a paid plan. Still to do:
+   Safari, Firefox and Edge, other GPUs, and the click-to-look pointer lock
+   with someone at the keyboard (tried only on a locked screen, where
+   Chrome refuses it); touch controls for phones.
 3. **crates.io.** Make README image and file links absolute (crates.io
    doesn't resolve relative ones), set `homepage` in `Cargo.toml` once the
    browser demo runs, publish `smokescreen` first, then `bevy_smokescreen`,
@@ -58,7 +63,8 @@ rasteriser unless said otherwise.
    table of supported Bevy versions to the README.
 4. **CI for the Bevy crate on macOS and Windows** (only Linux checks it
    today), and the picture-against-rule check in CI on a software
-   rasteriser (Mesa lavapipe runs on GitHub's Linux runners).
+   rasteriser (Mesa lavapipe runs on GitHub's Linux runners). The demo's
+   captures draw offscreen now, so that needs no virtual display.
 
 ## Rules and looks
 

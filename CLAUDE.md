@@ -141,6 +141,7 @@ cargo run --example presets                 # every preset and look; also minima
 | `tools/` | `agreement.py`, `fairness.py`: reports from the demo's captures |
 | `web/` | The page that hosts the browser build of the demo |
 | `docs/design.md` | How it works, measurements; keep it in step with the code |
+| `docs/media/` | The README's clips: recorded by the demo's `video` script, encoded by `tools/encode_clips.sh`; remake them when the look changes |
 | `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `ROADMAP.md` | For users and contributors; record user-visible changes in the changelog |
 
 ## Gotchas
