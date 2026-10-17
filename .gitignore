@@ -1,0 +1,11 @@
+# Build output
+/target/
+# The browser build's bindings (see web/README.md)
+/web/pkg/
+# Local build settings (see CONTRIBUTING.md)
+/.cargo/config.toml
+# Python tools
+__pycache__/
+.venv/
+# macOS
+.DS_Store

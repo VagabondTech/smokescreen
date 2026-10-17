@@ -130,9 +130,9 @@ fn append_triangles(mesh: &Mesh, transform: &bevy::math::Affine3A, out: &mut Vec
                 Indices::U16(v) => v.iter().map(|&i| i as usize).collect(),
                 Indices::U32(v) => v.iter().map(|&i| i as usize).collect(),
             };
-            for t in idx.chunks_exact(3) {
-                if t.iter().all(|&i| i < positions.len()) {
-                    push(t[0], t[1], t[2]);
+            for &[a, b, c] in idx.as_chunks::<3>().0 {
+                if [a, b, c].iter().all(|&i| i < positions.len()) {
+                    push(a, b, c);
                 }
             }
         }

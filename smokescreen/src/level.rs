@@ -642,12 +642,8 @@ impl VoxelObstacles {
             if !present {
                 return Some(Vec::new());
             }
-            let out = bytes
-                .get(at..at + words * 8)?
-                .chunks_exact(8)
-                .map(|c| c.try_into().map(u64::from_le_bytes))
-                .collect::<Result<Vec<_>, _>>()
-                .ok()?;
+            let (chunks, _) = bytes.get(at..at + words * 8)?.as_chunks::<8>();
+            let out = chunks.iter().map(|c| u64::from_le_bytes(*c)).collect();
             at += words * 8;
             Some(out)
         };
