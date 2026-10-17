@@ -160,6 +160,19 @@ cargo run --example presets                 # every preset and look; also minima
 - Atlases per slot: source (distance, sun, sky, region), open mask (R8),
   density and lit (baked on the GPU). The march and the lighting bake bind
   the open mask.
+- The volumetric march places its samples from where a ray enters a
+  smoke's *whole* box (`t = t_begin + jitter·base_step`, then
+  `dt = base_step·(1 + t·growth)`, or `max(dt, voxel_size)` through empty
+  space). Anything that moves a sample, even starting rays at the smaller
+  box a smoke occupies, makes the noise crawl as that box changes tick by
+  tick. A change to where rays start or step must leave the sample sequence
+  exactly as it is; the check is the demo's tier sweep grown and at
+  `SMOKE_DEMO_SWEEP_AGE=0.8` and `16.5`, its frames compared pixel by pixel
+  before and after. Dropping fetches that would read nothing is worth
+  little on its own: a lane that skips one saves nothing while the rest of
+  its SIMD group fetches (per-brick skipping inside the loop measured as a
+  cost on the M4). What pays is what has no per-step cost: the ray clip to
+  the occupied box, and the bake's early-out.
 - Crystal puffs are plugin-owned entities (`CrystalPuff`). `sync_crystals`
   runs after transform propagation, so it writes `GlobalTransform` itself.
 - `SmokeObstacle` voxelisation runs on a background task; until the first

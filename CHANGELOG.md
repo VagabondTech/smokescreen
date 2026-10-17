@@ -30,6 +30,19 @@ versions) are marked **results**.
   still start where they did, so the picture is the same, pixel for pixel.
   The demo's tier sweep can freeze the smoke at a chosen age
   (`SMOKE_DEMO_SWEEP_AGE`) to measure that.
+- A ray through one volumetric smoke returns at once if it misses the box
+  the smoke occupies at the drawn tick, ends at that box's far side, and
+  steps over the run-up to it without fetching; and the lighting bake clears
+  the voxels around that box instead of lighting them. The samples stay
+  exactly where they were, so the picture is the same, pixel for pixel
+  (checked at every dial step, three distances and three ages). On an
+  Apple M4 at 1920×1080, volumetric smoke halfway through its fade costs
+  12 % less close up at the best dial step (4.16 → 3.65 ms) and 10–15 %
+  less at the middle steps, and about a tenth less at mid-range and far
+  away; grown and blooming smoke costs the same. (Skipping the texture
+  fetches of empty steps inside the march, per brick as the rule does,
+  was tried and measured as a cost on the M4: a lane that skips a fetch
+  saves nothing while the rest of its SIMD group fetches.)
 - The demo starts with the quality dial at medium (it was high), in every
   look; its scripted captures still start at high.
 - The browser demo has touch controls: drag to look, a thumb stick in the
