@@ -127,8 +127,14 @@ pub(crate) struct FrameSlot {
     pub grid_min: Vec3,
     pub voxel_size: f32,
     /// Bounds of everything the smoke draws (puff bins for faceted smokes).
+    /// Rays march from where they enter this box, so their samples stay put
+    /// while the smoke grows and fades.
     pub bounds_min: Vec3,
     pub bounds_max: Vec3,
+    /// What the smoke occupies at this tick (see `drawn_bounds`): only the
+    /// screen rectangle this covers is dispatched.
+    pub drawn_min: Vec3,
+    pub drawn_max: Vec3,
     pub growth: f32,
     pub dissolve: f32,
     pub density: f32,
@@ -1294,7 +1300,7 @@ fn prepare_smoke_views(
                         .slots
                         .iter()
                         .filter(|s| s.facet.is_some() == faceted)
-                        .map(|s| (s.bounds_min, s.bounds_max)),
+                        .map(|s| (s.drawn_min, s.drawn_max)),
                 )
             };
             let vol_rect = rect_of(false);

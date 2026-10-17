@@ -952,6 +952,24 @@ fn light_clouds(
     lighting.0.retain(|id, _| world.cloud(*id).is_some());
 }
 
+/// The box whose screen rectangle a smoke is dispatched over this tick: what
+/// it occupies now ([`smokescreen::CloudState::active`]), much smaller than
+/// its whole box while it blooms and fades. Volumetric: outside it every
+/// voxel a sample reads is past the growth front or eaten by the fade, so a
+/// ray that misses it gathers nothing. Faceted: `active` covers each puff's
+/// bounding sphere plus the blend radius, but blended puffs can in principle
+/// reach up to (corner ratio − 1) × blend further, so it is padded by that.
+/// Rays still march from where they enter the whole box, so the picture is
+/// the same as without it. Nothing occupied: an empty box.
+fn drawn_bounds(state: &smokescreen::CloudState, facets: Option<&smokescreen::Facets>) -> (Vec3, Vec3) {
+    let (lo, hi) = state.bounds;
+    let Some((alo, ahi)) = state.active else {
+        return (lo, lo);
+    };
+    let pad = facets.map_or(0.0, |f| (Polyhedron::Cube.corner_ratio() - 1.0) * f.settings.blend);
+    ((alo - pad).max(lo), (ahi + pad).min(hi))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_frame(
     mut frame: ResMut<SmokeFrame>,
@@ -1122,12 +1140,15 @@ fn build_frame(
         // Offset into the tiling noise so neighbouring smokes don't billow in sync.
         let noise_seed = (smokescreen::math::hash_u32(cloud.spec.seed) >> 8) as f32 / (1u32 << 24) as f32 * 64.0;
         let (tint, density) = looks.get(&id).copied().unwrap_or((Vec3::ONE, 1.0));
+        let (drawn_min, drawn_max) = drawn_bounds(state, cloud.shape.facets.as_ref());
         frame.slots.push(FrameSlot {
             layer,
             grid_min: cloud.shape.grid.min,
             voxel_size: cloud.shape.grid.voxel_size,
             bounds_min: state.bounds.0,
             bounds_max: state.bounds.1,
+            drawn_min,
+            drawn_max,
             growth: state.growth,
             dissolve: state.dissolve,
             density,

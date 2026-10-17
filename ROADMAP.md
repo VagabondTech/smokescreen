@@ -122,6 +122,14 @@ The README's tables come from `cargo bench -p smokescreen`. The weak spots:
   position and size: 0.1 to 0.3 ms for 32 clouds) is computed for every
   cloud, whether or not a check comes near it. Compute a cloud's puffs on
   the first check that touches it.
+- **Shorter volumetric rays while clouds bloom and fade.** Only the screen
+  area a cloud occupies is dispatched, but each ray still starts where it
+  enters the cloud's whole box, so its samples stay put as the occupied box
+  changes. Skipping straight to the occupied box with the march's own
+  empty-space steps (the same arithmetic, without the texture fetches)
+  would leave every sample where it is and save the close-up case too:
+  about 16 % of a close-up volumetric frame mid-fade on an Apple M4. It
+  needs the occupied box in the GPU slot struct.
 - Volumetric checks: integrate whole bricks of constant density at once;
   consider whole-voxel steps as a tuning option.
 - Faceted fills cost about 3× volumetric ones (0.33 s of ticks at the

@@ -474,7 +474,7 @@ pub(crate) fn update_smoke_quality(
                     .slots
                     .iter()
                     .filter(|s| s.facet.is_some() == faceted)
-                    .map(|s| (s.bounds_min, s.bounds_max));
+                    .map(|s| (s.drawn_min, s.drawn_max));
                 if let Some((lo, hi)) = screen_rect(clip_from_internal, eye, near, size, boxes) {
                     let area = (hi - lo).x * (hi - lo).y;
                     coverage[style] = area / (size.x * size.y);
