@@ -198,17 +198,17 @@ In Bevy, `SmokeWorld` is the `Smokes` the plugin runs, and `SmokeClock` sets the
 
 ## Performance
 
-Measured on an Apple M4 (Mac mini), and in brackets on the cloud VM this was built on (2 cores, 2.1 GHz; its numbers vary by ±30 % between runs), at 128 ticks a second. Run `cargo bench -p smokescreen` on your own hardware.
+Measured on an Apple M4 (Mac mini) at 128 ticks a second. Run `cargo bench -p smokescreen` on your own hardware. A 2-core 2.1 GHz cloud VM takes 2.5 to 3.5 times as long (the figures in brackets, for 0.1.0; its numbers vary by ±30 % between runs). On x86-64, building with `-C target-cpu=x86-64-v2` or newer turns rounding into single instructions instead of library calls; results are the same on every CPU target.
 
-**Fills**, per cloud, in a voxelised level:
+**Fills**, per cloud, in a voxelised level (the median of 11 runs):
 
 | | Volumetric | Faceted | Crystal |
 |---|---|---|---|
-| All at once | 0.69 ms (1.7 ms) | 1.9 ms (5.5 ms) | 1.85 ms (5.3 ms) |
-| Default timeline (the cloud starts 0.1 s after the pop): per tick for 13 ticks | median 0.07 ms, worst 0.09 ms (0.16, 0.35) | median 0.15 ms, worst 0.24 ms (0.46, 0.64) | median 0.15 ms, worst 0.24 ms (0.46, 0.86) |
-| A start of 0.4 s or later: per tick | as above | median 0.04 ms, worst 0.09 ms (0.13, 0.41), for 40–45 ticks | median 0.04 ms, worst 0.08 ms (0.13, 0.32), for 40–45 ticks |
+| All at once | 0.55 ms | 1.6 ms | 1.5 ms |
+| Default timeline (the cloud starts 0.1 s after the pop): per tick, until it starts | median 0.06 ms, worst 0.08 ms, for 14 ticks | median 0.14 ms, worst 0.21 ms, for 13 ticks | median 0.14 ms, worst 0.20 ms, for 13 ticks |
+| A start of 0.4 s or later: per tick | as above | median 0.04 ms, worst 0.09 ms, for 37–42 ticks | median 0.04 ms, worst 0.08 ms, for 37–41 ticks |
 
-The fill budget (`Config::fill_budget`, about 0.2 ms a tick on the VM, under 0.1 ms on the M4: it counts work, not time) grows only when a fill would otherwise not be ready by the time its cloud starts. Faceted and crystal fills need about 0.35 s of ticks, so give those clouds a later `Timeline::start` to keep to the budget.
+The fill budget (`Config::fill_budget`, about 0.2 ms a tick on the VM, under 0.1 ms on the M4: it counts work, not time) grows only when a fill would otherwise not be ready by the time its cloud starts. Faceted and crystal fills need about 0.33 s of ticks, so give those clouds a later `Timeline::start` to keep to the budget.
 
 **Sight checks**: 250 a tick, each through 4 of 32 clouds, in milliseconds:
 
