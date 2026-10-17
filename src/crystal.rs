@@ -100,11 +100,11 @@ pub fn polyhedron_mesh(shape: Polyhedron) -> Mesh {
             normals.extend([n.to_array(); 3]);
         }
     }
-    let uvs = vec![[0.0, 0.0]; positions.len()];
+    // No UVs: nothing samples a texture, and Safari 26 can't compile Bevy
+    // 0.20's PBR shader for meshes with them.
     Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
 }
 
 fn crystal_material(tint: Vec3, albedo: Vec3, debug: bool) -> StandardMaterial {

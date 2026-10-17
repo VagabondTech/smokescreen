@@ -294,6 +294,7 @@ Run one with `cargo run --release --example presets`.
 - Faceted and crystal smoke can still stop up to about a voxel short of walls (see [ROADMAP.md](ROADMAP.md)).
 - With the default 0.8 m rule, faceted and crystal pictures draw thin edges solid where the rule sees through.
 - Tested on a software rasteriser and on an Apple M4 (Metal); NVIDIA, AMD and Intel GPUs haven't been tried yet. The browser demo runs in Chrome on the M4; Safari, Firefox and Edge haven't been tried yet.
+- Safari 26 can't compile Bevy 0.20's `StandardMaterial` shader for meshes with UVs: it keeps textures in `let`s, which needs WGSL's `texture_and_sampler_let`, and the screen stays black. That's Bevy's shader, not the smoke's; crystal puffs have no UVs, and neither do the demo's meshes. Textured meshes need a fix in Bevy.
 
 [ROADMAP.md](ROADMAP.md) has the plan. [CONTRIBUTING.md](CONTRIBUTING.md) explains how to build, test and keep the core deterministic.
 
