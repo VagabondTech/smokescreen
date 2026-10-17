@@ -1,16 +1,15 @@
 # The demo in a browser
 
 The demo is meant for browsers with WebGPU (Chrome and Edge on Windows,
-macOS and ChromeOS; Safari and Firefox where WebGPU is turned on). WebGL2
-can't run it: the smoke needs compute shaders.
+macOS and ChromeOS; Safari 26 on macOS and iOS; Firefox where WebGPU is
+turned on). WebGL2 can't run it: the smoke needs compute shaders.
 
 **Status:** it runs in Chrome 155 on an Apple M4 (macOS 26): all three
-styles, throwing, shooting and the dial. It draws in Safari 26 on an
-iPhone 15 Pro, now that the demo's meshes have no UVs: Safari can't
-compile Bevy 0.20's PBR shader for meshes with UVs (see the README's
-limitations). Its touch controls have so far been tried only with
-simulated touches in Chrome. Firefox, Edge, Android and other GPUs are
-still to be tried (see `ROADMAP.md`).
+styles, throwing, shooting and the dial. It runs in Safari 26 on an
+iPhone 15 Pro too, touch controls included, now that the demo's meshes
+have no UVs: Safari can't compile Bevy 0.20's PBR shader for meshes with
+UVs (see the README's limitations). Firefox, Edge, Android, Safari on a
+Mac and other GPUs are still to be tried (see `ROADMAP.md`).
 
 ## Playing
 
