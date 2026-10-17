@@ -5,9 +5,13 @@
 //    their cost is per voxel instead of per pixel per raymarch step.
 // 2. bake_lighting: per voxel, march towards the sun through the smoke and
 //    upwards for ambient occlusion, and store the results. The raymarch then
-//    reads lighting with a single texture fetch per step.
+//    reads lighting with a single texture fetch per step. A volumetric
+//    smoke's voxels that no sample holding smoke can read (those around the
+//    box it occupies at this tick) are cleared instead.
 
-import package::shaders::smoke_common::{SmokeGlobals, SmokeSlot, shape_density, distance_to_segment, sstep};
+import package::shaders::smoke_common::{
+    SmokeGlobals, SmokeSlot, STYLE_FACETED, shape_density, distance_to_segment, sstep
+};
 
 @group(0) @binding(0) var<uniform> globals: SmokeGlobals;
 @group(0) @binding(1) var source_atlas: texture_3d<f32>;
@@ -110,8 +114,21 @@ fn bake_lighting(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let slot = b.slot;
-    let here = textureLoad(density_in, b.texel, 0);
     let voxel_size = slot.grid_min.w;
+    // A voxel of a volumetric smoke whose 26 neighbours all lie outside the
+    // box the smoke occupies at this tick: none of them holds smoke, so no
+    // sample that reads this voxel does either, and its lighting is never
+    // seen. Its density is 0, and the march reads that from here: store it
+    // and skip the marches. (Faceted smokes read lighting at their puffs'
+    // surfaces, which can reach past the box, and are baked in full.)
+    if (slot.holes.z != STYLE_FACETED) {
+        let centre = slot.grid_min.xyz + (vec3<f32>(b.local) + 0.5) * voxel_size;
+        if (any(centre + voxel_size < slot.drawn_min.xyz) || any(centre - voxel_size > slot.drawn_max.xyz)) {
+            textureStore(lit_out, b.texel, vec4<f32>(0.0));
+            return;
+        }
+    }
+    let here = textureLoad(density_in, b.texel, 0);
     let start = vec3<f32>(b.local) + 0.5;
     let sigma = globals.medium.w * slot.params.y;
 

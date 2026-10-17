@@ -6,7 +6,16 @@
 // the tiling detail noise. Rays stop at scene depth, at full opacity, or at
 // the step budget, and skip empty voxels. The common case of a ray crossing
 // a single smoke takes a fast path with that smoke's data hoisted out of the
-// loop.
+// loop; it also ends the ray at the far side of the box the smoke occupies
+// at this tick and steps over the run-up to that box without fetching.
+//
+// Samples are placed from where a ray enters a smoke's whole box, so they
+// stay put while the smoke grows and fades. Anything that skips must leave
+// every sample exactly where it is: skipping only ever drops a fetch that
+// would have read nothing. (Dropping fetches is worth little on its own: a
+// lane that skips one saves nothing while the rest of its SIMD group
+// fetches, so per-brick skipping inside the loop measured as a cost on an
+// Apple M4. The clip below has no per-step cost.)
 
 import package::shaders::smoke_common::{
     SmokeGlobals, SmokeSlot, SmokeView, MAX_SLOTS, PI, STYLE_FACETED,
@@ -210,12 +219,28 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (count == 1u) {
         // Fast path: one smoke along this ray.
         let slot = globals.slots[ids[0]];
+        // Where the ray crosses the box the smoke occupies at this tick. A
+        // sample outside it reads nothing: samples before it are stepped
+        // over exactly as empty samples are, without the fetch, and the
+        // march ends at its far side. While the smoke is grown the box is
+        // its whole box and nothing changes; while it blooms and fades the
+        // box is much smaller.
+        let drawn = ray_aabb(ro, inv_rd, slot.drawn_min.xyz, slot.drawn_max.xyz);
+        let drawn_end = min(drawn.y, t_end);
+        if (drawn_end <= drawn.x) {
+            textureStore(smoke_out, px, vec4<f32>(0.0, 0.0, 0.0, 1.0));
+            return;
+        }
         loop {
-            if (t >= t_end || transmittance < 0.01 || steps >= max_steps) {
+            if (t >= drawn_end || transmittance < 0.01 || steps >= max_steps) {
                 break;
             }
             steps += 1u;
             let dt = base_step * (1.0 + t * growth);
+            if (t < drawn.x) {
+                t += max(dt, voxel_size);
+                continue;
+            }
             let smp = sample_smoke(slot, ro + rd * t, rd, phase_sun, multi_weight);
             if (smp.coarse <= 0.002) {
                 // No smoke within a voxel of here: skip ahead.

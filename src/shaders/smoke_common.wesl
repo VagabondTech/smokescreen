@@ -27,6 +27,11 @@ struct SmokeSlot {
     facet_ofs: vec4<u32>,
     // x: smooth-union radius (m), y: region clip padding (m)
     facet_shape: vec4<f32>,
+    // xyz: what the smoke occupies at this tick (`CloudState::active`): a
+    // sample outside reads nothing, and a voxel whose centre is outside
+    // holds nothing
+    drawn_min: vec4<f32>,
+    drawn_max: vec4<f32>,
 }
 
 const STYLE_FACETED: u32 = 1u;
