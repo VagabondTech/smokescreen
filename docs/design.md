@@ -18,7 +18,7 @@ The core trick is to put each piece of work where it runs the fewest times:
                once per grenade                     only while changing           every frame, per camera
 ┌──────────────────────────┐   ┌────────────┐   ┌─────────────────────────┐   ┌──────────────────────────┐   ┌──────────────────────────┐
 │ 1. Flood fill (core)     │ → │ 2. Light + │ → │ 3. Bake density + light │ → │ 4. Raymarch, low res,    │ → │ 5. Depth-aware upsample  │
-│ ~0.2 ms a tick, 15 ticks │   │ upload     │   │ per voxel, compute      │   │ covered screen rect only │   │ + hardware blend         │
+│ ~0.2 ms a tick, 14 ticks │   │ upload     │   │ per voxel, compute      │   │ covered screen rect only │   │ + hardware blend         │
 └──────────────────────────┘   └────────────┘   └─────────────────────────┘   └──────────────────────────┘   └──────────────────────────┘
 ```
 

@@ -12,8 +12,8 @@ pub struct Timeline {
     /// [`crate::Config::fill_budget`]), with a bigger budget if that is what
     /// it takes to finish in time. 0 fills at the pop.
     ///
-    /// With the default budget a volumetric fill takes about 15 ticks and a
-    /// faceted one about 45 (at 128 Hz: 0.12 s and 0.35 s). If your grenade
+    /// With the default budget a volumetric fill takes about 13 ticks and a
+    /// faceted one about 43 (at 128 Hz: 0.1 s and 0.33 s). If your grenade
     /// has a fuse, pop it when it comes to rest and set this to the fuse
     /// time: the fill then runs while the grenade sits there.
     pub start: f32,

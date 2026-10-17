@@ -13,9 +13,9 @@ use glam::{IVec3, UVec3, Vec3};
 
 use crate::{
     facets::{BinBuilder, Bins, FacetSettings, POP_OVERSHOOT, Polyhedron, Puff, ShapeMix},
-    grid::{BRICK, Chamfer, EMPTY_VOXEL, FILLED_MAX, Grid, REGION_RANGE, brick_layer, encode_region, occupancy},
+    grid::{BRICK, Chamfer, EMPTY_VOXEL, FILLED_MAX, Grid, REGION_RANGE, encode_region, occupancy},
     level::Level,
-    math::{hash01, sin_cos, value_noise},
+    math::{hash01, sin_cos, value_noise_corners, value_noise_lerp},
     units::Units,
 };
 
@@ -110,6 +110,8 @@ pub(crate) mod cost {
     pub const SEED_VOXEL: i64 = 1;
     /// Per puff, per pass of binning.
     pub const BIN_PUFF: i64 = 80;
+    /// Per filled voxel folded into the bricks (up to eight of them).
+    pub const BRICK_VOXEL: i64 = 8;
     /// Padding: per filled voxel next to a wall, per clipped voxel found
     /// (asking about its neighbours), per clipped voxel checked for whether
     /// it is safe to pad, and per clipped voxel per pass of deciding.
@@ -134,12 +136,15 @@ pub(crate) mod cost {
     /// measured with the default tuning: level queries per voxel the spread
     /// settles, and the work after the spread per ten grid voxels.
     pub const QUERIES_PER_SETTLE: i64 = 2;
-    pub const REST_PER_10_VOXELS: i64 = 17;
-    pub const FACETED_REST_PER_10_VOXELS: i64 = 136;
+    pub const REST_PER_10_VOXELS: i64 = 14;
+    pub const FACETED_REST_PER_10_VOXELS: i64 = 120;
 }
 
 /// Puffs binned per unit of work.
 const BIN_CHUNK: usize = 16;
+
+/// Filled voxels folded into the bricks per unit of work.
+const BRICK_CHUNK: usize = 512;
 
 /// Voxels per piece of work in the padding's later stages.
 const PAD_CHUNK: usize = 256;
@@ -398,6 +403,11 @@ pub(crate) struct FillJob {
     order: Vec<u32>,
     target: usize,
     lengths: [f32; 26],
+    /// Index delta of each of the 26 steps (wrapping, for negative ones).
+    deltas: [usize; 26],
+    /// Corner hashes of the lump noise's last few lattice cells.
+    noise_cache: [(IVec3, [f32; 8]); 4],
+    noise_next: usize,
     /// Units spent so far, for [`Self::remaining`].
     spent: i64,
     /// Every voxel the level was asked about lies in this box.
@@ -450,7 +460,8 @@ pub(crate) struct FillJob {
     binner: Option<BinBuilder>,
     bins: Option<Bins>,
     bricks_done: Vec<u8>,
-    brick_z: u32,
+    /// How many filled (then padded) voxels the bricks stage has folded in.
+    brick_cursor: usize,
     front: Vec<Option<(Vec3, Vec3)>>,
 }
 
@@ -492,6 +503,12 @@ impl FillJob {
             order: Vec::new(),
             target,
             lengths: [0.0; 26],
+            deltas: std::array::from_fn(|k| {
+                let o = steps()[k].offset;
+                (o.x as isize + (dims.x as isize) * (o.y as isize + (dims.y as isize) * o.z as isize)) as usize
+            }),
+            noise_cache: [(IVec3::MAX, [0.0; 8]); 4],
+            noise_next: 0,
             spent: 0,
             asked: (IVec3::MAX, IVec3::MIN),
             walled: Vec::new(),
@@ -524,7 +541,7 @@ impl FillJob {
             binner: None,
             bins: None,
             bricks_done: Vec::new(),
-            brick_z: 0,
+            brick_cursor: 0,
             front: Vec::new(),
             spec,
         }
@@ -593,9 +610,32 @@ impl FillJob {
         }
     }
 
+    /// Are all 26 neighbours of `c` inside the interior (never in the
+    /// outermost layer)? Then they can be reached by index deltas alone.
+    #[inline]
+    fn neighbours_interior(&self, c: IVec3) -> bool {
+        c.cmpge(IVec3::splat(2)).all() && c.cmple(self.dims - 3).all()
+    }
+
     /// Which of the 26 neighbours of `c` are solid, one bit per step.
     fn solid_mask<L: Level + ?Sized>(&mut self, c: IVec3, probe: &Probe<L>, work: &mut Work) -> u32 {
         let mut mask = 0;
+        if self.neighbours_interior(c) {
+            // The common case: every neighbour is a known byte at a fixed
+            // offset, no bounds checks; only unknown ones ask the level.
+            let i = self.index(c);
+            let deltas = self.deltas;
+            for (k, (s, &delta)) in steps().iter().zip(&deltas).enumerate() {
+                let ni = i.wrapping_add(delta);
+                let solid = match self.occupancy[ni] {
+                    occupancy::OPEN => false,
+                    occupancy::SOLID | occupancy::PADDED => true,
+                    _ => self.solid(c + s.offset, probe, work),
+                };
+                mask |= (solid as u32) << k;
+            }
+            return mask;
+        }
         for (k, s) in steps().iter().enumerate() {
             if self.solid(c + s.offset, probe, work) {
                 mask |= 1 << k;
@@ -751,6 +791,26 @@ impl FillJob {
         ))
     }
 
+    /// [`value_noise`] of the lumps, with the eight corner hashes of the last
+    /// few lattice cells kept: neighbouring voxels nearly always share a
+    /// cell, and the lerps are the same whoever computed the corners.
+    #[inline]
+    fn lump_noise(&mut self, p: Vec3) -> f32 {
+        let i = p.floor();
+        let cell = i.as_ivec3();
+        let f = p - i;
+        let slot = match self.noise_cache.iter().position(|(c, _)| *c == cell) {
+            Some(slot) => slot,
+            None => {
+                let slot = self.noise_next;
+                self.noise_next = (slot + 1) % self.noise_cache.len();
+                self.noise_cache[slot] = (cell, value_noise_corners(cell, self.spec.seed));
+                slot
+            }
+        };
+        value_noise_lerp(&self.noise_cache[slot].1, f)
+    }
+
     fn spread<L: Level + ?Sized>(&mut self, probe: &Probe<L>, work: &mut Work) {
         let all = steps();
         while !work.exhausted() {
@@ -778,17 +838,20 @@ impl FillJob {
             }
             let d = self.dist[i];
             for (k, s) in all.iter().enumerate() {
-                if solid & (1 << k) != 0 || solid & s.guard_bits != 0 {
+                // Solid neighbours are never relaxed, and the outermost
+                // layer is always solid, so a step taken stays inside the
+                // grid: the index delta is exact.
+                if solid & (1 << k | s.guard_bits) != 0 {
                     continue;
                 }
-                let n = c + s.offset;
-                let ni = self.index(n);
+                let ni = i.wrapping_add(self.deltas[k]);
                 if self.settled[ni] {
                     continue;
                 }
                 // The lumpiness noise is evaluated once per voxel, not per edge.
                 if self.lumps[ni] == 0.0 {
-                    let noise = value_noise(self.center(n) / self.spec.lump_size.max(0.01), self.spec.seed);
+                    let n = c + s.offset;
+                    let noise = self.lump_noise(self.center(n) / self.spec.lump_size.max(0.01));
                     self.lumps[ni] = (1.0 + self.spec.lumpiness * (2.0 * noise - 1.0)).max(0.05);
                 }
                 let nd = d + self.lengths[k] * self.lumps[ni];
@@ -857,7 +920,7 @@ impl FillJob {
         self.bounds = (lo.max(self.min), hi.min(grid_max));
         let bd = (self.dims.as_uvec3() + BRICK - 1) / BRICK;
         self.bricks_done = vec![EMPTY_VOXEL; (bd.x * bd.y * bd.z) as usize];
-        self.brick_z = 0;
+        self.brick_cursor = 0;
         self.stage = Stage::Bricks;
     }
 
@@ -1150,23 +1213,50 @@ impl FillJob {
         }
         self.pad = Vec::new();
         self.clipped = Vec::new();
+        // `padded` is still read by the bricks stage.
         self.close();
-        self.padded = Vec::new();
     }
 
-    /// Bricks for empty-space skipping in queries, a layer at a time.
+    /// Bricks for empty-space skipping in queries. A brick's value is the
+    /// smallest distance in it and one voxel around it, and only filled (and
+    /// padded) voxels are below [`EMPTY_VOXEL`], so each of those lowers the
+    /// up to eight bricks whose padded box holds it, a chunk of them at a
+    /// time; the same minimum as scanning every brick's box.
     fn bricks(&mut self, work: &mut Work) {
-        let dims = self.dims.as_uvec3();
-        let bd = (dims + BRICK - 1) / BRICK;
-        while !work.exhausted() && self.brick_z < bd.z {
-            // Each brick reads (BRICK + 2)³ voxels.
-            if !work.begin((bd.x * bd.y * (BRICK + 2).pow(3)) as i64 / 64 * cost::SCAN_PER_64 * 2) {
+        let bd = (self.dims.as_uvec3() + BRICK - 1) / BRICK;
+        let total = self.order.len() + self.padded.len();
+        while !work.exhausted() && self.brick_cursor < total {
+            let start = self.brick_cursor;
+            let end = (start + BRICK_CHUNK).min(total);
+            if !work.begin((end - start) as i64 * cost::BRICK_VOXEL) {
                 return;
             }
-            brick_layer(&self.distance, dims, self.brick_z, &mut self.bricks_done);
-            self.brick_z += 1;
+            let b = BRICK as i32;
+            for k in start..end {
+                let i = if k < self.order.len() {
+                    self.order[k]
+                } else {
+                    self.padded[k - self.order.len()]
+                } as usize;
+                let d = self.distance[i];
+                let c = self.decode(i);
+                // Bricks whose padded box [b·BRICK − 1, b·BRICK + BRICK]
+                // holds c: ceil((c − BRICK) / BRICK) ..= floor((c + 1) / BRICK).
+                let lo = (c - 1).div_euclid(IVec3::splat(b)).max(IVec3::ZERO);
+                let hi = (c + 1).div_euclid(IVec3::splat(b)).min(bd.as_ivec3() - 1);
+                for z in lo.z..=hi.z {
+                    for y in lo.y..=hi.y {
+                        for x in lo.x..=hi.x {
+                            let m = &mut self.bricks_done[(x as u32 + bd.x * (y as u32 + bd.y * z as u32)) as usize];
+                            *m = (*m).min(d);
+                        }
+                    }
+                }
+            }
+            self.brick_cursor = end;
         }
-        if self.brick_z >= bd.z {
+        if self.brick_cursor >= total {
+            self.padded = Vec::new();
             self.stage = if self.spec.facets.is_some() {
                 Stage::HaloStart
             } else {
@@ -1217,11 +1307,10 @@ impl FillJob {
             self.halo_box = (self.halo_box.0.min(c), self.halo_box.1.max(c));
             let solid = self.solid_mask(c, probe, work);
             for (k, s) in all.iter().enumerate() {
-                if solid & (1 << k) != 0 || solid & s.guard_bits != 0 {
+                if solid & (1 << k | s.guard_bits) != 0 {
                     continue;
                 }
-                let n = c + s.offset;
-                let ni = self.index(n);
+                let ni = i.wrapping_add(self.deltas[k]);
                 let nd = self.halo_dist[i] + s.length;
                 if nd <= self.halo_limit && (!self.reached[ni] || nd < self.halo_dist[ni]) {
                     self.halo_dist[ni] = nd;
@@ -1238,8 +1327,13 @@ impl FillJob {
         }
         self.region = vec![255; self.count];
         // The region is the fill plus the halo, all of it settled by the halo.
+        // A voxel outside the box is at least `margin + 1` voxels from it, so
+        // its centre is at least `(margin + 0.5) × v ≥ REGION_RANGE` outside
+        // and it encodes as 255, which the region already holds. At least
+        // one voxel, so every voxel of the region has its nearest outside
+        // voxel in the box.
         let (rmin, rmax) = self.halo_box;
-        let margin = (REGION_RANGE / self.v).ceil() as i32 + 1;
+        let margin = (REGION_RANGE / self.v - 0.5).ceil().max(1.0) as i32;
         let lo = (rmin - margin).max(IVec3::ZERO);
         let hi = (rmax + margin).min(self.dims - 1);
         self.region_box = (lo, hi);

@@ -5,6 +5,13 @@ versions) are marked **results**.
 
 ## Unreleased
 
+- Fills are 16–20 % faster (on an Apple M4) and finish in fewer ticks at the
+  default budget: 14 instead of 15 for a volumetric cloud, 37–42 instead of
+  40–45 for a faceted one. Neighbours are found by index offsets, the lump
+  noise keeps the corners of its last few cells, bricks are built from the
+  filled voxels alone, and the region's distance transforms cover a smaller
+  box. From the first performance review. Results are unchanged: the
+  determinism hashes are the same.
 - `blocks_sight` through faceted clouds under `FacetRule::Exact` is about
   17× faster while clouds grow and once they are grown (0.71 → 0.04 ms for
   250 checks through 4 of 32 clouds on an Apple M4), and 2× faster halfway
