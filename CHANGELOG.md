@@ -22,6 +22,16 @@ versions) are marked **results**.
   Results are unchanged: the determinism hashes are the same, and a new
   test checks `blocks_sight` against `occlusion` on random lines through
   clouds of every style with holes.
+- Each smoke is dispatched only over the screen area of what it occupies at
+  the tick being drawn (`CloudState::active`), not of its whole box, which
+  is much bigger while a cloud blooms and fades. On an Apple M4 at
+  1920×1080, volumetric smoke halfway through its fade costs about a fifth
+  less at mid-range (0.93 instead of 1.18 ms at the best dial step). Rays
+  still start where they did, so the picture is the same, pixel for pixel.
+  The demo's tier sweep can freeze the smoke at a chosen age
+  (`SMOKE_DEMO_SWEEP_AGE`) to measure that.
+- The demo starts with the quality dial at medium (it was high), in every
+  look; its scripted captures still start at high.
 - The browser demo has touch controls: drag to look, a thumb stick in the
   lower left to move, tap to shoot where you tap, and tap the buttons. On a
   small screen the buttons and the HUD say less, and once a finger touches

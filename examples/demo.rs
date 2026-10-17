@@ -11,7 +11,7 @@
 //! - H: throw an HE grenade (it clears a sphere that refills)
 //! - X: clear all smokes
 //! - F: cycle the style: volumetric, faceted, crystal (re-throws current smokes)
-//! - 1-6: the quality dial, cheapest to best
+//! - 1-6: the quality dial, cheapest to best; it starts at 4, medium
 //! - B: budget mode (the dial turns itself to fit a GPU budget), [ and ]: budget -/+
 //! - M: toggle MSAA, T: toggle TAA (enables temporal jitter on the smoke)
 //! - F1: toggle the help
@@ -41,7 +41,9 @@
 //!   `showcase` (default; `SMOKE_DEMO_HUD=1` keeps the HUD in the shots),
 //!   `tiers` (cost of every dial step, plus silhouette masks for the fairness
 //!   check; without GPU timings it times whole frames, each waiting for the
-//!   GPU, against the same view without smoke), `budget` (budget mode while
+//!   GPU, against the same view without smoke; `SMOKE_DEMO_SWEEP_AGE=<seconds>`
+//!   freezes the smoke that long after its pop instead of once it is grown,
+//!   to measure a cloud that is blooming or fading), `budget` (budget mode while
 //!   a smoke comes close and goes away again), `agreement` (faceted or
 //!   crystal silhouette masks next to the CPU query for every pixel; compare
 //!   with `tools/agreement.py`) or `video` (every frame of short captioned
@@ -468,11 +470,18 @@ fn setup_camera_and_hud(mut commands: Commands, target: Res<ShotTarget>) {
     } else {
         Msaa::Sample4
     };
+    // The dial starts at medium; scripted captures (the README's clips and
+    // the measurements) at high, as they always have.
+    let smoke_camera = if setting("capture").is_some() && !cfg!(target_arch = "wasm32") {
+        SmokeCamera::HIGH
+    } else {
+        SmokeCamera::with_quality(quality::quality_of_tier(3))
+    };
     let mut camera = commands.spawn((
         Camera3d::default(),
         Exposure::default(),
         msaa,
-        SmokeCamera::HIGH,
+        smoke_camera,
         look,
         FlyCam { yaw, pitch },
         // The HUD's camera, window or not.
@@ -1403,6 +1412,14 @@ fn grown(world: &SmokeWorld, clock: &SmokeClock, seconds: f32) -> bool {
     })
 }
 
+/// Did any smoke pop more than `seconds` ago?
+fn older_than(world: &SmokeWorld, clock: &SmokeClock, seconds: f32) -> bool {
+    let rate = world.config().tick_rate;
+    world
+        .clouds()
+        .any(|c| c.age(clock.tick, rate).is_some_and(|a| a > seconds))
+}
+
 fn place(eye: Vec3, at: Vec3, transform: &mut Transform, cam: &mut FlyCam) {
     *transform = Transform::from_translation(eye).looking_at(at, Vec3::Y);
     let (yaw, pitch, _) = transform.rotation.to_euler(EulerRot::YXZ);
@@ -1902,6 +1919,9 @@ struct Sweep {
     empty_ms: [f64; SWEEP_VIEWS.len()],
     timings: Timings,
     csv: String,
+    /// Seconds after the pop at which to freeze the smoke
+    /// (`SMOKE_DEMO_SWEEP_AGE`); by default once it is grown.
+    freeze_age: Option<f32>,
 }
 
 impl Sweep {
@@ -1919,6 +1939,7 @@ impl Sweep {
                 "view,tier,tier_name,gpu_ms,samples,{},frame_ms,empty_frame_ms\n",
                 CAMERA_PASSES.join(",")
             ),
+            freeze_age: setting("sweep_age").and_then(|s| s.parse().ok()),
         }
     }
 }
@@ -2020,8 +2041,13 @@ fn tier_sweep(
             if sweep.stage_frame == 1 {
                 commands.spawn((Smoke::default().with_seed(7), Transform::from_xyz(0.0, 0.0, 4.6)));
             }
-            // Freeze the smoke once fully grown, so every tier sees the same shape.
-            if grown(&world, &clock, 3.5) {
+            // Freeze the smoke once fully grown (or at the age asked for), so
+            // every tier sees the same shape.
+            let frozen = match sweep.freeze_age {
+                Some(age) => older_than(&world, &clock, age),
+                None => grown(&world, &clock, 3.5),
+            };
+            if frozen {
                 virtual_time.pause();
                 advance(sweep);
             }

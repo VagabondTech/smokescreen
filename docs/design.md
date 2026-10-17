@@ -69,8 +69,8 @@ A smoke that is fully grown and untouched (no holes, not fading, sun not moving)
 
 ## 4. Raymarch (GPU compute, reduced resolution)
 
-- **Screen rectangle:** the CPU projects each smoke's bounds and dispatches only the rectangle they cover. Distant smokes cost a few thousand rays, and no smoke on screen means no passes at all.
-- **Ray setup:** each ray intersects every smoke's AABB (ALU only) and marches front to back only inside those intervals, clamped to the scene depth. Gaps between smokes are jumped over.
+- **Screen rectangle:** the CPU projects the box each smoke occupies at this tick (`CloudState::active`: the voxels before the growth front and not yet eaten by the fade, padded by the voxel a sample reads around it) and dispatches only the rectangle they cover. While a smoke blooms and fades that box is much smaller than the smoke's whole grid. Distant smokes cost a few thousand rays, and no smoke on screen means no passes at all.
+- **Ray setup:** each ray intersects every smoke's whole box (ALU only) and marches front to back only inside those intervals, clamped to the scene depth. Gaps between smokes are jumped over. Samples start where a ray enters the whole box, not the smaller one the rectangle comes from, so they stay put while a smoke grows and fades: a ray outside the smaller box gathers nothing either way.
 - **Per step:** one fetch of the baked volume (density + all lighting), one of the open mask (density is divided by it, see above), plus one or two fetches of a tiling 64³ noise texture. The noise carves the coarse voxels into billows and wisps. The second noise fetch only happens on thin edges.
 - **Early exits:**
   - stop at 1 % transmittance, so inside dense smoke a ray ends within about half a metre;
@@ -99,6 +99,7 @@ It reuses the flood fill, timeline, holes and rule, and replaces the density wit
 
 Rendering is sphere tracing against that field:
 
+- only the screen rectangle covered by what the puffs occupy at this tick is dispatched: each puff's bounding sphere plus the blend radius (`CloudState::active`), padded by how far blended puffs can reach past that ((corner ratio − 1) × blend), so the picture never draws less than the rule counts;
 - a uniform grid of bins lists the puffs that can reach each cell;
 - far from the surface a step only tests bounding spheres, and polyhedra, the wall clip and holes are evaluated only near it;
 - normals are analytic, so facets are exactly flat;
