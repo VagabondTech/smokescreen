@@ -5,6 +5,13 @@ versions) are marked **results**.
 
 ## Unreleased
 
+- Fills are 16–20 % faster (on an Apple M4) and finish in fewer ticks at the
+  default budget: 14 instead of 15 for a volumetric cloud, 37–42 instead of
+  40–45 for a faceted one. Neighbours are found by index offsets, the lump
+  noise keeps the corners of its last few cells, bricks are built from the
+  filled voxels alone, and the region's distance transforms cover a smaller
+  box. From the first performance review. Results are unchanged: the
+  determinism hashes are the same.
 - The browser demo has touch controls: drag to look, a thumb stick in the
   lower left to move, tap to shoot where you tap, and tap the buttons. On a
   small screen the buttons and the HUD say less, and once a finger touches

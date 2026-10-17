@@ -101,19 +101,29 @@ both).
 
 The README's tables come from `cargo bench -p smokescreen`. The weak spots:
 
-- **Thin clouds.** Halfway through the fade, volumetric checks cost 1.1 ms
-  per 250 (0.3 ms when grown): lines that never reach the threshold are
-  integrated to the end. `blocks_sight` could stop as soon as the density
-  left along the segment (an upper bound per brick) can't reach the
-  threshold. The same holds for the faceted core rule (0.7 ms).
+- **Thin clouds.** Halfway through the fade, volumetric checks cost 3× what
+  they cost when grown (0.31 against 0.10 ms per 250 on an Apple M4): lines
+  that never reach the threshold are integrated to the end. An upper bound
+  per brick on the density left doesn't help: tried in the first
+  performance review, it was correct but 2 to 4 m where the true amount was
+  under 0.1 m, and it cost 15 % on every other check. The dissolve eats a
+  cloud from the outside in, so unseen lines run through the thinning shell
+  a voxel from dense voxels, and no bound coarser than a sample sees that.
+  Only coarser samples (whole-voxel steps, a tuning option) or an integral
+  per voxel would, and both change results. The faceted core rule behaves
+  the same way.
 - **The per-tick snapshot** of faceted and crystal clouds (every puff's
   position and size: 0.1 to 0.3 ms for 32 clouds) is computed for every
   cloud, whether or not a check comes near it. Compute a cloud's puffs on
   the first check that touches it.
 - Volumetric checks: integrate whole bricks of constant density at once;
   consider whole-voxel steps as a tuning option.
-- Faceted fills cost about 3.5× volumetric ones (0.35 s of ticks at the
-  default budget). A server using `FacetRule::Core` could skip the wall-clip
+- Faceted fills cost about 3× volumetric ones (0.33 s of ticks at the
+  default budget), most of it in the halo and the region's two distance
+  transforms. Options, all of which change results: the halo as two
+  dilations (it only produces a set), one distance transform of the
+  boundary instead of two, an integer 3-4-5 chamfer, a narrow band around
+  the fill. A server using `FacetRule::Core` could also skip the wall-clip
   stages if puff seeding stopped depending on the halo.
 - Crystal clouds are thousands of entities. If entity overhead shows up in
   profiles, draw puffs with one instanced draw per cloud instead.

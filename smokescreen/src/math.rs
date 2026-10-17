@@ -57,15 +57,30 @@ fn hash3(c: IVec3, seed: u32) -> f32 {
 /// Smooth 3D value noise in 0..1, seeded.
 pub fn value_noise(p: Vec3, seed: u32) -> f32 {
     let i = p.floor();
-    let f = p - i;
+    value_noise_lerp(&value_noise_corners(i.as_ivec3(), seed), p - i)
+}
+
+/// The eight corner values of the lattice cell at `i` (x fastest).
+#[inline]
+pub(crate) fn value_noise_corners(i: IVec3, seed: u32) -> [f32; 8] {
+    std::array::from_fn(|n| {
+        hash3(
+            i + IVec3::new((n & 1) as i32, ((n >> 1) & 1) as i32, (n >> 2) as i32),
+            seed,
+        )
+    })
+}
+
+/// [`value_noise`] at fractional position `f` (0..1 per axis) within a cell
+/// with the given corner values.
+#[inline]
+pub(crate) fn value_noise_lerp(c: &[f32; 8], f: Vec3) -> f32 {
     let u = f * f * (Vec3::splat(3.0) - 2.0 * f);
-    let i = i.as_ivec3();
-    let h = |o: IVec3| hash3(i + o, seed);
     let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
-    let x00 = lerp(h(IVec3::new(0, 0, 0)), h(IVec3::new(1, 0, 0)), u.x);
-    let x10 = lerp(h(IVec3::new(0, 1, 0)), h(IVec3::new(1, 1, 0)), u.x);
-    let x01 = lerp(h(IVec3::new(0, 0, 1)), h(IVec3::new(1, 0, 1)), u.x);
-    let x11 = lerp(h(IVec3::new(0, 1, 1)), h(IVec3::new(1, 1, 1)), u.x);
+    let x00 = lerp(c[0], c[1], u.x);
+    let x10 = lerp(c[2], c[3], u.x);
+    let x01 = lerp(c[4], c[5], u.x);
+    let x11 = lerp(c[6], c[7], u.x);
     lerp(lerp(x00, x10, u.y), lerp(x01, x11, u.y), u.z)
 }
 

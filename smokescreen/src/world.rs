@@ -132,9 +132,9 @@ pub struct Config {
     /// unfinished at that point is finished on the spot. Performance only:
     /// the finished cloud is the same whatever the budget.
     ///
-    /// With the default tuning a volumetric fill is about 290,000 units and
-    /// a faceted one about 930,000, so at 128 ticks a second the default
-    /// budget needs about 0.12 s for a volumetric fill and 0.35 s for a
+    /// With the default tuning a volumetric fill is about 260,000 units and
+    /// a faceted one about 850,000, so at 128 ticks a second the default
+    /// budget needs about 0.1 s for a volumetric fill and 0.33 s for a
     /// faceted one. With the default [`Timeline::start`] of 0.1 s, faceted
     /// fills therefore run at about three times the budget: give faceted
     /// clouds a later start to keep to it.
