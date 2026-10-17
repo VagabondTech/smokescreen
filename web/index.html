@@ -8,40 +8,251 @@
     :root { color-scheme: dark; }
     html, body { margin: 0; height: 100%; background: #1b1f24; color: #d8dde3; font: 15px/1.5 system-ui, sans-serif; }
     main { position: fixed; inset: 0; }
-    canvas { display: block; width: 100%; height: 100%; outline: none; }
+    /* touch-action: drags on the scene go to the demo, not to scrolling or zooming the page. */
+    canvas { display: block; width: 100%; height: 100%; outline: none; touch-action: none; }
     #status { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; pointer-events: none; transition: opacity 0.4s; }
-    #status p { max-width: 36em; }
+    #status p { max-width: 36em; margin: 0; padding: 12px 16px; border-radius: 6px; background: rgba(27, 31, 36, 0.85); overflow-wrap: anywhere; }
     #status.gone { opacity: 0; }
+    #status a, #banner { pointer-events: auto; }
+    #banner { position: fixed; top: 0; left: 0; right: 0; margin: 0; padding: 8px 12px; background: #5c1f1f; color: #fff; font-size: 13px; overflow-wrap: anywhere; }
+    #log { position: fixed; left: 0; right: 0; bottom: 0; height: 42%; display: flex; flex-direction: column; background: rgba(12, 14, 18, 0.9); }
+    #log div { display: flex; gap: 8px; padding: 6px 8px; }
+    #log pre { flex: 1; margin: 0; padding: 0 10px 10px; overflow: auto; font: 11px/1.4 ui-monospace, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+    button { font: inherit; font-size: 13px; color: #d8dde3; background: #2b3139; border: 1px solid #454d58; border-radius: 4px; padding: 3px 10px; }
+    [hidden] { display: none !important; }
     a { color: #8cc4ff; }
   </style>
 </head>
 <body>
   <main><canvas id="bevy" tabindex="0"></canvas></main>
-  <div id="status"><p>Loading the smoke demo (about 9 MB)&hellip;</p></div>
+  <div id="status"><p>Loading the smoke demo&hellip;</p></div>
+  <p id="banner" hidden></p>
+  <div id="log" hidden>
+    <div><button id="copy">Copy the log</button><button id="hide">Hide</button></div>
+    <pre></pre>
+  </div>
   <script type="module">
+    // Besides starting the demo, this page says what goes wrong, since a
+    // phone has no console to look at: WebGPU errors and a lost device, the
+    // demo's errors and panics, and with `?log` in the address every line the
+    // demo logs. The demo's own settings go in the address too
+    // (`?style=crystal&msaa=0`, see web/README.md).
+    const params = new URLSearchParams(location.search);
     const status = document.getElementById("status");
+    const banner = document.getElementById("banner");
     const canvas = document.getElementById("bevy");
-    const say = (html) => { status.innerHTML = `<p>${html}</p>`; };
-    // The demo marks the canvas once it's drawing (`mark_ready` in examples/demo.rs).
-    new MutationObserver((_, observer) => {
-      status.classList.add("gone");
-      canvas.focus();
-      observer.disconnect();
-    }).observe(canvas, { attributes: true, attributeFilter: ["data-ready"] });
+    const panel = document.getElementById("log");
+    const text = panel.querySelector("pre");
+    const lines = [];
+    const started = performance.now();
+    let ready = false;
+    let stopped = false;
+
+    const escape = (s) => String(s).replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+    const say = (html) => {
+      status.classList.remove("gone");
+      status.innerHTML = `<p>${html}</p>`;
+    };
+    const withLog = `?log${location.search ? "&" + location.search.slice(1) : ""}`;
+    const details = () => (params.has("log") ? "" : ` <a href="${withLog}">Open the page with its log</a> for details.`);
+
+    function log(kind, message) {
+      const line = `${((performance.now() - started) / 1000).toFixed(1).padStart(5)} s ${kind}: ${String(message).trimEnd()}`;
+      lines.push(line);
+      if (params.has("log")) {
+        text.textContent += line + "\n";
+        text.scrollTop = text.scrollHeight;
+      }
+    }
+
+    // A fatal problem replaces whatever the page shows; a later one, while
+    // the demo runs, goes in a banner. A panic's stack stays in the log.
+    let problems = 0;
+    function problem(message, fatal) {
+      problems++;
+      const parts = String(message).split(/\n\s*Stack:/)[0].split("\n").map((part) => part.trim()).filter(Boolean);
+      const shown = escape(parts.slice(0, 4).join(" ").slice(0, 400).replace(/[\s.:]+$/, ""));
+      if (fatal) {
+        stopped = true;
+        say(`The demo stopped: ${shown}.${details()}`);
+      } else if (!ready && !stopped) {
+        say(`Something went wrong: ${shown}.${details()}`);
+      } else if (problems <= 20) {
+        banner.hidden = false;
+        banner.innerHTML = `${shown}${problems > 1 ? ` (and ${problems - 1} more)` : ""}.${details()}`;
+      }
+    }
+
+    if (params.has("log")) {
+      panel.hidden = false;
+      document.getElementById("hide").onclick = () => (panel.hidden = true);
+      document.getElementById("copy").onclick = async () => {
+        try {
+          await navigator.clipboard.writeText(lines.join("\n"));
+        } catch {
+          getSelection().selectAllChildren(text);
+        }
+      };
+    }
+
+    // The demo logs through the console, with `%c` styles; panics arrive as
+    // console errors.
+    const plain = (args) => {
+      if (typeof args[0] === "string" && args[0].includes("%c")) {
+        const styles = args[0].split("%c").length - 1;
+        args = [args[0].replaceAll("%c", ""), ...args.slice(1 + styles)];
+      }
+      return args
+        .map((a) => {
+          if (typeof a === "string") return a;
+          if (a instanceof Error) return a.stack || String(a);
+          try {
+            return JSON.stringify(a);
+          } catch {
+            return String(a);
+          }
+        })
+        .join(" ");
+    };
+    for (const kind of ["log", "info", "warn", "error"]) {
+      const original = console[kind].bind(console);
+      console[kind] = (...args) => {
+        original(...args);
+        const message = plain(args);
+        log(kind, message);
+        if (kind === "error") problem(message, message.includes("panicked at"));
+      };
+    }
+    // A refused pointer lock (an unfocused window) is harmless: the demo copes.
+    const harmless = (message) => /pointer ?lock|WrongDocumentError/i.test(message);
+    addEventListener("error", (event) => {
+      const message = `${event.message} (${event.filename}:${event.lineno})`;
+      log("error", message);
+      if (!harmless(message)) problem(message, false);
+    });
+    addEventListener("unhandledrejection", (event) => {
+      const message = plain([event.reason]);
+      log("error", message);
+      if (!harmless(message)) problem(message, false);
+    });
+
+    log("page", navigator.userAgent);
+    log("page", `${innerWidth}×${innerHeight} CSS pixels, device pixel ratio ${devicePixelRatio}`);
+
     if (!navigator.gpu) {
       say("This demo needs WebGPU (smoke is simulated and drawn with compute shaders). " +
-          "Try a current Chrome or Edge, or Safari or Firefox with WebGPU turned on.");
+          "Try a current Chrome or Edge, Safari 26 (on iPhone, iOS 26 in any browser), " +
+          "or Firefox with WebGPU turned on.");
     } else {
+      // See the adapter and device the demo gets, and what goes wrong with
+      // them. The hooks go on the prototypes the demo calls through; trouble
+      // in them is only logged, so that watching can't stop the demo.
+      const gpu = Object.getPrototypeOf(navigator.gpu);
+      const requestAdapter = gpu.requestAdapter;
+      let watching = false;
+      gpu.requestAdapter = async function (...args) {
+        const adapter = await requestAdapter.apply(this, args);
+        if (!adapter) {
+          problem("this browser has WebGPU, but offers no GPU to it on this device", true);
+          return adapter;
+        }
+        try {
+          describe(adapter);
+          if (!watching) {
+            watching = true;
+            watchDevices(Object.getPrototypeOf(adapter));
+          }
+        } catch (error) {
+          log("page", `couldn't look at the adapter: ${error}`);
+        }
+        return adapter;
+      };
+
+      function describe(adapter) {
+        const info = adapter.info || {};
+        const name = [info.vendor, info.architecture, info.device, info.description].filter(Boolean).join(" ");
+        log("gpu", `adapter: ${name || "(no details given)"}`);
+        const limits = [
+          "maxTextureDimension2D", "maxTextureDimension3D", "maxBindGroups", "maxSampledTexturesPerShaderStage",
+          "maxStorageBuffersPerShaderStage", "maxStorageTexturesPerShaderStage", "maxUniformBufferBindingSize",
+          "maxStorageBufferBindingSize", "maxBufferSize", "maxComputeWorkgroupStorageSize",
+          "maxComputeInvocationsPerWorkgroup", "maxColorAttachmentBytesPerSample",
+        ];
+        log("gpu", `limits: ${limits.map((k) => `${k} ${adapter.limits[k]}`).join(", ")}`);
+        log("gpu", `features: ${[...adapter.features].join(", ") || "none"}`);
+        log("gpu", `preferred canvas format: ${navigator.gpu.getPreferredCanvasFormat()}`);
+      }
+
+      function watchDevices(adapterPrototype) {
+        const requestDevice = adapterPrototype.requestDevice;
+        adapterPrototype.requestDevice = async function (...args) {
+          let device;
+          try {
+            device = await requestDevice.apply(this, args);
+          } catch (error) {
+            problem(`the GPU refused to start: ${error}`, true);
+            throw error;
+          }
+          try {
+            log("gpu", "device created");
+            device.addEventListener("uncapturederror", (event) => {
+              const message = `WebGPU ${event.error.constructor.name}: ${event.error.message}`;
+              log("error", message);
+              problem(message, false);
+            });
+            device.lost.then((lost) => {
+              const message = `the GPU device was lost (${lost.reason}): ${lost.message}`;
+              log("error", message);
+              if (lost.reason !== "destroyed") problem(message, true);
+            });
+          } catch (error) {
+            log("page", `couldn't watch the device: ${error}`);
+          }
+          return device;
+        };
+      }
+
+      // The demo marks the canvas once it's drawing (`mark_ready` in examples/demo.rs).
+      new MutationObserver((_, observer) => {
+        ready = true;
+        log("page", "the demo is drawing");
+        if (!stopped) status.classList.add("gone");
+        canvas.focus();
+        observer.disconnect();
+      }).observe(canvas, { attributes: true, attributeFilter: ["data-ready"] });
+
       try {
         const { default: init } = await import("./pkg/demo.js");
-        say("Starting&hellip;");
-        await init();
+        // Download the module with progress shown; it compiles as it arrives.
+        const response = await fetch("./pkg/demo_bg.wasm");
+        if (!response.ok) throw new Error(`downloading the demo failed (HTTP ${response.status})`);
+        const reader = response.body.getReader();
+        let received = 0;
+        const body = new ReadableStream({
+          async pull(controller) {
+            const { done, value } = await reader.read();
+            if (done) {
+              controller.close();
+              log("page", `downloaded ${(received / 1048576).toFixed(1)} MB`);
+              say("Starting&hellip;");
+              setTimeout(() => {
+                if (!ready && !stopped) {
+                  say(`Still starting after 30 s. Its last words: ${escape(lines[lines.length - 1] || "none")}.${details()}`);
+                }
+              }, 30000);
+              return;
+            }
+            received += value.length;
+            say(`Downloading the demo: ${(received / 1048576).toFixed(0)} MB&hellip;`);
+            controller.enqueue(value);
+          },
+        });
+        await init({ module_or_path: new Response(body, { headers: { "Content-Type": "application/wasm" } }) });
       } catch (error) {
         // Bevy hands control back to the browser by throwing; anything else is a real failure.
         if (!String(error).includes("Using exceptions for control flow")) {
           console.error(error);
-          status.classList.remove("gone");
-          say(`The demo stopped: ${error}. The browser console has details.`);
+          problem(String(error), true);
         }
       }
     }

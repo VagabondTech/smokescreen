@@ -16,6 +16,26 @@ smoke grenade, H an HE grenade, the left mouse button shoots, X clears the
 smokes and F changes the style; the buttons at the top right do the same.
 The help at the bottom left lists the rest.
 
+## When it doesn't work
+
+The page says what went wrong instead of sitting on a blank screen: no GPU
+for WebGPU, WebGPU errors, a lost GPU device, or a panic. Add `?log` to the
+address to see everything the demo logs, with a button to copy it.
+
+The demo's settings go in the address too, to narrow a problem down on a
+phone:
+
+| Setting | Effect |
+|---|---|
+| `?smoke=0` | No smoke at the start: just the scene |
+| `?ldr` | No HDR |
+| `?msaa=0` | No MSAA |
+| `?style=faceted`, `?style=crystal` | Start in that style |
+
+Combine them with `&`: `?log&smoke=0&msaa=0`. They are the demo's
+`SMOKE_DEMO_*` environment variables (see the top of `examples/demo.rs`),
+except the scripted captures, which write files.
+
 ## Build it yourself
 
 ```sh
@@ -47,9 +67,9 @@ that touches the demo, and publishes `main` to GitHub Pages, at
 The browser build is single-threaded, so fills, lighting and voxelising run
 on the main thread between frames; the first smokes can hitch a little.
 Starting takes about 2.5 s of work on the main thread on an Apple M4, 0.8 s
-of it the smoke's noise texture (made on all cores natively). GPU timings in
-the HUD are off by default (`SMOKE_DEMO_GPU_TIMINGS` doesn't exist in a
-browser).
+of it the smoke's noise texture (made on all cores natively). The HUD has no
+GPU timings in a browser: Bevy's need timestamps inside command encoders,
+which WebGPU doesn't have.
 
 Chrome doesn't draw a tab while its window is hidden or the screen is
 locked, so a demo left in the background doesn't move on.

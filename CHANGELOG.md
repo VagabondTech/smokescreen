@@ -60,6 +60,11 @@ For anyone already running a copy from before the repository existed:
   frame by frame. Without GPU timings (macOS, where they lose the Metal
   device), the `tiers` sweep times whole frames, each waiting for the GPU,
   against the same view without smoke; `tools/fairness.py` reads either.
+- The browser demo's page shows what went wrong (no GPU, WebGPU errors, a
+  lost device, a panic) instead of a blank screen, shows download progress,
+  and with `?log` in the address the whole log, to copy. The demo's
+  settings work in the address too (`?smoke=0&ldr&msaa=0`), and two are
+  new: `SMOKE_DEMO_MSAA` and `SMOKE_DEMO_SMOKE`.
 
 ### smokescreen
 

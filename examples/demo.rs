@@ -18,8 +18,12 @@
 //!
 //! The buttons at the top right throw, clear, and step the style and the dial.
 //!
-//! Environment variables
+//! Settings: environment variables natively, and in a browser the same names
+//! in lower case in the page's address (`?style=crystal&msaa=0`; see
+//! `web/README.md`).
 //! - `SMOKE_DEMO_STYLE=faceted` or `crystal` starts in that style.
+//! - `SMOKE_DEMO_LDR=1` draws without HDR; `SMOKE_DEMO_MSAA=0` without MSAA.
+//! - `SMOKE_DEMO_SMOKE=0` leaves out the smoke that pops at the start.
 //! - `SMOKE_DEMO_BUDGET_MS=<ms>` sets the budget for budget mode (default 2).
 //! - `SMOKE_DEMO_GPU_TIMINGS=1` / `0` turns GPU timestamp diagnostics on or
 //!   off (HUD timings, budget mode, the tier sweep). Default: on, except on
@@ -69,13 +73,13 @@ use bevy::{
 use bevy_smokescreen::{prelude::*, quality, smokescreen::math::hash_u32};
 
 fn main() {
-    let capture = std::env::var("SMOKE_DEMO_CAPTURE").ok();
-    let script = std::env::var("SMOKE_DEMO_SCRIPT").unwrap_or_else(|_| "showcase".into());
+    // Captures write files, so not in a browser.
+    let capture = setting("capture").filter(|_| !cfg!(target_arch = "wasm32"));
+    let script = setting("script").unwrap_or_else(|| "showcase".into());
     // Captures draw offscreen unless asked for a window: a window's
     // screenshots come out black while the screen is locked.
-    let offscreen = capture.is_some() && std::env::var("SMOKE_DEMO_WINDOW").is_err();
-    let size = std::env::var("SMOKE_DEMO_SIZE")
-        .ok()
+    let offscreen = capture.is_some() && setting("window").is_none();
+    let size = setting("size")
         .and_then(|s| {
             let (w, h) = s.split_once('x')?;
             Some(UVec2::new(w.parse().ok()?, h.parse().ok()?))
@@ -85,20 +89,17 @@ fn main() {
         } else {
             UVec2::new(1600, 900)
         });
-    let style = match std::env::var("SMOKE_DEMO_STYLE").as_deref() {
-        Ok("faceted") => SmokeStyle::Faceted,
-        Ok("crystal") => SmokeStyle::Crystal,
+    let style = match setting("style").as_deref() {
+        Some("faceted") => SmokeStyle::Faceted,
+        Some("crystal") => SmokeStyle::Crystal,
         _ => SmokeStyle::Volumetric,
     };
-    let budget_ms = std::env::var("SMOKE_DEMO_BUDGET_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(2.0);
+    let budget_ms = setting("budget_ms").and_then(|v| v.parse().ok()).unwrap_or(2.0);
 
     // GPU timings (HUD, budget mode, tier sweep) use timestamp queries, which
-    // lost the device on one Metal setup and aren't in every browser; off by
-    // default on macOS and the web.
-    let gpu_timings = std::env::var("SMOKE_DEMO_GPU_TIMINGS")
+    // lost the device on one Metal setup and which Bevy can't use through
+    // WebGPU; off by default on macOS and the web.
+    let gpu_timings = setting("gpu_timings")
         .map(|v| v != "0")
         .unwrap_or(!cfg!(any(target_os = "macos", target_arch = "wasm32")));
 
@@ -211,10 +212,25 @@ fn main() {
                     .add_systems(Update, capture_script.in_set(Step::Script));
             }
         }
-    } else {
+    } else if setting("smoke").as_deref() != Some("0") {
         app.add_systems(Update, opening_smoke);
     }
     app.run();
+}
+
+/// A demo setting: `SMOKE_DEMO_<NAME>` natively, `?<name>=<value>` (or just
+/// `?<name>`) in the browser's address bar, so a phone can try settings too.
+fn setting(name: &str) -> Option<String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let search = web_sys::window()?.location().search().ok()?;
+        search.trim_start_matches('?').split('&').find_map(|pair| {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            (key == name).then(|| value.to_string())
+        })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    std::env::var(format!("SMOKE_DEMO_{}", name.to_uppercase())).ok()
 }
 
 /// The order of the demo's own systems within a frame: input, then a capture
@@ -421,18 +437,23 @@ fn setup_camera_and_hud(mut commands: Commands, target: Res<ShotTarget>) {
     let eye = Vec3::new(-2.5, 1.7, -9.0);
     let look = Transform::from_translation(eye).looking_at(Vec3::new(0.0, 1.4, 5.0), Vec3::Y);
     let (yaw, pitch, _) = look.rotation.to_euler(EulerRot::YXZ);
+    let msaa = if setting("msaa").as_deref() == Some("0") {
+        Msaa::Off
+    } else {
+        Msaa::Sample4
+    };
     let mut camera = commands.spawn((
         Camera3d::default(),
         Exposure::default(),
-        Msaa::Sample4,
+        msaa,
         SmokeCamera::HIGH,
         look,
         FlyCam { yaw, pitch },
         // The HUD's camera, window or not.
         IsDefaultUiCamera,
     ));
-    // SMOKE_DEMO_LDR=1 exercises the non-HDR composite path.
-    if std::env::var("SMOKE_DEMO_LDR").is_err() {
+    // SMOKE_DEMO_LDR=1 (`?ldr` in a browser) exercises the non-HDR composite path.
+    if setting("ldr").is_none() {
         camera.insert(bevy::camera::Hdr);
     }
     if let ShotTarget::Image(image) = target.as_ref() {
@@ -1259,7 +1280,11 @@ fn update_hud(
         }
     }
     if gpu.is_empty() {
-        gpu = "  (no GPU timings: SMOKE_DEMO_GPU_TIMINGS=1 turns them on, if the adapter has timestamps)".into();
+        gpu = if cfg!(target_arch = "wasm32") {
+            "  (no GPU timings in a browser)".into()
+        } else {
+            "  (no GPU timings: SMOKE_DEMO_GPU_TIMINGS=1 turns them on, if the adapter has timestamps)".into()
+        };
     }
     let dial = match smoke_cam.budget_ms {
         Some(b) => format!(
@@ -1332,7 +1357,7 @@ fn capture_script(
     mut ui: Query<&mut Visibility, Or<(With<Hud>, With<Help>, With<Node>)>>,
     mut finish: ResMut<Finish>,
 ) {
-    if std::env::var("SMOKE_DEMO_HUD").is_err() {
+    if setting("hud").is_none() {
         for mut v in &mut ui {
             *v = Visibility::Hidden;
         }
@@ -2329,7 +2354,7 @@ struct Video {
 
 impl Video {
     fn new(dir: String, size: UVec2) -> Self {
-        let only = std::env::var("SMOKE_DEMO_CLIPS").ok();
+        let only = setting("clips");
         let clips = clips()
             .into_iter()
             .filter(|c| only.as_deref().is_none_or(|o| o.split(',').any(|n| n == c.name)))
