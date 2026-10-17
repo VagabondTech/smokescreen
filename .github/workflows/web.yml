@@ -47,6 +47,11 @@ jobs:
         run: >-
           wasm-bindgen --no-typescript --remove-name-section --target web --out-dir web/pkg --out-name demo
           target/wasm32-unknown-unknown/web/examples/demo.wasm
+      # GitHub Pages gzips files as they're asked for, and after a deploy the
+      # first request for the module waited up to three minutes for it. The
+      # page downloads this copy instead and unpacks it itself.
+      - name: Gzip the module
+        run: gzip -9 -k -n web/pkg/demo_bg.wasm
       - uses: actions/upload-pages-artifact@v4
         if: github.ref == 'refs/heads/main'
         with:
