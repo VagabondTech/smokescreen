@@ -47,11 +47,18 @@ jobs:
         run: >-
           wasm-bindgen --no-typescript --remove-name-section --target web --out-dir web/pkg --out-name demo
           target/wasm32-unknown-unknown/web/examples/demo.wasm
-      # GitHub Pages gzips files as they're asked for, and after a deploy the
-      # first request for the module waited up to three minutes for it. The
-      # page downloads this copy instead and unpacks it itself.
-      - name: Gzip the module
-        run: gzip -9 -k -n web/pkg/demo_bg.wasm
+      # Each of GitHub Pages' CDN servers fetches a file it hasn't got from
+      # GitHub slowly (35-150 KB/s, seen from Cape Town) and keeps it for only
+      # 10 minutes. Gzipped, the module is a fifth of the size; in 1 MB pieces,
+      # which the page fetches side by side, several parts come at once.
+      - name: Gzip the module and cut it into pieces
+        working-directory: web/pkg
+        run: |
+          gzip -9 -k -n demo_bg.wasm
+          split -b 1M -d -a 2 demo_bg.wasm.gz demo_bg.wasm.gz.
+          files=$(ls demo_bg.wasm.gz.[0-9][0-9] | sed 's/.*/"&"/' | paste -sd, -)
+          echo "{\"size\": $(stat -c %s demo_bg.wasm.gz), \"files\": [$files]}" > demo_bg.wasm.gz.json
+          cat demo_bg.wasm.gz.json
       - uses: actions/upload-pages-artifact@v4
         if: github.ref == 'refs/heads/main'
         with:
