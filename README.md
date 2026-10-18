@@ -112,9 +112,9 @@ Pick a default with `SmokeSettings::style`, or per smoke with `Smoke::with_style
 | Look | soft, light-scattering | hard facets, merged like metaballs | hard, separate tumbling crystals |
 | Drawn by | raymarching at reduced resolution | sphere tracing a distance field | plain meshes (Bevy's PBR) |
 | GPU cost² | low: 1.3 ms at mid-range, 5.9 ms filling the screen; one dial per camera | 5–6× volumetric: 7.3 ms at mid-range, 31 ms filling the screen | about 0.2 ms: a few thousand triangles per cloud |
-| 250 sight checks through 4 of 32 clouds¹ | 0.07 ms | 0.04 ms, exact or with `FacetRule::Core` | 0.03 ms (any contact blocks), 0.06 ms (0.8 m rule) |
+| 250 sight checks through 4 of 32 clouds¹ | 0.06 ms | 0.04 ms, exact or with `FacetRule::Core` | 0.03 ms (any contact blocks), 0.06 ms (0.8 m rule) |
 | Bullets and explosions | tunnels and cleared spheres | hexagonal tunnels, cavities | knock crystals out of the way |
-| Picture against the rule | thin smoke is see-through in both | never shows through what the rule blocks; thin edges drawn solid | exact with `sight_threshold = 0` |
+| Picture against the rule | the same density, but the noise thins some smoke the rule counts, most while it fades | never shows through what the rule blocks; thin edges drawn solid | exact with `sight_threshold = 0` |
 
 ¹ Fully grown clouds, on an Apple M4; the 2-core 2.1 GHz VM this was built on takes about 3× as long. Halfway through a cloud's fade, when many lines are only partly blocked, they cost more: 3× for volumetric smoke, 0.7 ms for the exact faceted rule, which traces more of them then; see [Performance](#performance). `cargo bench -p smokescreen` measures it on your CPU.
 ² At the best step of the dial, at 1920×1080 on an Apple M4. Close up, the cheapest step costs a sixth (volumetric) to a quarter (faceted) of that. See [Performance](#performance).
@@ -214,13 +214,13 @@ The fill budget (`Config::fill_budget`, about 0.2 ms a tick on the VM, under 0.1
 
 | | Growing | Grown | Halfway through the fade | Per-tick snapshot |
 |---|---|---|---|---|
-| Volumetric | 0.07 | 0.07 | 0.22 | 0.001 |
+| Volumetric | 0.06 | 0.06 | 0.18 | 0.01 |
 | Faceted, `FacetRule::Exact` | 0.04 | 0.04 | 0.70 | 0.09 |
 | Faceted, `FacetRule::Core` | 0.04 | 0.04 | 0.12 | 0.08 |
 | Crystal, 0.8 m rule | 0.06 | 0.06 | 0.07 | 0.06 |
 | Crystal, any contact blocks | 0.03 | 0.03 | 0.04 | 0.05 |
 
-Halfway through the fade the clouds are thin, so many lines never reach the threshold and are integrated all the way through. The exact faceted rule settles most lines from exact chord bounds (the puffs' hard polyhedra lie inside the cloud, and the polyhedra grown by the blend radius contain it) and traces only lines within 2 cm of the threshold, which are commoner in the fade. The snapshot is the clouds' state at a tick (puff positions, holes), computed once per tick before the first check.
+Halfway through the fade the clouds are thin, so many lines never reach the threshold and are integrated all the way through. The exact faceted rule settles most lines from exact chord bounds (the puffs' hard polyhedra lie inside the cloud, and the polyhedra grown by the blend radius contain it) and traces only lines within 2 cm of the threshold, which are commoner in the fade. The snapshot is the clouds' state at a tick (puff positions, holes), computed once per tick before the first check. For volumetric clouds it holds each cloud's density table too: the bench times the first snapshot in a new cache slot, which builds them all, while from tick to tick only clouds that are growing or fading build theirs again (about 0.15 µs each).
 
 **On the GPU**: what the smoke adds to a 1920×1080 frame with MSAA on an Apple M4 (10-core GPU), at the best and the cheapest step of the quality dial:
 
@@ -278,6 +278,7 @@ These come from the demo's tier sweep (`SMOKE_DEMO_SCRIPT=tiers`): frame time wi
 | `wind` | slight upward drift | Drift of the volumetric noise |
 | `crystal_shadows` | on | Crystal puffs cast shadows |
 | `debug_silhouette` | off | Draws faceted and crystal smoke flat magenta, to check silhouettes |
+| `debug_transmittance` | off | Draws volumetric smoke as how much of the scene shows through it, to check it against the rule |
 
 ## Examples
 

@@ -3,6 +3,50 @@
 Changes that alter simulation results (and so break lockstep with older
 versions) are marked **results**.
 
+## Unreleased (0.2.0)
+
+Simulation results change in this release: a 0.2 server and a 0.1 client
+are not in lockstep.
+
+- **results** The volumetric rule works out density in the same order as
+  the picture. A sample used to take the density of the distance
+  interpolated between voxels, while the GPU bakes each voxel's density and
+  its sampler interpolates those. The two differ wherever the density
+  curve bends, most at a cloud's edge: drawn without its noise, the
+  picture showed 1.2 to 6 times the amount of cloud the rule counted along
+  lines through less than 0.1 m of it, and 3–84 % more along thicker ones.
+  Now each cloud's snapshot holds a `DensityTable` (`CloudState::density`:
+  the density of every fill-distance byte at that tick), and samples
+  interpolate its values over the open voxels. The two now agree to within
+  1 % halfway through the fade from 0.05 m of cloud up, and to within 10 %
+  on a grown cloud, where the rest is the march stepping over the start of
+  a cloud's edge (see the roadmap). The rule counts more smoke near
+  clouds' edges: 1–3 % more along a typical line through a grown cloud,
+  6–16 % halfway through the fade, and 1–4 % more of the lines in the
+  demo's views are blocked. Checks are faster, as samples no longer work
+  out three smoothsteps each: on an Apple M4, 250 volumetric checks
+  through 4 of 32 clouds take 0.183 instead of 0.250 ms halfway through
+  the fade and 0.061 instead of 0.078 ms once the clouds are grown
+  (medians of 11 alternated runs). The snapshot builds a table for each
+  volumetric cloud that is growing or fading, about 0.15 µs each; a grown
+  cloud keeps its table. The determinism hash (`EXPECTED`) changed, while
+  the one for fills in a level voxelised from meshes did not: update
+  servers and clients together.
+- `VolumeField` holds the cloud's `DensityTable` (`density`) instead of
+  `growth` and `dissolve`.
+- `SmokeSettings::debug_transmittance` draws volumetric smoke as how much
+  of the scene shows through it. The demo's `agreement` script now runs
+  volumetric smoke too (it used to switch to faceted), with its age set
+  by `SMOKE_DEMO_SWEEP_AGE` as in the tier sweep, and the new
+  `SMOKE_DEMO_NOISE=0` draws volumetric smoke without its noise.
+  `tools/agreement.py` compares the picture's transmittance with the rule.
+  It shows the noise thinning the picture below what the rule blocks: in
+  the demo's close view, 5.5 % of the pixels the rule blocks let more than
+  30 % of the scene through in a grown cloud (2.9 % with the old rule,
+  which counted less of the edges the noise erodes), and a third of them
+  halfway through the fade, before and after. Without the noise, none do.
+  See the roadmap's "Volumetric noise".
+
 ## 0.1.1 (2026-10-18)
 
 The performance work of the first two reviews. No public API changes, and

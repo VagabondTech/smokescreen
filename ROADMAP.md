@@ -16,7 +16,9 @@ both).
 - **Rules:** volumetric density integral; faceted exact or core
   (`FacetRule`); crystal exact. With `sight_threshold = 0` the crystal
   picture and rule agree pixel for pixel (beyond one-pixel silhouette
-  edges, on the demo's agreement run).
+  edges, on the demo's agreement run). The volumetric rule works out
+  density in the picture's order (per voxel, then interpolated), so
+  without the noise the two agree too (0.2).
 - **Faster checks:** skipping the parts of a volumetric cloud the growth
   front hasn't reached or the fade has eaten (3× faster late in the fade),
   per-check hole filtering; both leave results bit-identical.
@@ -100,16 +102,29 @@ both).
   or recommend `FacetRule::Core` plus a lower threshold. Crystal has the
   same trade-off unless its threshold is 0.
 - **Volumetric noise.** The picture's noise erosion must never thin smoke
-  the rule counts as blocking. Extend `tools/agreement.py` to soft smoke
-  (compare the picture's transmittance with the rule) and keep the noise
-  from eroding below the rule's density where it matters.
+  the rule counts as blocking, and it does. `tools/agreement.py` measures
+  it on the demo's `agreement` run: of the pixels the rule blocks, 0.3–5.5 %
+  let more than 30 % of the scene through in a grown cloud, depending on
+  the view, and 19–32 % halfway through the fade, when the fade adds 0.3 to
+  the erosion. Without the noise, none do (docs/design.md, "The picture
+  against the rule"). Keep the noise from eroding below the rule's density
+  where it matters: erode less where the coarse density is high, say, or
+  only where it is too thin to block anyway.
+- **The march's skip through empty space.** Where the filtered density is
+  under 0.002, the volumetric march moves on at least a voxel, but a
+  sample can read that little within a voxel of dense smoke (trilinear
+  weights are small near a cell's far corner). So it can step over the
+  start of a cloud's edge: through a grown cloud's edge the picture draws
+  up to 10 % less than the rule counts, and with the skip turned off the
+  two agree to within 0.5 %. Look a voxel ahead before skipping, or skip
+  less far, and measure the cost (the tier sweep).
 
 ## Performance
 
 The README's tables come from `cargo bench -p smokescreen`. The weak spots:
 
 - **Thin clouds.** Halfway through the fade, volumetric checks cost 3× what
-  they cost when grown (0.31 against 0.10 ms per 250 on an Apple M4): lines
+  they cost when grown (0.18 against 0.06 ms per 250 on an Apple M4): lines
   that never reach the threshold are integrated to the end. An upper bound
   per brick on the density left doesn't help: tried in the first
   performance review, it was correct but 2 to 4 m where the true amount was

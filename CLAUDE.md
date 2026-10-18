@@ -21,7 +21,7 @@ The three looks (`Style` in the core, `SmokeStyle` in Bevy):
 
 | Style | Drawn by | Rule (`occlusion`) |
 |---|---|---|
-| Volumetric | raymarch of a baked 3D texture (`src/render.rs`, `src/shaders/smoke_{bake,march,composite}.wesl`) | density integrated along the segment |
+| Volumetric | raymarch of a baked 3D texture (`src/render.rs`, `src/shaders/smoke_{bake,march,composite}.wesl`) | density integrated along the segment, each voxel's density interpolated as the GPU's sampler does (`DensityTable`) |
 | Faceted | sphere tracing of blended polyhedra (`src/shaders/smoke_facet*.wesl`) | chord through the blended SDF (`FacetRule::Exact`; `blocks_sight` decides most lines from exact chord bounds and traces those within 2 cm of the threshold: about half a volumetric check grown, twice one mid-fade) or through each puff's inscribed sphere (`FacetRule::Core`, cheap, conservative) |
 | Crystal | ordinary meshes, one entity per puff (`src/crystal.rs`) | exact chord through the union of convex polyhedra (`smokescreen/src/chords.rs`); with `sight_threshold = 0` the picture and the rule agree exactly |
 
@@ -56,7 +56,11 @@ cargo run --example presets                 # every preset and look; also minima
   README's clips frame by frame. The other examples' captures need a
   window: on a headless Linux machine, `xvfb-run -a`.
 - `tools/fairness.py` and `tools/agreement.py` (numpy, Pillow) turn the
-  demo's `tiers` and `agreement` captures into reports.
+  demo's `tiers` and `agreement` captures into reports. The `agreement`
+  run takes the demo's style: volumetric smoke is drawn as its
+  transmittance (`SmokeSettings::debug_transmittance`, tonemapping off),
+  and `SMOKE_DEMO_SWEEP_AGE` and `SMOKE_DEMO_NOISE=0` set its age and
+  turn off its noise.
 - For quicker local builds you can add a `.cargo/config.toml` (ignored by
   git) with `lld` as the linker and lower `opt-level`s.
 
@@ -104,9 +108,13 @@ cargo run --example presets                 # every preset and look; also minima
    `CloudState::holes` (and crystal puff sizes from `CloudState::live`);
    never re-implement the timing curves in shaders.
 8. **Samples skip solid voxels.** Volumetric density is the trilinear
-   average of the *open* voxels only (`grid::sample_open`; on the GPU the
-   filtered density divided by the filtered open mask, `smoke_open_atlas`),
-   so smoke stays dense right up to walls. The fill pads solid voxels a
+   average of the *open* voxels' densities only (`grid::sample_open` over
+   the cloud's `DensityTable`: density per voxel first, then interpolated,
+   the GPU's order; on the GPU the filtered baked density divided by the
+   filtered open mask, `smoke_open_atlas`), so smoke stays dense right up
+   to walls, and the rule counts the density the picture draws (check
+   with the demo's volumetric `agreement` run, `SMOKE_DEMO_NOISE=0`, and
+   `tools/agreement.py`). The fill pads solid voxels a
    wall only clips (`occupancy::PADDED`, open to samples; the `Pad*` stages
    in `fill.rs`), never where smoke could show past a wall
    (`unsafe_to_pad`). The core and the shaders must keep doing the same
@@ -130,7 +138,7 @@ cargo run --example presets                 # every preset and look; also minima
 | `smokescreen/src/volume.rs` | Volumetric rule: density integral, skipping empty bricks and inactive parts |
 | `smokescreen/src/facets.rs` | Polyhedra, puffs, bins, the blended faceted SDF and its exact integrator |
 | `smokescreen/src/chords.rs` | Crystal and faceted-core rules: exact chords through convex pieces; `ChordBounds`, the exact faceted rule's bounds for `blocks_sight` |
-| `smokescreen/src/holes.rs`, `timeline.rs` | Hole events and shapes; a cloud's life and the density model |
+| `smokescreen/src/holes.rs`, `timeline.rs` | Hole events and shapes; a cloud's life, the density model and `DensityTable` |
 | `smokescreen/src/level.rs` | `Level` trait, `FlatGround`, `BoxObstacles`, `VoxelObstacles` (from boxes, a closure or triangles, with winding numbers for which side of a mesh is solid; to and from bytes) |
 | `smokescreen/src/light.rs` | Sun and sky visibility per voxel, for renderers |
 | `smokescreen/tests/` | `fill`, `queries`, `styles`, `walls`, `determinism` |
