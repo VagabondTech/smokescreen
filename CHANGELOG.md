@@ -32,6 +32,31 @@ are not in lockstep.
   cloud keeps its table. The determinism hash (`EXPECTED`) changed, while
   the one for fills in a level voxelised from meshes did not: update
   servers and clients together.
+- **results** The volumetric rule samples a line every voxel instead of
+  every half voxel: `Tuning::volume_steps` (`VolumeSteps::Voxel` by
+  default; `HalfVoxel` for the old spacing), which sets the new
+  `VolumeField::step`. Checks cost about a third less: on an Apple M4,
+  250 sight checks through 4 of 32 clouds take 0.040 instead of 0.059 ms
+  once the clouds are grown (−32 %), 0.116 instead of 0.178 ms halfway
+  through the fade (−35 %) and 0.030 instead of 0.040 ms late in it
+  (−25 %) (medians of 11 alternated runs), and `occlusion` over the same
+  lines costs 37–38 % less. The amount of cloud along a line is a little
+  less precise. Against samples 1/64 of a voxel apart, over 8,600 random
+  lines through smoke (on open ground, and in a level with walls, bullets
+  and explosions), the median line is within 0.1 % instead of 0.03 %, the
+  99th percentile of lines through at least 0.1 m of cloud within 13–17 %
+  instead of 8–9 %, and the rule counts 0.2–0.8 % less cloud on average.
+  0.31 % of the lines get a different answer from the fine count's,
+  instead of 0.19 %, every one within 10 cm of the threshold; 21 of them
+  are clear where the fine count blocks, instead of 10. The largest errors
+  are where a line crosses a wall or the ground, up to half a step of
+  full-density cloud per crossing. Against the picture nothing that
+  matters changes: without the noise the two agree as closely, and with
+  `noise_within_rule` capped or filled nothing the rule blocks shows
+  through, at the best and the cheapest dial steps. `EXPECTED` changed
+  again and now covers both settings; `EXPECTED_MESHES` did not.
+  `CloudView` gained a private field, so only a `View` makes one. The
+  demo's `SMOKE_DEMO_VOLUME_STEPS=half` samples every half voxel.
 - `VolumeField` holds the cloud's `DensityTable` (`density`) instead of
   `growth` and `dissolve`.
 - `SmokeSettings::debug_transmittance` draws volumetric smoke as how much

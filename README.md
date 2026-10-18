@@ -112,7 +112,7 @@ Pick a default with `SmokeSettings::style`, or per smoke with `Smoke::with_style
 | Look | soft, light-scattering | hard facets, merged like metaballs | hard, separate tumbling crystals |
 | Drawn by | raymarching at reduced resolution | sphere tracing a distance field | plain meshes (Bevy's PBR) |
 | GPU cost² | low: 1.2 ms at mid-range, 5.1 ms filling the screen; one dial per camera | about 6× volumetric: 7.3 ms at mid-range, 31 ms filling the screen | about 0.2 ms: a few thousand triangles per cloud |
-| 250 sight checks through 4 of 32 clouds¹ | 0.06 ms | 0.04 ms, exact or with `FacetRule::Core` | 0.03 ms (any contact blocks), 0.06 ms (0.8 m rule) |
+| 250 sight checks through 4 of 32 clouds¹ | 0.04 ms | 0.04 ms, exact or with `FacetRule::Core` | 0.03 ms (any contact blocks), 0.06 ms (0.8 m rule) |
 | Bullets and explosions | tunnels and cleared spheres | hexagonal tunnels, cavities | knock crystals out of the way |
 | Picture against the rule | the same density, but the noise thins some smoke the rule counts, most while it fades; `SmokeSettings::noise_within_rule` (`Capped` or `Filled`) stops that | never shows through what the rule blocks; thin edges drawn solid | exact with `sight_threshold = 0` |
 
@@ -214,13 +214,14 @@ The fill budget (`Config::fill_budget`, about 0.2 ms a tick on the VM, under 0.1
 
 | | Growing | Grown | Halfway through the fade | Per-tick snapshot |
 |---|---|---|---|---|
-| Volumetric | 0.06 | 0.06 | 0.18 | 0.01 |
+| Volumetric | 0.04 | 0.04 | 0.12 | 0.01 |
+| Volumetric, `VolumeSteps::HalfVoxel` | 0.06 | 0.06 | 0.18 | 0.01 |
 | Faceted, `FacetRule::Exact` | 0.04 | 0.04 | 0.70 | 0.09 |
 | Faceted, `FacetRule::Core` | 0.04 | 0.04 | 0.12 | 0.08 |
 | Crystal, 0.8 m rule | 0.06 | 0.06 | 0.07 | 0.06 |
 | Crystal, any contact blocks | 0.03 | 0.03 | 0.04 | 0.05 |
 
-Halfway through the fade the clouds are thin, so many lines never reach the threshold and are integrated all the way through. The exact faceted rule settles most lines from exact chord bounds (the puffs' hard polyhedra lie inside the cloud, and the polyhedra grown by the blend radius contain it) and traces only lines within 2 cm of the threshold, which are commoner in the fade. The snapshot is the clouds' state at a tick (puff positions, holes), computed once per tick before the first check. For volumetric clouds it holds each cloud's density table too: the bench times the first snapshot in a new cache slot, which builds them all, while from tick to tick only clouds that are growing or fading build theirs again (about 0.15 µs each).
+Halfway through the fade the clouds are thin, so many lines never reach the threshold and are integrated all the way through. The volumetric rule samples a line every voxel; with `Tuning::volume_steps` set to `HalfVoxel` it samples every half voxel, which counts a little more precisely and costs about 1.5 times as much. The exact faceted rule settles most lines from exact chord bounds (the puffs' hard polyhedra lie inside the cloud, and the polyhedra grown by the blend radius contain it) and traces only lines within 2 cm of the threshold, which are commoner in the fade. The snapshot is the clouds' state at a tick (puff positions, holes), computed once per tick before the first check. For volumetric clouds it holds each cloud's density table too: the bench times the first snapshot in a new cache slot, which builds them all, while from tick to tick only clouds that are growing or fading build theirs again (about 0.15 µs each).
 
 **On the GPU**: what the smoke adds to a 1920×1080 frame with MSAA on an Apple M4 (10-core GPU), at the best and the cheapest step of the quality dial:
 
@@ -248,6 +249,7 @@ These come from the demo's tier sweep (`SMOKE_DEMO_SCRIPT=tiers`): frame time wi
 | `timeline` | starts 0.1 s after the pop, full 1.4 s later, gone at 18 s after a 3 s fade | Per cloud via `Smoke` or `CloudSpec::timeline` |
 | `facets`, `crystals` | 0.9 m spacing, 0.72 m puffs, 0.3 m blend (crystal: none) | Puff shape of the faceted and crystal looks |
 | `facet_rule` | `Exact` | `Core` for cheap, conservative faceted checks |
+| `volume_steps` | `Voxel` | `HalfVoxel` samples volumetric clouds every half voxel: a slightly more precise rule, at about 1.5 times the cost of a check |
 | `holes` | bullets: 0.38 m, closed by 1.8 s; blasts: 3.5 m, refilled by 5 s | `None` turns holes off |
 | `max_holes_per_cloud` | 16 | The newest win |
 | `max_clouds` | 32 | Past this the oldest stop counting (and aren't drawn); also sizes the GPU atlas |

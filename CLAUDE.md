@@ -21,7 +21,7 @@ The three looks (`Style` in the core, `SmokeStyle` in Bevy):
 
 | Style | Drawn by | Rule (`occlusion`) |
 |---|---|---|
-| Volumetric | raymarch of a baked 3D texture (`src/render.rs`, `src/shaders/smoke_{bake,march,composite}.wesl`) | density integrated along the segment, each voxel's density interpolated as the GPU's sampler does (`DensityTable`) |
+| Volumetric | raymarch of a baked 3D texture (`src/render.rs`, `src/shaders/smoke_{bake,march,composite}.wesl`) | density integrated along the segment, a sample every voxel (`Tuning::volume_steps`), each voxel's density interpolated as the GPU's sampler does (`DensityTable`) |
 | Faceted | sphere tracing of blended polyhedra (`src/shaders/smoke_facet*.wesl`) | chord through the blended SDF (`FacetRule::Exact`; `blocks_sight` decides most lines from exact chord bounds and traces those within 2 cm of the threshold: about half a volumetric check grown, twice one mid-fade) or through each puff's inscribed sphere (`FacetRule::Core`, cheap, conservative) |
 | Crystal | ordinary meshes, one entity per puff (`src/crystal.rs`) | exact chord through the union of convex polyhedra (`smokescreen/src/chords.rs`); with `sight_threshold = 0` the picture and the rule agree exactly |
 
@@ -75,7 +75,8 @@ cargo run --example presets                 # every preset and look; also minima
    break this; keep clippy clean.
 2. **The determinism hash.** `smokescreen/tests/determinism.rs` hashes
    10,000 query results over the lives of eight clouds (all three styles, a
-   line and a box source, holes, metres and Z-up inches, both facet rules),
+   line and a box source, holes, metres and Z-up inches, both facet rules,
+   both volumetric steps),
    and separately a level voxelised from meshes with clouds filled in it.
    `EXPECTED` and `EXPECTED_MESHES` must match on every platform. If you change results on
    purpose, re-record it and check it on x86-64 *and* aarch64 (CI runs

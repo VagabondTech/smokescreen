@@ -33,8 +33,8 @@
 //! - `SMOKE_DEMO_NOISE_WITHIN_RULE=capped` or `filled` sets
 //!   `SmokeSettings::noise_within_rule`: either way, volumetric smoke's noise
 //!   never shows through what the rule blocks.
-//! - `SMOKE_DEMO_VOLUME_STEPS=voxel` has the volumetric rule sample a line
-//!   every voxel instead of every half voxel (`Tuning::volume_steps`).
+//! - `SMOKE_DEMO_VOLUME_STEPS=half` has the volumetric rule sample a line
+//!   every half voxel instead of every voxel (`Tuning::volume_steps`).
 //! - `SMOKE_DEMO_CLIENT_CLOCK=<seconds>` starts the app's clock that far
 //!   ahead of the smoke's ticks, as on a client whose clock has run longer
 //!   than the match: the demo counts the ticks itself, from the virtual time
@@ -169,8 +169,8 @@ fn main() {
         _ => NoiseWithinRule::Off,
     };
     let mut smoke_plugin = SmokePlugin::default();
-    if setting("volume_steps").as_deref() == Some("voxel") {
-        smoke_plugin.config.tuning.volume_steps = VolumeSteps::Voxel;
+    if setting("volume_steps").as_deref() == Some("half") {
+        smoke_plugin.config.tuning.volume_steps = VolumeSteps::HalfVoxel;
     }
     app.add_plugins((smoke_plugin, FrameTimeDiagnosticsPlugin::default()))
         .insert_resource(smoke_settings)

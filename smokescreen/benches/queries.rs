@@ -121,20 +121,20 @@ fn main() {
     println!("250 sight checks, 32 clouds (an 8 × 4 grid 12 m apart), each segment crossing 4.");
     println!("Milliseconds (lines blocked) at seconds after the pop:");
     println!("{:19}{}", "", PHASES.map(|s| format!("{s:>13}")).join(""));
-    let half = VolumeSteps::HalfVoxel;
+    let voxel = VolumeSteps::Voxel;
     let rules = [
-        ("volumetric", Style::Volumetric, FacetRule::Exact, half, 0.8),
+        ("volumetric", Style::Volumetric, FacetRule::Exact, voxel, 0.8),
         (
-            "volumetric, voxel",
+            "volumetric, half",
             Style::Volumetric,
             FacetRule::Exact,
-            VolumeSteps::Voxel,
+            VolumeSteps::HalfVoxel,
             0.8,
         ),
-        ("faceted, exact", Style::Faceted, FacetRule::Exact, half, 0.8),
-        ("faceted, core", Style::Faceted, FacetRule::Core, half, 0.8),
-        ("crystal, 0.8 m", Style::Crystal, FacetRule::Exact, half, 0.8),
-        ("crystal, touch", Style::Crystal, FacetRule::Exact, half, 0.0),
+        ("faceted, exact", Style::Faceted, FacetRule::Exact, voxel, 0.8),
+        ("faceted, core", Style::Faceted, FacetRule::Core, voxel, 0.8),
+        ("crystal, 0.8 m", Style::Crystal, FacetRule::Exact, voxel, 0.8),
+        ("crystal, touch", Style::Crystal, FacetRule::Exact, voxel, 0.0),
     ];
     for (name, style, rule, steps, threshold) in rules {
         let mut cfg = config.clone();

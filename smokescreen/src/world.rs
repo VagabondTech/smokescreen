@@ -52,9 +52,9 @@ pub struct Tuning {
     pub facets: FacetSettings,
     /// What counts as cloud in a faceted cloud's rule.
     pub facet_rule: FacetRule,
-    /// How far apart a volumetric cloud's rule samples a line: every half
-    /// voxel, or every voxel for checks that cost less and count a little
-    /// less precisely.
+    /// How far apart a volumetric cloud's rule samples a line: every voxel,
+    /// or every half voxel for checks that count a little more precisely
+    /// and cost about 1.5 times as much.
     pub volume_steps: VolumeSteps,
     /// Shape of crystal clouds. `blend` is ignored: crystals never merge.
     pub crystals: FacetSettings,
@@ -88,7 +88,7 @@ impl Tuning {
             timeline: Timeline::default(),
             facets: FacetSettings::metric(),
             facet_rule: FacetRule::Exact,
-            volume_steps: VolumeSteps::HalfVoxel,
+            volume_steps: VolumeSteps::Voxel,
             crystals: FacetSettings::crystal(),
             holes: Some(HoleSettings::metric()),
             max_holes_per_cloud: 16,

@@ -13,11 +13,12 @@ use crate::{
 /// ([`crate::Tuning::volume_steps`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum VolumeSteps {
-    /// A sample every half voxel.
-    #[default]
+    /// A sample every half voxel: twice as many, so a check costs about 1.5
+    /// times as much, and the amount of cloud it finds is a little more
+    /// precise.
     HalfVoxel,
-    /// A sample every voxel: half as many, so a check costs less, and the
-    /// amount of cloud it finds is a little less precise.
+    /// A sample every voxel.
+    #[default]
     Voxel,
 }
 
