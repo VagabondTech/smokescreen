@@ -39,8 +39,9 @@
 //   threshold's worth of cloud can't be drawn opaque any more.
 // - NOISE_FILLED: the noise runs freely, and the march also adds up the cloud
 //   the rule counts along the ray, with the light it would scatter. At the end,
-//   from ln(100) / extinction of that cloud to `sight_threshold`, the opacity
-//   the noise took is filled back in behind what was drawn.
+//   from ln(20) / extinction of that cloud, where the march draws a line
+//   opaque, to `sight_threshold`, the opacity the noise took is filled back in
+//   behind what was drawn.
 // Either way, what an empty-space jump stepped over (at most a ramp from
 // nothing up to the sample it lands on) counts as cloud the noise took.
 
@@ -51,17 +52,19 @@ import package::shaders::smoke_common::{
 
 // A ray ends once less than this share of the scene shows through it, and is
 // drawn opaque: the light it would still have gathered is taken to be like
-// what it has gathered so far. With the noise kept within the rule it goes
-// on to 1 %, as the budget and the fill above are worked out from
-// ln(100) / extinction (`render.rs`). By default it stops at 5 %, so a line
-// through ln(20) / extinction of the cloud as drawn (0.43 m by default) is
-// opaque: that only adds smoke, changes a pixel by at most 6 levels out of
-// 255, and made the best dial step 8–9 % cheaper close up on an Apple M4
-// while a cloud is grown or blooming. Skipping the noise once a ray is nearly
-// opaque instead cost 6–8 % more: a SIMD group keeps the pace of its rays
-// through thin smoke, which never get there, and the test in every sample
-// costs on its own.
-@if(NOISE_CAPPED || NOISE_FILLED)
+// what it has gathered so far. It stops at 5 %, so a line through
+// ln(20) / extinction of the cloud as drawn (0.43 m by default) is opaque:
+// that only adds smoke, changes a pixel by at most 6 levels out of 255, and
+// made the best dial step 8–9 % cheaper close up on an Apple M4 while a cloud
+// is grown or blooming. NOISE_FILLED fills in from there (`render.rs`), which
+// also closed its leak at the two cheapest dial steps. NOISE_CAPPED goes on
+// to 1 %, as its budget is worked out from ln(100) / extinction: at 5 % the
+// larger budget kept rays reading the noise for longer, 15 % slower close up,
+// and a few blocked pixels showed through at the cheapest steps. Skipping the
+// noise once a ray is nearly opaque instead cost 6–8 % more: a SIMD group
+// keeps the pace of its rays through thin smoke, which never get there, and
+// the test in every sample costs on its own.
+@if(NOISE_CAPPED)
 const OPAQUE_BELOW: f32 = 0.01;
 @else
 const OPAQUE_BELOW: f32 = 0.05;

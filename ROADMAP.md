@@ -112,14 +112,14 @@ both).
   cloud fades (docs/design.md, "The picture against the rule"): players all
   see the same thinning, but a server or bots that use the rule see less
   than they do there. `SmokeSettings::noise_within_rule` is for those games.
-- **`NoiseWithinRule::Filled`.** At the two cheapest dial steps a few pixels
-  just inside the edge of what the rule blocks still let a little through
-  (up to 16 by more than 1 %, none by more than 30 %): their quarter
-  resolution blurs the fill's sharper edge. Ending the fill a little before the threshold would close that. Its
-  cost (about 10 % close up at the top steps) could come down by adding up
-  the baked light channels along the ray instead of working out the light
-  at every sample, and the outline of a fading cloud's dome could be
-  softer.
+- **`NoiseWithinRule::Filled`.** Its cost (about 12 % more than the default
+  close up at the best step) could come down by adding up the baked light
+  channels along the ray instead of working out the light at every sample,
+  and the outline of a fading cloud's dome could be softer. Its leak at
+  the two cheapest dial steps (a few pixels just inside the edge of what
+  the rule blocks, up to 16 by more than 1 %) closed when it took the
+  default's 5 % ray end and began its fill at 0.43 m of cloud instead of
+  0.66 m.
 - **The march's skip through empty space.** Where the filtered density is
   under 0.002, the volumetric march moves on at least a voxel, but a
   sample can read that little within a voxel of dense smoke (trilinear

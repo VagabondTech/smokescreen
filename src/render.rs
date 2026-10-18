@@ -1241,17 +1241,17 @@ fn prepare_smoke(
         s.ambient_occlusion,
         config.voxel_size,
     );
-    // The rule blocks a line through `sight_threshold` of cloud, and with the
-    // noise kept within the rule the march draws a line opaque from
-    // ln(100) / extinction of it (`OPAQUE_BELOW` in smoke_march.wesl; by
-    // default it stops sooner). Capped, the noise may take the difference
-    // from any line; filled, what it took is filled back in between the two
-    // (on a line the rule blocks, all of it).
-    let opaque_from = 100f32.ln() / s.extinction.max(1e-6);
+    // The rule blocks a line through `sight_threshold` of cloud. Capped, the
+    // march draws a line opaque from ln(100) / extinction of it and the noise
+    // may take the difference from any line; filled, it draws it opaque from
+    // ln(20) / extinction (`OPAQUE_BELOW` in smoke_march.wesl) and fills what
+    // the noise took back in between the two (on a line the rule blocks, all
+    // of it).
+    let extinction = s.extinction.max(1e-6);
     let threshold = frame.sight_threshold.max(0.02);
     g.fairness = Vec4::new(
-        (frame.sight_threshold - opaque_from).max(0.0),
-        opaque_from.min(threshold - 0.01),
+        (frame.sight_threshold - 100f32.ln() / extinction).max(0.0),
+        (20f32.ln() / extinction).min(threshold - 0.01),
         threshold,
         0.0,
     );

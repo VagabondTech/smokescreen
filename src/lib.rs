@@ -409,8 +409,8 @@ pub enum NoiseWithinRule {
     /// The noise may thin smoke the rule counts. Billowy, and fading clouds
     /// dissolve into wisps. Rays end once less than 5 % of the scene shows
     /// through them, so a line through ln(20) / [`SmokeSettings::extinction`]
-    /// of the cloud as drawn (0.43 m by default) is opaque; the other two
-    /// modes go on to 1 %, which their promises are worked out from.
+    /// of the cloud as drawn (0.43 m by default) is opaque. `Filled` does the
+    /// same; `Capped` goes on to 1 %, which its budget is worked out from.
     #[default]
     Off,
     /// Along any line of sight the noise takes no more cloud than the rule
@@ -424,14 +424,11 @@ pub enum NoiseWithinRule {
     /// take, so volumetric smoke is then drawn without it.
     Capped,
     /// The noise runs as with `Off`, and on a line through more cloud than
-    /// the picture needs to be opaque (ln(100) / extinction, 0.66 m by
-    /// default) the opacity it took is filled back in behind it, completely
-    /// by the rule's threshold. Keeps the billows; a fading cloud stays a
-    /// textured dome with a crisp outline where the rule still blocks. Costs
-    /// about 20 % more than `Off` close up at the best dial step on an Apple
-    /// M4. At the two cheapest dial steps, which march at a quarter of the
-    /// resolution, a few pixels along the edge of what the rule blocks can
-    /// still let a little through.
+    /// the picture needs to be opaque (ln(20) / extinction, 0.43 m by
+    /// default, as with `Off`) the opacity it took is filled back in behind
+    /// it, completely by the rule's threshold. Keeps the billows; a fading
+    /// cloud stays a textured dome where the rule still blocks. Costs about
+    /// 12 % more than `Off` close up at the best dial step on an Apple M4.
     Filled,
 }
 

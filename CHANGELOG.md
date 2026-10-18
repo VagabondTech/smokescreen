@@ -59,26 +59,24 @@ are not in lockstep.
     smooth dome where the rule still blocks. It costs less, as a ray stops
     sampling the noise once it has taken all it may: on an Apple M4 at
     1920×1080, close up (medians of five alternated runs), the best step
-    takes 4.45 ms where `Off` takes 5.13 once the cloud is grown (−13 %)
-    and 3.12 where it takes 3.42 halfway through the fade (−9 %); the two
+    takes 4.44 ms where `Off` takes 5.12 once the cloud is grown (−13 %)
+    and 3.13 where it takes 3.40 halfway through the fade (−8 %); the two
     cheapest steps cost about the same.
   - `Filled`: the noise runs as before, and on lines through more than
-    ln(100) / extinction of cloud the opacity it took is filled back in
-    behind what was drawn, completely by the rule's threshold. The billows
-    stay; a fading cloud stays a textured dome with a crisp outline where
-    the rule still blocks. It costs more: close up at the best step, 6.12
-    ms where `Off` takes 5.13 once the cloud is grown (+19 %), and 3.88
-    where it takes 3.42 halfway through the fade (+14 %).
+    ln(20) / extinction of cloud (0.43 m by default, where rays end as
+    they do with `Off`) the opacity it took is filled back in behind what
+    was drawn, completely by the rule's threshold. The billows stay; a
+    fading cloud stays a textured dome where the rule still blocks. It
+    costs more: close up at the best step, 5.72 ms where `Off` takes 5.12
+    once the cloud is grown (+12 %), and 3.74 where it takes 3.40 halfway
+    through the fade (+10 %).
 
   With either, none of the pixels the rule blocks in the demo's four
   agreement views let more than 1 % of the scene through (away from
   edges), at the best step, grown, blooming and halfway through the fade;
   before, up to 5.5 % let more than 30 % through in a grown cloud, and a
-  third of them halfway through the fade. `Capped` does the same at every
-  step of the dial. `Filled` does down to the "low" step, while at the two
-  cheapest a few pixels just inside the edge of the blocked area still let
-  a little through (up to 16 by more than 1 %, none by more than 30 %).
-  Thin smoke keeps all its noise in both. The demo picks the mode with
+  third of them halfway through the fade. Both do the same at every step
+  of the dial. Thin smoke keeps all its noise in both. The demo picks the mode with
   `SMOKE_DEMO_NOISE_WITHIN_RULE=capped` or `filled`, its `agreement`
   script draws at any step of the dial with `SMOKE_DEMO_TIER`, and
   `tools/overlay.py` paints where the picture and the rule disagree.
@@ -99,10 +97,13 @@ are not in lockstep.
   steps. Lines the picture now draws opaque while the rule sees through
   them (between 0.43 m and the rule's 0.8 m of cloud) are at most 0.3 %
   of the smoke's pixels in a view (close up, grown), and none halfway
-  through the fade. `Capped` and `Filled` are unchanged: they go on to
-  1 %, which their budgets are worked out from, and draw what they did,
-  pixel for pixel, at the same cost (close up at the best step, 4.43 and
-  6.11 ms once the cloud is grown, where main took 4.45 and 6.11).
+  through the fade. `Filled` ends its rays at 5 % too and fills from
+  there (above): that made it 7 % cheaper close up and closed a leak at
+  the two cheapest dial steps, where its fill used to start at 0.66 m and
+  a few pixels just inside the edge of the blocked area let a little
+  through (up to 16 by more than 1 %). `Capped` goes on to 1 %, which its
+  budget is worked out from: at 5 % the noise could take 0.37 m instead
+  of 0.14 m, was read for longer, and cost 15 % more close up.
   Skipping the noise once a ray is nearly opaque, tried first, cost 6–8 %
   more: rays run in lockstep, and those through thin smoke, which never
   get nearly opaque, set the pace.
