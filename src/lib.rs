@@ -407,7 +407,10 @@ impl Default for SmokeSettings {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum NoiseWithinRule {
     /// The noise may thin smoke the rule counts. Billowy, and fading clouds
-    /// dissolve into wisps.
+    /// dissolve into wisps. Rays end once less than 5 % of the scene shows
+    /// through them, so a line through ln(20) / [`SmokeSettings::extinction`]
+    /// of the cloud as drawn (0.43 m by default) is opaque; the other two
+    /// modes go on to 1 %, which their promises are worked out from.
     #[default]
     Off,
     /// Along any line of sight the noise takes no more cloud than the rule
@@ -416,19 +419,19 @@ pub enum NoiseWithinRule {
     /// (0.8 − 0.66 = 0.14 m by default). Thicker smoke looks smoother, and a
     /// fading cloud stays a pale, smooth dome where the rule still blocks. The
     /// cheapest: a ray stops sampling the noise once it has taken all it may
-    /// (about 20 % less close up at the top dial steps on an Apple M4). A
-    /// threshold under ln(100) / extinction leaves the noise nothing to take,
-    /// so volumetric smoke is then drawn without it.
+    /// (about 13 % less than `Off` close up at the best dial step on an Apple
+    /// M4). A threshold under ln(100) / extinction leaves the noise nothing to
+    /// take, so volumetric smoke is then drawn without it.
     Capped,
     /// The noise runs as with `Off`, and on a line through more cloud than
     /// the picture needs to be opaque (ln(100) / extinction, 0.66 m by
     /// default) the opacity it took is filled back in behind it, completely
     /// by the rule's threshold. Keeps the billows; a fading cloud stays a
     /// textured dome with a crisp outline where the rule still blocks. Costs
-    /// about 10 % more close up at the top dial steps on an Apple M4. At the
-    /// two cheapest dial steps, which march at a quarter of the resolution, a
-    /// few pixels along the edge of what the rule blocks can still let a
-    /// little through.
+    /// about 20 % more than `Off` close up at the best dial step on an Apple
+    /// M4. At the two cheapest dial steps, which march at a quarter of the
+    /// resolution, a few pixels along the edge of what the rule blocks can
+    /// still let a little through.
     Filled,
 }
 

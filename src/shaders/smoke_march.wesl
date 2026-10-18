@@ -5,9 +5,9 @@
 // fetch of the baked volume (density + lighting), one of the open mask and
 // one or two fetches of the tiling detail noise (with NOISE_CAPPED, only
 // until the ray's erosion budget is spent; below). Rays stop at scene depth,
-// at full opacity, or at the step budget. The common case of a ray crossing
-// a single smoke takes a fast path with that smoke's data hoisted out of the
-// loop.
+// once nearly opaque (`OPAQUE_BELOW`), or at the step budget. The common
+// case of a ray crossing a single smoke takes a fast path with that smoke's
+// data hoisted out of the loop.
 //
 // The samples of a ray lie on a sequence fixed by the ray alone:
 // t_k = u0·r^k − 1/g with u0 = jitter·b + 1/g and r = 1 + b·g (b the step
@@ -48,6 +48,23 @@ import package::shaders::smoke_common::{
     SmokeGlobals, SmokeSlot, SmokeView, MAX_SLOTS, PI, STYLE_FACETED,
     hg_phase, ray_aabb, interleaved_gradient_noise, remap, sstep
 };
+
+// A ray ends once less than this share of the scene shows through it, and is
+// drawn opaque: the light it would still have gathered is taken to be like
+// what it has gathered so far. With the noise kept within the rule it goes
+// on to 1 %, as the budget and the fill above are worked out from
+// ln(100) / extinction (`render.rs`). By default it stops at 5 %, so a line
+// through ln(20) / extinction of the cloud as drawn (0.43 m by default) is
+// opaque: that only adds smoke, changes a pixel by at most 6 levels out of
+// 255, and made the best dial step 8–9 % cheaper close up on an Apple M4
+// while a cloud is grown or blooming. Skipping the noise once a ray is nearly
+// opaque instead cost 6–8 % more: a SIMD group keeps the pace of its rays
+// through thin smoke, which never get there, and the test in every sample
+// costs on its own.
+@if(NOISE_CAPPED || NOISE_FILLED)
+const OPAQUE_BELOW: f32 = 0.01;
+@else
+const OPAQUE_BELOW: f32 = 0.05;
 
 @group(0) @binding(0) var<uniform> globals: SmokeGlobals;
 @group(0) @binding(1) var<uniform> view: SmokeView;
@@ -359,7 +376,7 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
             return;
         }
         loop {
-            if (t >= t_stop || transmittance < 0.01 || steps >= max_steps) {
+            if (t >= t_stop || transmittance < OPAQUE_BELOW || steps >= max_steps) {
                 break;
             }
             let dt = base_step * (1.0 + t * growth);
@@ -401,7 +418,7 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
         var k = seq_first(seq, t_begin);
         var t = seq_t(seq, k);
         loop {
-            if (t >= t_end || transmittance < 0.01 || steps >= max_steps) {
+            if (t >= t_end || transmittance < OPAQUE_BELOW || steps >= max_steps) {
                 break;
             }
             let p = ro + rd * t;
@@ -493,14 +510,14 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
     @if(NOISE_FILLED) {
         // Fill back in the opacity the noise took, behind what was drawn,
         // from where the coarse picture turns opaque to the rule's threshold.
-        if (rule.w > globals.fairness.y && transmittance >= 0.01) {
+        if (rule.w > globals.fairness.y && transmittance >= OPAQUE_BELOW) {
             let filled = transmittance * sstep(globals.fairness.y, globals.fairness.z, rule.w);
             radiance += filled * rule.rgb / rule.w;
             transmittance -= filled;
         }
     }
     // Snap nearly-opaque to opaque so nothing behind leaks through.
-    if (transmittance < 0.01) {
+    if (transmittance < OPAQUE_BELOW) {
         radiance /= 1.0 - transmittance;
         transmittance = 0.0;
     }
