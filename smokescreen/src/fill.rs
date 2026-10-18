@@ -100,7 +100,8 @@ pub(crate) mod cost {
     /// Scanning the grid, per 64 voxels.
     pub const SCAN_PER_64: i64 = 8;
     pub const SETTLE: i64 = 48;
-    pub const HALO_SETTLE: i64 = 30;
+    /// Per voxel the halo expands.
+    pub const HALO_EXPAND: i64 = 15;
     /// Per eight voxels of a chamfer slice being seeded, and per four of
     /// one being relaxed.
     pub const CHAMFER_SEED_PER_8: i64 = 1;
@@ -137,7 +138,7 @@ pub(crate) mod cost {
     /// settles, and the work after the spread per ten grid voxels.
     pub const QUERIES_PER_SETTLE: i64 = 2;
     pub const REST_PER_10_VOXELS: i64 = 14;
-    pub const FACETED_REST_PER_10_VOXELS: i64 = 120;
+    pub const FACETED_REST_PER_10_VOXELS: i64 = 100;
 }
 
 /// Puffs binned per unit of work.
@@ -439,9 +440,14 @@ pub(crate) struct FillJob {
     // Halo.
     in_region: Vec<bool>,
     halo_dist: Vec<f32>,
-    halo_done: Vec<bool>,
+    /// Voxels waiting to be expanded, in the order they were queued, and the
+    /// next one to take.
+    halo_queue: Vec<u32>,
+    halo_next: usize,
+    /// Is the voxel queued and not yet taken?
+    halo_queued: Vec<bool>,
     halo_limit: f32,
-    /// Every voxel the halo settled (the fill included) lies in this box.
+    /// Every voxel in the halo (the fill included) lies in this box.
     halo_box: (IVec3, IVec3),
     // Region distance transform.
     region_box: (IVec3, IVec3),
@@ -523,7 +529,9 @@ impl FillJob {
             bounds: (spec.origin, spec.origin),
             in_region: Vec::new(),
             halo_dist: Vec::new(),
-            halo_done: Vec::new(),
+            halo_queue: Vec::new(),
+            halo_next: 0,
+            halo_queued: Vec::new(),
             halo_limit: 0.0,
             halo_box: (IVec3::MAX, IVec3::MIN),
             region_box: (IVec3::ZERO, IVec3::ZERO),
@@ -1271,51 +1279,81 @@ impl FillJob {
         if !work.begin(self.count as i64 / 64 * cost::ALLOC_PER_64 + self.order.len() as i64 * 2) {
             return;
         }
-        self.halo_box = (IVec3::MAX, IVec3::MIN);
+        self.halo_box = (self.filled_min, self.filled_max);
         self.halo_limit = self.settings.halo_metres() / self.v;
         self.in_region = self.settled.clone();
+        // Every filled voxel is at distance 0.
         self.halo_dist = vec![0.0; self.count];
-        self.reached = vec![false; self.count];
-        self.halo_done = vec![false; self.count];
+        self.reached = self.settled.clone();
+        self.halo_queued = vec![false; self.count];
+        self.halo_queue.clear();
+        self.halo_next = 0;
+        // The halo grows from the filled voxels with an open face. One whose
+        // six face neighbours are all filled reaches nothing sooner than they
+        // do: whatever it reaches with a diagonal step, one of them reaches
+        // with a shorter step that needs no voxel open that the diagonal
+        // didn't. And the spread has asked the level about all its
+        // neighbours already.
+        let d = self.dims;
+        let faces =
+            FACES.map(|o| (o.x as isize + (d.x as isize) * (o.y as isize + (d.y as isize) * o.z as isize)) as usize);
         for k in 0..self.order.len() {
-            let idx = self.order[k];
-            self.halo_dist[idx as usize] = 0.0;
-            self.reached[idx as usize] = true;
-            self.heap.push(Reverse((0, idx)));
+            let i = self.order[k] as usize;
+            // Filled voxels are never in the outermost layer.
+            if faces.iter().any(|&f| !self.settled[i.wrapping_add(f)]) {
+                self.halo_queued[i] = true;
+                self.halo_queue.push(i as u32);
+            }
         }
         self.stage = Stage::Halo;
     }
 
+    /// Expands the queued voxels in turn, and queues a voxel again whenever
+    /// a shorter way to it turns up, until nothing within reach is left.
+    /// Every voxel ends at the distance a nearest-first search gives it, and
+    /// the same voxels are expanded, so the level is asked about the same
+    /// ones; only the order differs.
     fn halo<L: Level + ?Sized>(&mut self, probe: &Probe<L>, work: &mut Work) {
         let all = steps();
         while !work.exhausted() {
-            let Some(Reverse((_, idx))) = self.heap.pop() else {
+            let Some(&idx) = self.halo_queue.get(self.halo_next) else {
                 self.halo_dist = Vec::new();
                 self.reached = Vec::new();
-                self.halo_done = Vec::new();
+                self.halo_queued = Vec::new();
+                self.halo_queue = Vec::new();
                 self.stage = Stage::RegionStart;
                 return;
             };
+            self.halo_next += 1;
             let i = idx as usize;
-            if self.halo_done[i] {
+            self.halo_queued[i] = false;
+            work.spend(cost::HALO_EXPAND);
+            let c = self.decode(i);
+            if !self.in_region[i] {
+                self.in_region[i] = true;
+                self.halo_box = (self.halo_box.0.min(c), self.halo_box.1.max(c));
+            }
+            let solid = self.solid_mask(c, probe, work);
+            let d = self.halo_dist[i];
+            if d + 1.0 > self.halo_limit {
+                // Even a straight step would leave the halo: asking the level
+                // about the neighbours, which the rest of the fill reads, was
+                // all there was to do here.
                 continue;
             }
-            work.spend(cost::HALO_SETTLE);
-            self.halo_done[i] = true;
-            self.in_region[i] = true;
-            let c = self.decode(i);
-            self.halo_box = (self.halo_box.0.min(c), self.halo_box.1.max(c));
-            let solid = self.solid_mask(c, probe, work);
             for (k, s) in all.iter().enumerate() {
                 if solid & (1 << k | s.guard_bits) != 0 {
                     continue;
                 }
                 let ni = i.wrapping_add(self.deltas[k]);
-                let nd = self.halo_dist[i] + s.length;
+                let nd = d + s.length;
                 if nd <= self.halo_limit && (!self.reached[ni] || nd < self.halo_dist[ni]) {
                     self.halo_dist[ni] = nd;
                     self.reached[ni] = true;
-                    self.heap.push(Reverse((key(nd), ni as u32)));
+                    if !self.halo_queued[ni] {
+                        self.halo_queued[ni] = true;
+                        self.halo_queue.push(ni as u32);
+                    }
                 }
             }
         }
