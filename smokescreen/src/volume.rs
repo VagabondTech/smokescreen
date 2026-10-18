@@ -9,6 +9,29 @@ use crate::{
     timeline::DensityTable,
 };
 
+/// How far apart the volumetric rule's samples lie along a line
+/// ([`crate::Tuning::volume_steps`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum VolumeSteps {
+    /// A sample every half voxel: twice as many, so a check costs about 1.5
+    /// times as much, and the amount of cloud it finds is a little more
+    /// precise.
+    HalfVoxel,
+    /// A sample every voxel.
+    #[default]
+    Voxel,
+}
+
+impl VolumeSteps {
+    /// The distance between samples, for voxels `voxel_size` long.
+    pub fn step(self, voxel_size: f32) -> f32 {
+        match self {
+            Self::HalfVoxel => voxel_size * 0.5,
+            Self::Voxel => voxel_size,
+        }
+    }
+}
+
 /// A volumetric cloud at one tick. Internal frame.
 #[derive(Clone, Copy, Debug)]
 pub struct VolumeField<'a> {
@@ -17,6 +40,9 @@ pub struct VolumeField<'a> {
     /// [`crate::CloudState::density`]).
     pub density: &'a DensityTable,
     pub holes: &'a [HoleShape],
+    /// Distance between samples along a line, metres
+    /// ([`VolumeSteps::step`] of the grid's voxel size).
+    pub step: f32,
 }
 
 impl VolumeField<'_> {
@@ -66,8 +92,9 @@ impl VolumeField<'_> {
     }
 
     /// Add the density integrated along `ro + rd·t`, `t0 ≤ t ≤ t1` (metres of
-    /// full-density cloud) to `acc`, a half-voxel step at a time (midpoint
-    /// rule). Stops (and returns `true`) as soon as `stop(*acc)` holds.
+    /// full-density cloud) to `acc`, about [`Self::step`] at a time
+    /// (midpoint rule). Stops (and returns `true`) as soon as `stop(*acc)`
+    /// holds.
     pub fn amount(&self, ro: Vec3, rd: Vec3, t0: f32, t1: f32, acc: &mut f32, stop: &dyn Fn(f32) -> bool) -> bool {
         self.amount_by(|p| self.density(p), ro, rd, t0, t1, acc, stop)
     }
@@ -104,8 +131,7 @@ impl VolumeField<'_> {
         if len <= 0.0 {
             return false;
         }
-        let step = self.grid.voxel_size * 0.5;
-        let n = (len / step).ceil().max(1.0) as u32;
+        let n = (len / self.step.max(1e-4)).ceil().max(1.0) as u32;
         let dt = len / n as f32;
         let inv = safe_recip(rd);
         // Every byte from this one on has density 0.
@@ -208,6 +234,7 @@ mod tests {
                 grid: &grid,
                 density: &table,
                 holes: &[],
+                step: VolumeSteps::HalfVoxel.step(grid.voxel_size),
             };
             for k in 0..2000u32 {
                 let r = |s: u32| (hash_u32(k.wrapping_mul(7) ^ s) >> 8) as f32 / (1u32 << 24) as f32;

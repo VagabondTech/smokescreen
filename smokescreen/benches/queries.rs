@@ -120,17 +120,26 @@ fn main() {
     const PHASES: [f32; 5] = [0.8, 5.0, 15.5, 16.5, 17.5];
     println!("250 sight checks, 32 clouds (an 8 × 4 grid 12 m apart), each segment crossing 4.");
     println!("Milliseconds (lines blocked) at seconds after the pop:");
-    println!("{:17}{}", "", PHASES.map(|s| format!("{s:>13}")).join(""));
+    println!("{:19}{}", "", PHASES.map(|s| format!("{s:>13}")).join(""));
+    let voxel = VolumeSteps::Voxel;
     let rules = [
-        ("volumetric", Style::Volumetric, FacetRule::Exact, 0.8),
-        ("faceted, exact", Style::Faceted, FacetRule::Exact, 0.8),
-        ("faceted, core", Style::Faceted, FacetRule::Core, 0.8),
-        ("crystal, 0.8 m", Style::Crystal, FacetRule::Exact, 0.8),
-        ("crystal, touch", Style::Crystal, FacetRule::Exact, 0.0),
+        ("volumetric", Style::Volumetric, FacetRule::Exact, voxel, 0.8),
+        (
+            "volumetric, half",
+            Style::Volumetric,
+            FacetRule::Exact,
+            VolumeSteps::HalfVoxel,
+            0.8,
+        ),
+        ("faceted, exact", Style::Faceted, FacetRule::Exact, voxel, 0.8),
+        ("faceted, core", Style::Faceted, FacetRule::Core, voxel, 0.8),
+        ("crystal, 0.8 m", Style::Crystal, FacetRule::Exact, voxel, 0.8),
+        ("crystal, touch", Style::Crystal, FacetRule::Exact, voxel, 0.0),
     ];
-    for (name, style, rule, threshold) in rules {
+    for (name, style, rule, steps, threshold) in rules {
         let mut cfg = config.clone();
         cfg.tuning.facet_rule = rule;
+        cfg.tuning.volume_steps = steps;
         cfg.tuning.sight_threshold = threshold;
         let mut smokes = Smokes::new(cfg, FlatGround::default());
         for i in 0..32 {
@@ -155,7 +164,7 @@ fn main() {
             .map(|(a, b)| (*a + Vec3::new(0.0, 6.0, 0.0), *b + Vec3::new(0.0, 6.0, 0.0)))
             .collect();
 
-        let mut line = format!("  {name:15}");
+        let mut line = format!("  {name:17}");
         let mut extra = String::new();
         let mut next = 0;
         for seconds in PHASES {
@@ -183,7 +192,7 @@ fn main() {
             if seconds == 5.0 {
                 let (_, clear) = best(&|| over.iter().filter(|(a, b)| view.blocks_sight(*a, *b)).count());
                 extra = format!(
-                    "{:17}grown: per-tick state {:.3} ms, the same checks over the clouds {:.3} ms",
+                    "{:19}grown: per-tick state {:.3} ms, the same checks over the clouds {:.3} ms",
                     "",
                     ms(state),
                     ms(clear)

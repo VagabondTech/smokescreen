@@ -33,6 +33,8 @@
 //! - `SMOKE_DEMO_NOISE_WITHIN_RULE=capped` or `filled` sets
 //!   `SmokeSettings::noise_within_rule`: either way, volumetric smoke's noise
 //!   never shows through what the rule blocks.
+//! - `SMOKE_DEMO_VOLUME_STEPS=half` has the volumetric rule sample a line
+//!   every half voxel instead of every voxel (`Tuning::volume_steps`).
 //! - `SMOKE_DEMO_CLIENT_CLOCK=<seconds>` starts the app's clock that far
 //!   ahead of the smoke's ticks, as on a client whose clock has run longer
 //!   than the match: the demo counts the ticks itself, from the virtual time
@@ -166,7 +168,11 @@ fn main() {
         Some("filled") => NoiseWithinRule::Filled,
         _ => NoiseWithinRule::Off,
     };
-    app.add_plugins((SmokePlugin::default(), FrameTimeDiagnosticsPlugin::default()))
+    let mut smoke_plugin = SmokePlugin::default();
+    if setting("volume_steps").as_deref() == Some("half") {
+        smoke_plugin.config.tuning.volume_steps = VolumeSteps::HalfVoxel;
+    }
+    app.add_plugins((smoke_plugin, FrameTimeDiagnosticsPlugin::default()))
         .insert_resource(smoke_settings)
         .insert_resource(DemoBudget(budget_ms))
         .insert_resource(GlobalAmbientLight {
@@ -2397,9 +2403,10 @@ fn agreement_run(
                     .filter_map(|c| c.age(clock.drawn(), rate))
                     .fold(0.0, f32::max);
                 let meta = format!(
-                    "style {:?}\nthreshold {}\nsigma {}\nage {age:.3}\nerosion {}\ndetail_erosion {}\ntier {}\nnoise_within_rule {:?}\n",
+                    "style {:?}\nthreshold {}\nvolume_steps {:?}\nsigma {}\nage {age:.3}\nerosion {}\ndetail_erosion {}\ntier {}\nnoise_within_rule {:?}\n",
                     settings.style,
                     config.tuning.sight_threshold,
+                    config.tuning.volume_steps,
                     settings.extinction * smoke.density,
                     settings.erosion,
                     settings.detail_erosion,

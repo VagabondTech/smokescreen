@@ -86,7 +86,7 @@ pub use holes::{HoleKind, HoleSettings, HoleShape};
 pub use level::{BoxObstacles, FlatGround, Level, ObstacleBox, VoxelObstacles};
 pub use timeline::{DensityTable, Timeline};
 pub use units::{Units, UpAxis};
-pub use volume::VolumeField;
+pub use volume::{VolumeField, VolumeSteps};
 pub use world::{
     CloudId, CloudInfo, CloudSource, CloudSpec, CloudState, CloudView, Config, Smokes, Style, Tuning, View, fill_cloud,
 };

@@ -2,8 +2,9 @@
 //! three styles, a smoke wall and a filled box among them), run 10,000 seeded
 //! segment queries over their lifetimes (with bullets and explosions along
 //! the way) and hash every result; in metres, in Z-up inches, and once more
-//! with the faceted core rule. The hash must be the
-//! same on every platform the game ships on: run this in CI on each.
+//! with the faceted core rule and volumetric samples half a voxel apart. The
+//! hash must be the same on every platform the game ships on: run this in CI
+//! on each.
 
 mod common;
 
@@ -13,7 +14,7 @@ use smokescreen::*;
 /// Recorded on aarch64-apple-darwin; CI checks it on x86-64 Linux and Windows
 /// too. Any platform (or optimisation level, or CPU feature set) that differs
 /// breaks lockstep.
-const EXPECTED: u64 = 0xfe37_f661_c249_b2fb;
+const EXPECTED: u64 = 0xba64_31b9_4bb6_62aa;
 
 struct Fnv(u64);
 
@@ -31,9 +32,10 @@ impl Fnv {
     }
 }
 
-fn run(units: Units, rule: FacetRule, hash: &mut Fnv) -> u32 {
+fn run(units: Units, rule: FacetRule, steps: VolumeSteps, hash: &mut Fnv) -> u32 {
     let mut config = Config::new(units, 128.0);
     config.tuning.facet_rule = rule;
+    config.tuning.volume_steps = steps;
     let mut smokes = Smokes::new(config, common::level_in(units));
     let pops = common::pops();
     let mut ids = Vec::new();
@@ -112,9 +114,9 @@ fn run(units: Units, rule: FacetRule, hash: &mut Fnv) -> u32 {
 #[test]
 fn determinism_hash() {
     let mut hash = Fnv(0xcbf2_9ce4_8422_2325);
-    let n = run(Units::METRES_Y_UP, FacetRule::Exact, &mut hash);
-    let m = run(common::z_up_inches(), FacetRule::Exact, &mut hash);
-    let c = run(Units::METRES_Y_UP, FacetRule::Core, &mut hash);
+    let n = run(Units::METRES_Y_UP, FacetRule::Exact, VolumeSteps::Voxel, &mut hash);
+    let m = run(common::z_up_inches(), FacetRule::Exact, VolumeSteps::Voxel, &mut hash);
+    let c = run(Units::METRES_Y_UP, FacetRule::Core, VolumeSteps::HalfVoxel, &mut hash);
     assert_eq!((n, m, c), (10_000, 10_000, 10_000));
     println!("determinism hash: {:#018x}", hash.0);
     if EXPECTED != 0 {
