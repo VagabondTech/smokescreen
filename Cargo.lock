@@ -1552,7 +1552,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_smokescreen"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bevy",
  "bytemuck",
@@ -4684,7 +4684,7 @@ dependencies = [
 
 [[package]]
 name = "smokescreen"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "glam",
  "libm",

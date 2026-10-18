@@ -3,7 +3,11 @@
 Changes that alter simulation results (and so break lockstep with older
 versions) are marked **results**.
 
-## Unreleased
+## 0.1.1 (2026-10-18)
+
+The performance work of the first two reviews. No public API changes, and
+simulation results are unchanged: the determinism hashes are those of
+0.1.0, so a 0.1.0 server and a 0.1.1 client stay in lockstep.
 
 - Fills are 16–20 % faster (on an Apple M4) and finish in fewer ticks at the
   default budget: 14 instead of 15 for a volumetric cloud, 37–42 instead of
