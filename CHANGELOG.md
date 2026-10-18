@@ -99,8 +99,10 @@ are not in lockstep.
   steps. Lines the picture now draws opaque while the rule sees through
   them (between 0.43 m and the rule's 0.8 m of cloud) are at most 0.3 %
   of the smoke's pixels in a view (close up, grown), and none halfway
-  through the fade. `Capped` and `Filled` go on to 1 %, which their
-  budgets are worked out from, and draw what they did, pixel for pixel.
+  through the fade. `Capped` and `Filled` are unchanged: they go on to
+  1 %, which their budgets are worked out from, and draw what they did,
+  pixel for pixel, at the same cost (close up at the best step, 4.43 and
+  6.11 ms once the cloud is grown, where main took 4.45 and 6.11).
   Skipping the noise once a ray is nearly opaque, tried first, cost 6–8 %
   more: rays run in lockstep, and those through thin smoke, which never
   get nearly opaque, set the pace.
