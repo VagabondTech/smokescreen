@@ -38,15 +38,17 @@ the same segments. Per view:
 - blocked, shows through: the rule blocks the segment, but the picture lets
   more than 1 %, 10 % or 30 % of the scene through;
 - opaque, not blocked: the picture lets less than 1 % through (the march
-  draws that as opaque) where the rule doesn't block. The picture errs
+  draws a ray opaque once less than 5 % shows through, 1 % with the noise
+  kept within the rule) where the rule doesn't block. The picture errs
   towards more smoke there, which is fair.
 
 Then the picture's own amount of cloud, -ln(transmittance) / sigma (metres of
 full-density cloud, as `occlusion` counts them), against the rule's amount,
 by the rule's amount and away from edges: the median of picture / rule, and
-how many pixels. Past -ln(0.01) / sigma (0.66 m by default) the picture is
-opaque and says no more. Without the noise the two differ only where the rule
-and the picture work out the density differently; with it, the noise thins
+how many pixels. Past -ln(0.05) / sigma (0.43 m by default; -ln(0.01) / sigma,
+0.66 m, with the noise kept within the rule) the picture is opaque and says
+no more. Without the noise the two differ only where the rule and the
+picture work out the density differently; with it, the noise thins
 the picture. With `SmokeSettings::noise_within_rule` capped or filled (the
 demo's `SMOKE_DEMO_NOISE_WITHIN_RULE`), nothing the rule blocks shows through.
 `overlay.py` paints where the two disagree.
@@ -176,7 +178,9 @@ def hard(src, chord_rule=None):
 def volumetric(src, meta):
     sigma = float(meta["sigma"])
     threshold = float(meta["threshold"])
-    opaque = -np.log(0.01) / sigma
+    # The march draws a ray opaque once less than this shows through.
+    stop = 0.05 if meta.get("noise_within_rule", "Off") == "Off" else 0.01
+    opaque = -np.log(stop) / sigma
     print(
         f"age {meta.get('age', '?')} s, dial step {meta.get('tier', 'ultra')}, erosion {meta.get('erosion', '?')}, "
         f"detail erosion {meta.get('detail_erosion', '?')}, noise within the rule "
@@ -187,7 +191,7 @@ def volumetric(src, meta):
         f"{'view':6} {'smoke':>8} {'blocked':>8} | blocked, shows through: {'>1%':>7} {'>10%':>6} {'>30%':>6} "
         f"{'(edge,>1%)':>10} | opaque, not blocked: {'px':>7} {'(edge)':>7}"
     )
-    edges = [0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, opaque]
+    edges = [e for e in (0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5) if e < opaque] + [opaque]
     ratios = {}
     for view in VIEWS:
         loaded = load(src, view)

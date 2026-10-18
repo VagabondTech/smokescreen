@@ -50,9 +50,8 @@ are not in lockstep.
 - `SmokeSettings::noise_within_rule` (`NoiseWithinRule`) can keep
   volumetric smoke's noise from showing through what the rule blocks, for
   games whose server, bots or abilities use the rule. It is `Off` by
-  default, which draws the same picture as before, pixel for pixel, at the
-  same cost: each of the other two modes is compiled into its own march
-  pipelines, used only when chosen.
+  default, and costs nothing then: each of the other two modes is compiled
+  into its own march pipelines, used only when chosen.
   - `Capped`: along any line of sight the noise takes no more cloud than
     the rule leaves spare (`Tuning::sight_threshold` less the ln(100) /
     `SmokeSettings::extinction` the picture needs to be opaque: 0.14 m by
@@ -60,16 +59,16 @@ are not in lockstep.
     smooth dome where the rule still blocks. It costs less, as a ray stops
     sampling the noise once it has taken all it may: on an Apple M4 at
     1920×1080, close up (medians of five alternated runs), the best step
-    takes 4.43 instead of 5.56 ms once the cloud is grown (−20 %) and 3.16
-    instead of 3.44 ms halfway through the fade (−8 %); the two cheapest
-    steps cost about the same.
+    takes 4.45 ms where `Off` takes 5.13 once the cloud is grown (−13 %)
+    and 3.12 where it takes 3.42 halfway through the fade (−9 %); the two
+    cheapest steps cost about the same.
   - `Filled`: the noise runs as before, and on lines through more than
     ln(100) / extinction of cloud the opacity it took is filled back in
     behind what was drawn, completely by the rule's threshold. The billows
     stay; a fading cloud stays a textured dome with a crisp outline where
-    the rule still blocks. It costs more: close up, 6.18 instead of 5.63 ms
-    at the best step grown (+10 %), 3.84 instead of 3.43 ms halfway through
-    the fade (+12 %).
+    the rule still blocks. It costs more: close up at the best step, 6.12
+    ms where `Off` takes 5.13 once the cloud is grown (+19 %), and 3.88
+    where it takes 3.42 halfway through the fade (+14 %).
 
   With either, none of the pixels the rule blocks in the demo's four
   agreement views let more than 1 % of the scene through (away from
@@ -83,6 +82,28 @@ are not in lockstep.
   `SMOKE_DEMO_NOISE_WITHIN_RULE=capped` or `filled`, its `agreement`
   script draws at any step of the dial with `SMOKE_DEMO_TIER`, and
   `tools/overlay.py` paints where the picture and the rule disagree.
+- Volumetric rays end once less than 5 % of the scene shows through them,
+  instead of 1 %, with the noise as it is by default
+  (`NoiseWithinRule::Off`), and are drawn opaque as before. On an Apple M4
+  at 1920×1080, close up (medians of five alternated runs), the best step
+  takes 5.13 instead of 5.60 ms once the cloud is grown (−8 %), 5.17
+  instead of 5.68 ms 0.8 s into the bloom (−9 %) and 3.42 instead of 3.47
+  ms halfway through the fade (−2 %); at mid-range, 1.17 instead of 1.25
+  ms grown. The picture changes by at most 6 levels out of 255 in the tier
+  sweep's frames (most opaque pixels by 1 or 2), and only towards more
+  smoke: a line through more than 0.43 m of the cloud as drawn is opaque,
+  where until 0.66 m up to 5 % of the scene showed through. In the demo's
+  agreement views, the pixels the rule blocks that let more than 1 % of
+  the scene through fall by a fifth to a third; those letting more than
+  10 % or 30 % through are unchanged, and so is the agreement between dial
+  steps. Lines the picture now draws opaque while the rule sees through
+  them (between 0.43 m and the rule's 0.8 m of cloud) are at most 0.3 %
+  of the smoke's pixels in a view (close up, grown), and none halfway
+  through the fade. `Capped` and `Filled` go on to 1 %, which their
+  budgets are worked out from, and draw what they did, pixel for pixel.
+  Skipping the noise once a ray is nearly opaque, tried first, cost 6–8 %
+  more: rays run in lockstep, and those through thin smoke, which never
+  get nearly opaque, set the pace.
 - The demo starts with the quality dial at low (it was medium), in every
   look; its scripted captures still start at high.
 
