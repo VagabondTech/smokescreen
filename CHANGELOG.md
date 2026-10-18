@@ -3,6 +3,11 @@
 Changes that alter simulation results (and so break lockstep with older
 versions) are marked **results**.
 
+## Unreleased
+
+- The demo starts with the quality dial at low (it was medium), in every
+  look; its scripted captures still start at high.
+
 ## 0.1.1 (2026-10-18)
 
 The performance work of the first two reviews. No public API changes, and
