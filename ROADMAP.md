@@ -156,15 +156,20 @@ The README's tables come from `cargo bench -p smokescreen`. The weak spots:
   position and size: 0.1 to 0.3 ms for 32 clouds) is computed for every
   cloud, whether or not a check comes near it. Compute a cloud's puffs on
   the first check that touches it.
-- Faceted fills cost about 2.3× volumetric ones (0.28 s of ticks at the
-  default budget). Since the halo grows from the fill's open faces (0.2),
-  the region's two distance transforms are the biggest part left, about a
-  quarter of a faceted fill on an Apple M4. Both in one pass over one
-  array (a voxel steps from 0 where its neighbour is on the other side)
-  gives the very same values, but took 0.45 ms where the two take 0.30:
-  the test per voxel keeps the loop from vectorising. Options, all of which
-  change results: one distance transform of the boundary instead of two,
-  an integer 3-4-5 chamfer, a narrow band around the fill. A server using
+- Faceted fills cost about 2.1× volumetric ones (0.26 s of ticks at the
+  default budget). Since 0.2 the halo grows from the fill's open faces and
+  the distance out of the region runs over the halo's box and one voxel
+  around it, so the spread, which volumetric fills share, is the biggest
+  part, and the distance into the region (over five voxels around the
+  halo's box) comes next: about 0.15 ms of a 1.14 ms faceted fill on an
+  Apple M4. Both distances in one pass over one array (a voxel steps from
+  0 where its neighbour is on the other side) gives the very same values,
+  but took 0.45 ms where the two took 0.30: the test per voxel keeps the
+  loop from vectorising. One distance transform of the region's boundary
+  instead of two would save about 0.07 ms more, but it changes results
+  (each puff's room and the clip surface move by up to half a voxel near
+  walls), so 0.2 leaves it out; an integer 3-4-5 chamfer and a narrow
+  band around the fill would change results too. A server using
   `FacetRule::Core` could also skip the wall-clip stages if puff seeding
   stopped depending on the halo.
 - Crystal clouds are thousands of entities. If entity overhead shows up in
