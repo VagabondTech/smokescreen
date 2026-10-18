@@ -21,6 +21,10 @@ both).
   without the noise the two agree too, and `SmokeSettings::noise_within_rule`
   (`Capped` or `Filled`) keeps the noise from showing through what the
   rule blocks (0.2).
+- **The same noise for every player:** volumetric smoke's noise moves on
+  the simulation's ticks (`SmokeClock::draw_fraction` between them), not on
+  each machine's clock, so players drawing the same tick see the same
+  billows (0.2).
 - **Faster checks:** skipping the parts of a volumetric cloud the growth
   front hasn't reached or the fade has eaten (3× faster late in the fade),
   per-check hole filtering; both leave results bit-identical.
@@ -103,15 +107,6 @@ both).
   more than players). Options: draw chords under the threshold see-through,
   or recommend `FacetRule::Core` plus a lower threshold. Crystal has the
   same trade-off unless its threshold is 0.
-- **Volumetric noise between players.** The noise animates on each
-  client's own clock (`Time`), so two players looking at each other through
-  the same smoke see different holes at the same moment. Driven by the
-  simulation's ticks instead, it would be the same for everyone, and a hole
-  that lets one player see another would let the other see them back. By
-  default the noise also thins some smoke the rule counts, most while a
-  cloud fades (docs/design.md, "The picture against the rule"): players all
-  see the same thinning, but a server or bots that use the rule see less
-  than they do there. `SmokeSettings::noise_within_rule` is for those games.
 - **`NoiseWithinRule::Filled`.** Its cost (about 12 % more than the default
   close up at the best step) could come down by adding up the baked light
   channels along the ray instead of working out the light at every sample,

@@ -176,6 +176,7 @@ pub(crate) struct SmokeFrame {
     /// The core's internal frame (metres, Y up) from the Bevy world's: all
     /// smoke data is in the internal frame, cameras are moved into it.
     pub internal_from_world: Mat4,
+    /// Seconds on the volumetric noise's clock, from the drawn tick.
     pub time: f32,
     pub frame: u32,
 }

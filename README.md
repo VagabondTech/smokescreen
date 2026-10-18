@@ -32,7 +32,7 @@ Smoke that fills rooms, pours through doorways, stops at walls and blocks sight.
 - Lit by the sun with self-shadowing, darker indoors, lit from inside by muzzle flashes and explosions (any Bevy `PointLight`).
 - **Gameplay sees the same smoke.** `blocks_sight(a, b)` and `occlusion(a, b)` for AI, server-side visibility and audio; `density_at(p)` for gas damage.
 - **Level setup without collision code:** mark your level's meshes with `SmokeObstacle`.
-- **One performance dial per camera**, or a GPU millisecond budget that turns it for you. No dial step changes a cloud's shape, so a cheaper setting doesn't show through smoke a better one hides; volumetric smoke's noise falls a little differently from step to step (under 1 % of its pixels by more than a tenth).
+- **One performance dial per camera**, or a GPU millisecond budget that turns it for you. No dial step changes a cloud's shape, so a cheaper setting doesn't show through smoke a better one hides; volumetric smoke's noise falls a little differently from step to step (in the demo's views, at most 0.7 % of a smoke's pixels let more than 30 % more of the scene through than at the best step).
 - **Deterministic core for multiplayer** (`smokescreen`): engine-free, runs on your ticks and in your units, bit-identical on x86-64 and ARM, with a per-tick CPU budget.
 
 | Round walls and down corridors | Indoors, through a doorway | Off a ledge |
@@ -190,7 +190,7 @@ let hidden = view.blocks_sight(eye, enemy_head);
 - **A per-tick CPU budget.** A cloud's fill runs a little each tick (`Config::fill_budget`, about 0.2 ms); it speeds up only if the cloud is about to start growing. The finished cloud is the same however the work is split.
 - **Networking.** Send the `CloudSpec` of each pop (a couple of dozen bytes) and each bullet and explosion with its tick; every machine computes the same clouds, as long as they share the `Tuning` and the same level answers. For mesh-based levels, voxelise once and ship the voxels (`VoxelObstacles::to_bytes`). A level voxelised at the tuning's voxel size (`VoxelObstacles::from_level`) gives exactly the clouds its source level would, faster: cloud grids lie on the same world lattice. Or run the fill on the server with `fill_cloud` and send the result for `Smokes::insert`.
 
-In Bevy, `SmokeWorld` is the `Smokes` the plugin runs, and `SmokeClock` sets the tick (by default from Bevy's virtual time; set `auto: false` to drive it from your netcode, with `draw_tick` for an interpolation delay). `SmokePlugin { config }` takes the same `Config`, so a Bevy client in Z-up inches works too:
+In Bevy, `SmokeWorld` is the `Smokes` the plugin runs, and `SmokeClock` sets the tick (by default from Bevy's virtual time; set `auto: false` to drive it from your netcode, with `draw_tick` for an interpolation delay and `draw_fraction` for how far the frame is past that tick). Volumetric smoke's noise moves on those ticks too, not on each machine's clock, so players who draw the same tick see the same billows. `SmokePlugin { config }` takes the same `Config`, so a Bevy client in Z-up inches works too:
 
 ![Units](https://raw.githubusercontent.com/VagabondTech/smokescreen/main/docs/units.jpg)
 

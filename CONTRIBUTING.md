@@ -45,6 +45,9 @@ demo`, or `presets`) and look. For the faceted and crystal looks, the
 rule blocks (see the top of `examples/demo.rs`). For the volumetric look,
 the `agreement` capture with `SMOKE_DEMO_NOISE=0` checks that the picture's
 density is the rule's, and without it how much the noise thins the smoke.
+Its captures at each dial step (`SMOKE_DEMO_TIER`), compared with
+`tools/fairness.py --volumetric`, check that no cheaper step shows through
+what the best one hides.
 
 ## Determinism
 
@@ -81,7 +84,9 @@ Two more rules the tests enforce:
 
 The picture must never show through anything the rule blocks, and the
 performance dial may change how precisely smoke is drawn, never its shape.
-Where the two can't agree exactly, draw more smoke, not less.
+Where the two can't agree exactly, draw more smoke, not less. Nothing drawn
+may follow a machine's own clock, only the drawn tick, so that players who
+draw the same tick see the same smoke.
 
 ## Style
 

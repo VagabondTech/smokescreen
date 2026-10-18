@@ -51,7 +51,8 @@ Without the noise the two differ only where the rule and the picture work
 out the density differently; with it, the noise thins the picture. With
 `SmokeSettings::noise_within_rule` capped or filled (the demo's
 `SMOKE_DEMO_NOISE_WITHIN_RULE`), nothing the rule blocks shows through.
-`overlay.py` paints where the two disagree.
+`overlay.py` paints where the two disagree, and `fairness.py --volumetric`
+compares runs at each dial step with the best step's.
 
 Needs numpy and Pillow.
 """
