@@ -96,11 +96,19 @@ cargo run --example presets                 # every preset and look; also minima
    the budget.
 4. **Queries allocate nothing** (`queries_do_not_allocate`). Use stack
    buffers (`holes::HOLE_BUFFER`, `chords::Intervals`).
-5. **Fairness.** The picture must never show through anything the rule
-   blocks, and no quality-dial step may change a cloud's shape (only how
-   precisely it is drawn). Where they can't agree exactly, the picture
-   errs towards more smoke. Check with the demo's `agreement` and `tiers`
-   captures and the two tools.
+5. **Fairness.** First between players: everyone must see the same smoke,
+   whatever their quality-dial step. No step may change a cloud's shape
+   (only how precisely it is drawn), and where steps can't agree exactly
+   the cheaper one errs towards more smoke (volumetric noise falls a little
+   differently from step to step: keep that under 1 % of pixels by more
+   than a tenth). Then against the rule: the faceted and crystal pictures
+   never show through anything the rule blocks. The volumetric noise does,
+   most while a cloud fades, unless `SmokeSettings::noise_within_rule` is
+   on; that caps what the noise may take from any ray (`sight_threshold`
+   less ln(100) / extinction, the march's `budget`, which its empty-space
+   jumps also charge). Check with the demo's `agreement` (`SMOKE_DEMO_TIER`
+   for any step) and `tiers` captures and the tools (`tools/overlay.py`
+   paints the disagreements).
 6. **Units.** The core works in metres, Y up, internally; everything public
    is in the caller's units (`Units`). Renderers draw in the internal frame
    and convert per view.
@@ -185,6 +193,14 @@ cargo run --example presets                 # every preset and look; also minima
   the march, dropping their fetches and jumping them outright, it cost
   5–15 % close up and at mid-range both times. The lookups cost more than
   what they save in a loop that is ALU-bound and runs in lockstep.
+- The march is just as touchy about state carried along the ray. The
+  noise budget's bookkeeping (two floats and a few operations per sample)
+  cost 9–14 % close up at the top dial steps even when it limited nothing,
+  so it is compiled in only with `NOISE_WITHIN_RULE`
+  (`SmokeSettings::noise_within_rule`). That makes four march pipelines:
+  with and without it, with and without MSAA. Going back over what an
+  empty-space jump skipped, to draw a cloud's edge exactly, cost 12–17 %
+  close up for no visible change with the noise on.
 - Crystal puffs are plugin-owned entities (`CrystalPuff`). `sync_crystals`
   runs after transform propagation, so it writes `GlobalTransform` itself.
 - `SmokeObstacle` voxelisation runs on a background task; until the first

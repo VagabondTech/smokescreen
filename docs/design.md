@@ -73,7 +73,7 @@ A smoke that is fully grown and untouched (no holes, not fading, sun not moving)
 
 - **Screen rectangle:** the CPU projects the box each smoke occupies at this tick (`CloudState::active`: the voxels before the growth front and not yet eaten by the fade, padded by the voxel a sample reads around it) and dispatches only the rectangle they cover. While a smoke blooms and fades that box is much smaller than the smoke's whole grid. Distant smokes cost a few thousand rays, and no smoke on screen means no passes at all.
 - **Ray setup:** each ray intersects every smoke's whole box (ALU only) and marches front to back only inside those intervals, clamped to the scene depth. Gaps between smokes are jumped over. A ray's samples lie on a sequence fixed by the ray alone, `t_k = u0·r^k − 1/g` with `u0 = jitter·b + 1/g` and `r = 1 + b·g` (`b` the step near the camera, `g` its growth per metre): the step `b·(1 + t·g)` started at the camera rather than at a smoke's box. The first sample at or past any distance is then one logarithm away, so a ray starts where it enters the box the smoke occupies at this tick, without any sample moving as that box changes tick by tick, and empty samples skip a voxel at a time along the same sequence. Skipped samples count against the step budget as they did, so a tier reaches as far as it did. (Jumping the 4³ bricks the rule skips was tried as well and cost more than it saved on an Apple M4: the lookups outweigh the iterations in a loop that runs in lockstep.)
-- **Per step:** one fetch of the baked volume (density + all lighting), one of the open mask (density is divided by it, see above), plus one or two fetches of a tiling 64³ noise texture. The noise carves the coarse voxels into billows and wisps. The second noise fetch only happens on thin edges.
+- **Per step:** one fetch of the baked volume (density + all lighting), one of the open mask (density is divided by it, see above), plus one or two fetches of a tiling 64³ noise texture. The noise carves the coarse voxels into billows and wisps; with `SmokeSettings::noise_within_rule` a ray stops fetching it once it has taken all the cloud it may (see "The picture against the rule"). The second noise fetch only happens on thin edges.
 - **Early exits:**
   - stop at 1 % transmittance, so inside dense smoke a ray ends within about half a metre;
   - skip a voxel at a time through empty space;
@@ -176,11 +176,13 @@ What the smoke adds to a 1920×1080 frame with MSAA on an Apple M4, from the dem
 
 ## Fairness
 
+Two kinds are kept apart here. Between players, everyone must see the same smoke, whatever their step of the dial: this is what competitive play needs. Against the rule, the picture should agree with `blocks_sight`, which matters when the rule decides what a server sends, what bots see or what abilities reach (see "The picture against the rule" below).
+
 A step may change how precisely smoke is drawn, never its shape. The shape decides who can see whom, so a player on the cheapest step must not see through smoke that a player on the best step can't. Where a step cuts corners, it errs towards more smoke:
 
 - **Silhouettes:** every faceted pixel that could be on or near a silhouette is traced again at full resolution. A coarse ray notices any surface a full-resolution pixel could show, so pixels are only skipped or interpolated when that is provably safe.
 - **Hit tolerance:** a looser tolerance (cheaper steps) can only thicken a silhouette, by at most that many pixels.
-- **Step budgets:** a ray that runs out of steps is drawn as smoke.
+- **Step budgets:** a faceted ray that runs out of steps is drawn as smoke.
 - **Volumetric:** the steps change resolution and step length, never the density. Gameplay queries run in `smokescreen` and don't depend on the dial.
 
 `tools/fairness.py` checks this on the tier sweep's silhouette masks (`SmokeSettings::debug_silhouette` draws faceted and crystal smoke flat magenta). Across three distances and all six steps, no pixel that is smoke at "ultra" is missing at any cheaper step, beyond the one-pixel anti-aliasing band. The cheapest step adds a fringe at most one pixel wide (1,886 extra pixels on a 960×540 frame filled with smoke):
@@ -188,6 +190,8 @@ A step may change how precisely smoke is drawn, never its shape. The shape decid
 ![Fairness check](fairness.jpg)
 
 On an Apple M4 at 1920×1080 the sweep finds the same: nothing missing beyond the band at any step or distance, and close up the cheapest step adds 4,370 pixels around 1.3 million of smoke.
+
+Volumetric smoke has no hard silhouette, so for it the demo's `agreement` run at each step (`SMOKE_DEMO_TIER`) shows how much of the scene shows through every pixel, and those are compared with the best step's. Away from the smoke's outline, under 1 % of its pixels differ by more than a tenth, either way: the noise, sampled at fewer and longer steps, falls a little differently. The most that let over 30 % more through is 121 of 314,514 (close up, the cheapest step, a grown cloud), and 29 of 62,217 halfway through the fade.
 
 ### The picture against the rule
 
@@ -208,16 +212,18 @@ The software rasteriser gave the same zeros in the old level.
 
 Both pictures match the core's surface exactly (the two "touch" columns): with `sight_threshold = 0`, what players see is what blocks. With the 0.8 m threshold the picture never shows through anything the rule blocks, but it draws thin edges and corners (less than 0.8 m of cloud) as solid smoke that the rule, and so a server or a bot, sees through. See `ROADMAP.md`.
 
-Volumetric smoke is soft, so for it the demo draws how much of the scene shows through each pixel (`SmokeSettings::debug_transmittance`, with tonemapping off), and the tool compares that with the rule along the same segments. Without the noise (`SMOKE_DEMO_NOISE=0`) the picture is the coarse density the rule integrates. It is opaque wherever the rule blocks, and the amount of cloud it implies, −ln(transmittance) / extinction, agrees with the rule's to within 1 % halfway through the fade for segments through more than 0.05 m of cloud, and to within 10 % on a grown cloud. The rest is the march's skip through empty space: where the filtered density is under 0.002 it moves on at least a voxel, which can step over the start of a cloud's edge. With the skip turned off the two agree to within 0.5 %. (Past −ln(0.01) / extinction, 0.66 m by default, the march draws the smoke opaque, so the picture says no more.) With the noise, the picture shows through some of what the rule blocks: the fewest pixels of a grown cloud, the most once the fade adds to the erosion:
+Volumetric smoke is soft, so for it the demo draws how much of the scene shows through each pixel (`SmokeSettings::debug_transmittance`, with tonemapping off), and the tool compares that with the rule along the same segments. Without the noise (`SMOKE_DEMO_NOISE=0`) the picture is the coarse density the rule integrates. It is opaque wherever the rule blocks, and the amount of cloud it implies, −ln(transmittance) / extinction, agrees with the rule's to within 1 % halfway through the fade for segments through more than 0.05 m of cloud, and to within 10 % on a grown cloud. The rest is the march's skip through empty space: where the filtered density is under 0.002 it moves on at least a voxel, which can step over the start of a cloud's edge. With the skip turned off the two agree to within 0.5 %. (Past −ln(0.01) / extinction, 0.66 m by default, the march draws the smoke opaque, so the picture says no more.)
 
-| View | Blocked by the rule, grown | More than 30 % shows through | Blocked by the rule, 16.5 s | More than 30 % shows through |
-|---|---|---|---|---|
-| far | 9,996 | 34 (0.3 %) | 3,078 | 580 (19 %) |
-| front | 43,444 | 1,063 (2.4 %) | 13,076 | 3,345 (26 %) |
-| close | 277,193 | 15,377 (5.5 %) | 71,268 | 22,661 (32 %) |
-| edge | 69,729 | 1,717 (2.5 %) | 11,973 | 3,836 (32 %) |
+The noise only ever thins the smoke, so by default the picture shows through some of what the rule blocks: the fewest pixels of a grown cloud, the most once the fade adds to the erosion. Players all see the same thinning, so between them that is fair; a server or bots that use the rule see less than players there. `SmokeSettings::noise_within_rule` stops it. The rule blocks from 0.8 m of cloud and the picture is opaque from 0.66 m, so the noise may then take at most 0.14 m from any ray, shared front to back by every smoke the ray crosses; past that the ray draws its smoke as the rule counts it. The stretches the empty-space skip steps over count against it too, as a ramp from nothing up to the smoke the skip lands in. No march that goes front to back can keep more noise with that promise: the noise never adds smoke, so once more than 0.14 m is gone, a line that turns out to hold 0.8 m can't be drawn opaque any more. Thin smoke (wisps, edges, silhouettes) keeps all of it; where a line holds more cloud the billows are shallower, and a fading cloud stays solid where the rule still blocks. Pixels the rule blocks that let more than 1 % or 30 % of the scene through, away from edges, at the best step:
 
-That is the next thing to fix for volumetric fairness (`ROADMAP.md`, "Volumetric noise").
+| View | Blocked, grown | More than 1 % / 30 % show through | With `noise_within_rule` | Blocked, 16.5 s | More than 1 % / 30 % | With `noise_within_rule` |
+|---|---|---|---|---|---|---|
+| far | 9,996 | 116 / 34 | 0 / 0 | 3,078 | 777 / 580 | 0 / 0 |
+| front | 43,444 | 3,119 / 1,063 | 0 / 0 | 13,076 | 4,767 / 3,345 | 0 / 0 |
+| close | 277,193 | 36,173 / 15,377 | 0 / 0 | 71,268 | 34,006 / 22,661 | 0 / 0 |
+| edge | 69,729 | 7,826 / 1,717 | 0 / 0 | 11,973 | 6,945 / 3,836 | 0 / 0 |
+
+With the setting, every other step of the dial gives the same zeros, grown, 0.8 s into the bloom and at 16.5 s; what is left lies in the one-pixel band along the edges of the blocked area, at most 474 pixels (the cheapest step, far away, where the march runs at a quarter of the resolution). Without it the picture is what it was, pixel for pixel. Marching what the skip steps over instead of charging it (going back whenever a jump lands in smoke) made the picture without the noise agree with the rule to within 0.5 %, but cost 12–17 % close up at the top two steps on an Apple M4 and changed nothing visible with the noise on, which erodes that thin smoke anyway.
 
 ## Cost and memory
 
