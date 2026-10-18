@@ -57,6 +57,24 @@ are not in lockstep.
   again and now covers both settings; `EXPECTED_MESHES` did not.
   `CloudView` gained a private field, so only a `View` makes one. The
   demo's `SMOKE_DEMO_VOLUME_STEPS=half` samples every half voxel.
+- Volumetric checks skip the samples that read nothing. In place of the
+  flags that marked the cells of eight voxels next to a wall, each cloud
+  keeps a byte per cell: 0 next to a wall, else the smallest fill-distance
+  byte of the eight. A sample whose eight voxels the growth front hasn't
+  reached yet or the fade has already eaten is then 0 from that one byte,
+  without reading them. On the bench's lines that is 40–51 % of the
+  samples: the run-up to a cloud's edge inside the 4³ bricks that aren't
+  skipped whole, and the shell the fade has eaten. On an Apple M4, 250
+  sight checks through 4 of 32 clouds take 0.036 instead of 0.040 ms once
+  the clouds are grown (−10 %), 0.098 instead of 0.116 ms halfway through
+  the fade (−16 %) and 0.027 instead of 0.030 ms late in it (−10 %); with
+  `VolumeSteps::HalfVoxel`, 0.053 instead of 0.059, 0.149 instead of
+  0.177 and 0.034 instead of 0.040 ms (medians of 11 alternated runs). In
+  a level with walls, bullets and explosions, `blocks_sight` is 8–11 %
+  faster through the fade. Results are unchanged: the determinism hashes
+  are the same. The cells take no more memory than the flags, and about
+  6 µs per cloud to build when its fill finishes, where the flags took
+  15–20 µs.
 - `VolumeField` holds the cloud's `DensityTable` (`density`) instead of
   `growth` and `dissolve`.
 - `SmokeSettings::debug_transmittance` draws volumetric smoke as how much

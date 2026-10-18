@@ -150,8 +150,8 @@ cargo run --example presets                 # every preset and look; also minima
 |---|---|
 | `smokescreen/src/world.rs` | `Smokes` (pops, holes, ticks, fill budget, snapshots, queries), `Tuning`, `Config`, `CloudSpec`, `CloudSource`, `View` |
 | `smokescreen/src/fill.rs` | The fill state machine: spread, padding clipped wall voxels, bricks, halo, region and air distance transforms, puff seeding, binning; sources |
-| `smokescreen/src/grid.rs` | The fill grid, bricks and front bounds for skipping, chamfer distance transforms |
-| `smokescreen/src/volume.rs` | Volumetric rule: density integral, skipping empty bricks and inactive parts |
+| `smokescreen/src/grid.rs` | The fill grid, bricks and front bounds for skipping, sample cells (walls, and samples that read nothing), chamfer distance transforms |
+| `smokescreen/src/volume.rs` | Volumetric rule: density integral, skipping empty bricks, inactive parts and samples that read nothing |
 | `smokescreen/src/facets.rs` | Polyhedra, puffs, bins, the blended faceted SDF and its exact integrator |
 | `smokescreen/src/chords.rs` | Crystal and faceted-core rules: exact chords through convex pieces; `ChordBounds`, the exact faceted rule's bounds for `blocks_sight` |
 | `smokescreen/src/holes.rs`, `timeline.rs` | Hole events and shapes; a cloud's life, the density model and `DensityTable` |
