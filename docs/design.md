@@ -70,7 +70,7 @@ A smoke that is fully grown and untouched (no holes, not fading, sun not moving)
 ## 4. Raymarch (GPU compute, reduced resolution)
 
 - **Screen rectangle:** the CPU projects the box each smoke occupies at this tick (`CloudState::active`: the voxels before the growth front and not yet eaten by the fade, padded by the voxel a sample reads around it) and dispatches only the rectangle they cover. While a smoke blooms and fades that box is much smaller than the smoke's whole grid. Distant smokes cost a few thousand rays, and no smoke on screen means no passes at all.
-- **Ray setup:** each ray intersects every smoke's whole box (ALU only) and marches front to back only inside those intervals, clamped to the scene depth. Gaps between smokes are jumped over. Samples start where a ray enters the whole box, not the smaller one the rectangle comes from, so they stay put while a smoke grows and fades. A ray crossing one smoke also intersects the smaller box: it returns at once if it misses it, ends at its far side, and steps over the run-up to it without fetching, since a sample outside it reads nothing. Every sample it does fetch is where it would be without that, so the picture is the same (checked pixel for pixel on the tier sweep at three ages).
+- **Ray setup:** each ray intersects every smoke's whole box (ALU only) and marches front to back only inside those intervals, clamped to the scene depth. Gaps between smokes are jumped over. A ray's samples lie on a sequence fixed by the ray alone, `t_k = u0·r^k − 1/g` with `u0 = jitter·b + 1/g` and `r = 1 + b·g` (`b` the step near the camera, `g` its growth per metre): the step `b·(1 + t·g)` started at the camera rather than at a smoke's box. The first sample at or past any distance is then one logarithm away, so a ray starts where it enters the box the smoke occupies at this tick, without any sample moving as that box changes tick by tick, and empty samples skip a voxel at a time along the same sequence. Skipped samples count against the step budget as they did, so a tier reaches as far as it did. (Jumping the 4³ bricks the rule skips was tried as well and cost more than it saved on an Apple M4: the lookups outweigh the iterations in a loop that runs in lockstep.)
 - **Per step:** one fetch of the baked volume (density + all lighting), one of the open mask (density is divided by it, see above), plus one or two fetches of a tiling 64³ noise texture. The noise carves the coarse voxels into billows and wisps. The second noise fetch only happens on thin edges.
 - **Early exits:**
   - stop at 1 % transmittance, so inside dense smoke a ray ends within about half a metre;
@@ -210,7 +210,7 @@ Both pictures match the core's surface exactly (the two "touch" columns): with `
 
 Rough cost model per camera (volumetric, "high" step, 1080p):
 
-- **Raymarch:** `covered pixels / 2.25 × steps actually taken × ~2.5 fetches`.
+- **Raymarch:** `covered pixels / 2.25 × steps actually taken × ~2.5 fetches`, starting at the box the smoke occupies.
   - A smoke covering 40 % of the screen, seen from outside: ~370 k rays × ~25 steps (dense smoke exits early) ≈ 23 M texture fetches.
   - Standing inside one is cheaper per ray: it goes opaque within ~0.5 m.
   - Thin, dissolving smoke is the most expensive case and is capped by `max_steps`.

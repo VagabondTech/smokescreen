@@ -160,19 +160,23 @@ cargo run --example presets                 # every preset and look; also minima
 - Atlases per slot: source (distance, sun, sky, region), open mask (R8),
   density and lit (baked on the GPU). The march and the lighting bake bind
   the open mask.
-- The volumetric march places its samples from where a ray enters a
-  smoke's *whole* box (`t = t_begin + jitter·base_step`, then
-  `dt = base_step·(1 + t·growth)`, or `max(dt, voxel_size)` through empty
-  space). Anything that moves a sample, even starting rays at the smaller
-  box a smoke occupies, makes the noise crawl as that box changes tick by
-  tick. A change to where rays start or step must leave the sample sequence
-  exactly as it is; the check is the demo's tier sweep grown and at
-  `SMOKE_DEMO_SWEEP_AGE=0.8` and `16.5`, its frames compared pixel by pixel
-  before and after. Dropping fetches that would read nothing is worth
-  little on its own: a lane that skips one saves nothing while the rest of
-  its SIMD group fetches (per-brick skipping inside the loop measured as a
-  cost on the M4). What pays is what has no per-step cost: the ray clip to
-  the occupied box, and the bake's early-out.
+- The volumetric march's samples lie on a sequence fixed by the ray alone
+  (`Seq` in `smoke_march.wesl`: `t_k = u0·r^k − 1/g`, the step
+  `base_step·(1 + t·growth)` started at the camera), so a ray may start or
+  jump anywhere along it without any sample moving as a smoke's boxes
+  change tick by tick. Keep it that way: samples anchored to a smoke's box
+  (how it was first done) made the noise crawl whenever a ray started at a
+  box that changed, and skipping that only dropped fetches while the samples
+  stayed put measured as a cost on the M4 (a lane that skips a fetch saves
+  nothing while the rest of its SIMD group fetches). A change to the
+  sequence changes the picture: compare the
+  tier sweep's frames grown and at `SMOKE_DEMO_SWEEP_AGE=0.8` and `16.5`
+  before and after, and run `tools/fairness.py` on them.
+- Skipping the samples inside a smoke's occupied box that read nothing
+  (the 4³ bricks the rule skips) does not pay on the M4: tried twice in
+  the march, dropping their fetches and jumping them outright, it cost
+  5–15 % close up and at mid-range both times. The lookups cost more than
+  what they save in a loop that is ALU-bound and runs in lockstep.
 - Crystal puffs are plugin-owned entities (`CrystalPuff`). `sync_crystals`
   runs after transform propagation, so it writes `GlobalTransform` itself.
 - `SmokeObstacle` voxelisation runs on a background task; until the first
