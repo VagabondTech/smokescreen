@@ -68,17 +68,19 @@ impl VolumeField<'_> {
         }
     }
 
-    /// [`Self::density`] with the grid's near-solid flags
-    /// ([`crate::grid::near_solid_cells`]): the same value, found faster
-    /// away from walls.
+    /// [`Self::density`] with the grid's sample cells
+    /// ([`crate::grid::sample_cells`]): the same value, found faster away
+    /// from walls and where the sample reads nothing. Every byte from
+    /// `zero_from` (at least 2) on must have density 0.
     #[inline]
-    pub(crate) fn density_near(&self, near: &[u8], p: Vec3) -> f32 {
+    pub(crate) fn density_near(&self, cells: &[u8], zero_from: u8, p: Vec3) -> f32 {
         let g = self.grid;
         let d = sample_open_near(
             &g.distance,
             self.density.values(),
             &g.occupancy,
-            near,
+            cells,
+            zero_from,
             g.min,
             g.voxel_size,
             g.dims,
@@ -99,11 +101,11 @@ impl VolumeField<'_> {
         self.amount_by(|p| self.density(p), ro, rd, t0, t1, acc, stop)
     }
 
-    /// [`Self::amount`] with the grid's near-solid flags: the same result.
+    /// [`Self::amount`] with the grid's sample cells: the same result.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn amount_near(
         &self,
-        near: &[u8],
+        cells: &[u8],
         ro: Vec3,
         rd: Vec3,
         t0: f32,
@@ -111,7 +113,10 @@ impl VolumeField<'_> {
         acc: &mut f32,
         stop: &dyn Fn(f32) -> bool,
     ) -> bool {
-        self.amount_by(|p| self.density_near(near, p), ro, rd, t0, t1, acc, stop)
+        // Every byte from `empty_from` on has density 0. The cells store
+        // bytes 0 and 1 alike, so only cells from 2 on read nothing.
+        let zero_from = self.density.empty_from().max(2);
+        self.amount_by(|p| self.density_near(cells, zero_from, p), ro, rd, t0, t1, acc, stop)
     }
 
     /// [`Self::amount`] with the density at a point given by `density`.
