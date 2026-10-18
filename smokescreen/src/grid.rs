@@ -133,59 +133,87 @@ pub(crate) fn sample_open(
 ) -> f32 {
     let solid = |k: usize| occ.get(k) == Some(&occupancy::SOLID);
     sample_open_by(channel, values, occ, min, voxel_size, dims, p, |_, corners| {
-        corners.iter().any(|&k| solid(k))
+        Some(corners.iter().any(|&k| solid(k)))
     })
 }
 
-/// [`sample_open`] with the grid's near-solid flags (see
-/// [`near_solid_cells`]): the same value, with one byte tested instead of
-/// eight to find the common case, away from walls.
+/// [`sample_open`] of a density, with the grid's sample cells (see
+/// [`sample_cells`]): the same value, from one byte in the common cases,
+/// away from walls and where the sample reads nothing. Every byte from
+/// `zero_from` on must have the value 0; the cells store bytes 0 and 1
+/// alike, so `zero_from` must be at least 2.
 #[allow(clippy::too_many_arguments)]
 #[inline]
 pub(crate) fn sample_open_near(
     channel: &[u8],
     values: &[f32; 256],
     occ: &[u8],
-    near: &[u8],
+    cells: &[u8],
+    zero_from: u8,
     min: Vec3,
     voxel_size: f32,
     dims: UVec3,
     p: Vec3,
 ) -> f32 {
-    sample_open_by(channel, values, occ, min, voxel_size, dims, p, |i, _| {
-        near.get(i).is_some_and(|&f| f != 0)
-    })
+    let solid = |k: usize| occ.get(k) == Some(&occupancy::SOLID);
+    sample_open_by(
+        channel,
+        values,
+        occ,
+        min,
+        voxel_size,
+        dims,
+        p,
+        |i, corners| match cells.get(i) {
+            Some(&c) if c >= zero_from => None,
+            Some(&c) => Some(c == 0),
+            None => Some(corners.iter().any(|&k| solid(k))),
+        },
+    )
 }
 
 /// Per voxel, for the cell of eight voxels starting at it (the ones a
-/// trilinear sample between them reads): 1 if any of the eight is solid,
-/// else 0. Empty if `occ` is. Built once per cloud, so a sample can tell
-/// the common case, away from walls, from one byte.
-pub(crate) fn near_solid_cells(occ: &[u8], dims: UVec3) -> Vec<u8> {
-    if occ.is_empty() {
+/// trilinear sample between them reads): 0 if any of the eight is solid,
+/// else the smallest of their distance bytes, at least 1. Built once per
+/// cloud, so a sample can tell from one byte the common case, away from
+/// walls, and a sample that reads nothing: one whose eight voxels the
+/// growth front hasn't reached yet or the fade has already eaten.
+pub(crate) fn sample_cells(distance: &[u8], occ: &[u8], dims: UVec3) -> Vec<u8> {
+    let n = distance.len();
+    if n == 0 {
         return Vec::new();
     }
-    let mut near = vec![0u8; occ.len()];
     let (dx, dxy) = (dims.x as usize, (dims.x * dims.y) as usize);
-    for (i, _) in occ.iter().enumerate().filter(|&(_, &o)| o == occupancy::SOLID) {
-        let c = IVec3::new((i % dx) as i32, ((i % dxy) / dx) as i32, (i / dxy) as i32);
-        // The cells with this voxel among their corners: the one starting
-        // here and the ones starting a voxel back along any axes. (At the
-        // far edge a cell reads its own voxel twice, so the voxel is a
-        // corner of its own cell either way.)
-        for n in 0..8 {
-            let k = c - IVec3::new(n & 1, (n >> 1) & 1, n >> 2);
-            if k.cmpge(IVec3::ZERO).all() {
-                near[k.x as usize + dx * (k.y as usize + dims.y as usize * k.z as usize)] = 1;
-            }
-        }
+    // Each voxel's byte, at least 1, or 0 if it is solid.
+    let mut a: Vec<u8> = distance.iter().map(|&d| d.max(1)).collect();
+    for (v, &o) in a.iter_mut().zip(occ) {
+        *v = if o == occupancy::SOLID { 0 } else { *v };
     }
-    near
+    // The smaller of each voxel and the next one along x, then along y,
+    // then along z: the smallest of the eight. (At the far edge a cell
+    // reads its own voxel twice, so there a voxel is its own neighbour.)
+    // Each pass reads one buffer and writes the other, which compiles to
+    // vector code.
+    let mut b = vec![0u8; n];
+    let pass = |src: &[u8], dst: &mut [u8], step: usize, run: usize| {
+        for ((d, &s), &t) in dst.iter_mut().zip(src).zip(&src[step..]) {
+            *d = s.min(t);
+        }
+        // The last voxels along the axis have no neighbour.
+        for k in (run - step..n).step_by(run) {
+            dst[k..k + step].copy_from_slice(&src[k..k + step]);
+        }
+    };
+    pass(&a, &mut b, 1, dx);
+    pass(&b, &mut a, dx, dxy);
+    pass(&a, &mut b, dxy, n);
+    b
 }
 
 /// The open-voxel average of [`sample_open`], with `any_solid(i, corners)`
 /// deciding whether a solid voxel is among the eight corners (voxel `i`
-/// and its neighbours): if not, plain trilinear filtering.
+/// and its neighbours): if not, plain trilinear filtering. `None` when
+/// every one of the eight has the value 0, so the sample is 0.
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
 fn sample_open_by(
@@ -196,7 +224,7 @@ fn sample_open_by(
     voxel_size: f32,
     dims: UVec3,
     p: Vec3,
-    any_solid: impl FnOnce(usize, &[usize; 8]) -> bool,
+    any_solid: impl FnOnce(usize, &[usize; 8]) -> Option<bool>,
 ) -> f32 {
     let g = (p - min) * (1.0 / voxel_size) - 0.5;
     let max = (dims - 1).as_vec3();
@@ -223,7 +251,11 @@ fn sample_open_by(
     ];
     let d = |k: usize| values[channel[k] as usize];
     let solid = |k: usize| occ.get(k) == Some(&occupancy::SOLID);
-    if !any_solid(i, &corners) {
+    let Some(any_solid) = any_solid(i, &corners) else {
+        // All eight are 0.
+        return 0.0;
+    };
+    if !any_solid {
         // The common case, away from walls: plain trilinear filtering.
         let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
         let x00 = lerp(d(corners[0]), d(corners[1]), f.x);
@@ -638,11 +670,12 @@ mod tests {
         }
     }
 
-    /// The near-solid flags find exactly the cells with a solid corner,
-    /// and the flagged sample gives the very bits of the plain one, for
-    /// distances and densities alike.
+    /// The sample cells hold 0 where a solid voxel is among a cell's
+    /// eight and the smallest of their bytes, at least 1, elsewhere; and a
+    /// sample that uses them gives the very bits of the plain one, through
+    /// a cloud's life, those that read nothing included.
     #[test]
-    fn near_solid_flags_give_the_same_samples() {
+    fn sample_cells_give_the_same_samples() {
         let dims = UVec3::new(12, 8, 8);
         let n = (dims.x * dims.y * dims.z) as usize;
         let hash = crate::math::hash_u32;
@@ -655,33 +688,54 @@ mod tests {
                 _ => occupancy::OPEN,
             })
             .collect();
-        let near = near_solid_cells(&occ, dims);
+        let cells = sample_cells(&distance, &occ, dims);
         let (dx, dxy) = (dims.x as usize, (dims.x * dims.y) as usize);
-        for i in 0..n {
+        for (i, &got) in cells.iter().enumerate() {
             let c = UVec3::new((i % dx) as u32, ((i % dxy) / dx) as u32, (i / dxy) as u32);
             let ox = (c.x + 1 < dims.x) as usize;
             let oy = (c.y + 1 < dims.y) as usize * dx;
             let oz = (c.z + 1 < dims.z) as usize * dxy;
-            let solid = [0, ox, oy, oy + ox, oz, oz + ox, oz + oy, oz + oy + ox]
-                .iter()
-                .any(|&o| occ[i + o] == occupancy::SOLID);
-            assert_eq!(near[i] != 0, solid, "cell {c:?}");
+            let eight = [0, ox, oy, oy + ox, oz, oz + ox, oz + oy, oz + oy + ox].map(|o| i + o);
+            let want = if eight.iter().any(|&k| occ[k] == occupancy::SOLID) {
+                0
+            } else {
+                eight.iter().map(|&k| distance[k].max(1)).min().unwrap_or(EMPTY_VOXEL)
+            };
+            assert_eq!(got, want, "cell {c:?}");
         }
-        assert!(near.contains(&1) && near.contains(&0));
+        assert!(cells.contains(&0) && cells.contains(&1));
+        // Without occupancy everything is open.
+        assert!(!sample_cells(&distance, &[], dims).contains(&0));
+        assert!(sample_cells(&[], &[], UVec3::ZERO).is_empty());
+
         let (min, v) = (Vec3::new(-1.0, 0.5, 2.0), 0.3);
         let extent = dims.as_vec3() * v;
-        let density = crate::timeline::DensityTable::new(1.2, 0.5);
-        for values in [&BYTE_TO_UNIT, density.values()] {
+        // The cell a sample at p reads, as `sample_open_by` finds it.
+        let cell = |p: Vec3| {
+            let c = ((p - min) * (1.0 / v) - 0.5)
+                .clamp(Vec3::ZERO, (dims - 1).as_vec3())
+                .as_uvec3();
+            cells[(c.x + dims.x * (c.y + dims.y * c.z)) as usize]
+        };
+        let (mut nothing, mut byte_zero) = (0, 0);
+        // Growing, grown, halfway through the fade, and with only byte 0
+        // left, which the cells store as 1, like byte 1.
+        for (growth, dissolve) in [(0.5, 0.0), (1.2, 0.0), (1.2, 0.5), (0.003, 0.0)] {
+            let density = crate::timeline::DensityTable::new(growth, dissolve);
+            let zero_from = density.empty_from().max(2);
             for k in 0..4000u32 {
                 let r = |s: u32| (hash(k.wrapping_mul(3) ^ s) >> 8) as f32 / (1u32 << 24) as f32;
                 // Inside the grid and a little around it (clamp-to-edge).
                 let p = min + Vec3::new(r(1), r(2), r(3)) * (extent + v) - v * 0.5;
+                let values = density.values();
                 let plain = sample_open(&distance, values, &occ, min, v, dims, p);
-                let flagged = sample_open_near(&distance, values, &occ, &near, min, v, dims, p);
-                assert_eq!(plain.to_bits(), flagged.to_bits(), "at {p:?}");
+                let celled = sample_open_near(&distance, values, &occ, &cells, zero_from, min, v, dims, p);
+                assert_eq!(plain.to_bits(), celled.to_bits(), "at {p:?}");
+                nothing += (cell(p) >= zero_from) as u32;
+                byte_zero += (density.empty_from() == 1 && cell(p) == 1 && plain > 0.0) as u32;
             }
         }
-        assert!(near_solid_cells(&[], dims).is_empty());
+        assert!(nothing > 0 && byte_zero > 0);
     }
 
     #[test]

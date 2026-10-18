@@ -133,23 +133,29 @@ both).
 
 The README's tables come from `cargo bench -p smokescreen`. The weak spots:
 
-- **Thin clouds.** Halfway through the fade, volumetric checks cost 3× what
-  they cost when grown (0.12 against 0.04 ms per 250 on an Apple M4): lines
-  that never reach the threshold are integrated to the end. An upper bound
-  per brick on the density left doesn't help: tried in the first
-  performance review, it was correct but 2 to 4 m where the true amount was
-  under 0.1 m, and it cost 15 % on every other check. The dissolve eats a
-  cloud from the outside in, so unseen lines run through the thinning shell
-  a voxel from dense voxels, and no bound coarser than a sample sees that.
-  Samples a voxel apart (`Tuning::volume_steps`, the default since 0.2)
-  made every check about a third cheaper; an integral per voxel would go
-  further, and change results again. The faceted core rule behaves the same
-  way.
+- **Thin clouds.** Halfway through the fade, volumetric checks cost 2.7×
+  what they cost when grown (0.098 against 0.036 ms per 250 on an Apple
+  M4): lines that never reach the threshold are integrated to the end. An
+  upper bound per brick on the density left doesn't help: tried in the
+  first performance review, it was correct but 2 to 4 m where the true
+  amount was under 0.1 m, and it cost 15 % on every other check. The
+  dissolve eats a cloud from the outside in, so unseen lines run through
+  the thinning shell a voxel from dense voxels, and no bound coarser than a
+  sample sees that. Samples a voxel apart (`Tuning::volume_steps`, the
+  default since 0.2) made every check about a third cheaper, and skipping
+  the samples whose eight voxels all have density 0 (about half of them,
+  from a byte per cell) another 10–16 %; an integral per voxel would go
+  further, and change results again. Integrating whole bricks of solid
+  core at once would not pay: none of the bench's checks samples a brick
+  that is solid core with the voxel around it, and at most 0.08 % of their
+  samples lie in a cell that is. Grown lines reach the threshold in the
+  shell, and halfway through the fade only the inner 3/8 of the fill
+  distance is still solid core, which the lines the rule sees through
+  miss. The faceted core rule behaves the same way.
 - **The per-tick snapshot** of faceted and crystal clouds (every puff's
   position and size: 0.1 to 0.3 ms for 32 clouds) is computed for every
   cloud, whether or not a check comes near it. Compute a cloud's puffs on
   the first check that touches it.
-- Volumetric checks: integrate whole bricks of constant density at once.
 - Faceted fills cost about 3× volumetric ones (0.33 s of ticks at the
   default budget), most of it in the halo and the region's two distance
   transforms. Options, all of which change results: the halo as two

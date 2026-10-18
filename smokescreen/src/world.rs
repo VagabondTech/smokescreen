@@ -8,7 +8,7 @@ use crate::{
     chords::{ChordBounds, CoreField, CrystalField},
     facets::{FacetField, FacetRule, FacetSettings, LivePuff},
     fill::{CloudShape, FillJob, FillSpec, Source, Work},
-    grid::near_solid_cells,
+    grid::sample_cells,
     holes::{HOLE_BUFFER, HoleKind, HoleSettings, HoleShape, holes_near},
     level::Level,
     math::{boxes_overlap, clip_segment, distance_to_segment, hash_u32, safe_recip, slab},
@@ -262,15 +262,17 @@ struct Ready {
     arrival: Vec<f32>,
     bounds: (Vec3, Vec3),
     /// Volumetric: per voxel, whether a solid voxel is among the corners
-    /// of the cell starting there (see [`near_solid_cells`]).
-    near_solid: Vec<u8>,
+    /// of the cell starting there, and the smallest distance byte among
+    /// them (see [`sample_cells`]).
+    cells: Vec<u8>,
 }
 
 impl Ready {
     fn new(shape: Arc<CloudShape>) -> Self {
         let bounds = shape.bounds();
-        let near_solid = if shape.facets.is_none() {
-            near_solid_cells(&shape.grid.occupancy, shape.grid.dims)
+        let grid = &shape.grid;
+        let cells = if shape.facets.is_none() {
+            sample_cells(&grid.distance, &grid.occupancy, grid.dims)
         } else {
             Vec::new()
         };
@@ -278,7 +280,7 @@ impl Ready {
             shape,
             arrival: Vec::new(),
             bounds,
-            near_solid,
+            cells,
         }
     }
 }
@@ -1449,9 +1451,7 @@ impl<'a> View<'a> {
                         holes,
                         step: self.config.tuning.volume_steps.step(shape.grid.voxel_size),
                     }
-                    .amount_near(&ready.near_solid, a, rd, t0, t1, &mut part, &|p| {
-                        stop(lower + p - margin)
-                    })
+                    .amount_near(&ready.cells, a, rd, t0, t1, &mut part, &|p| stop(lower + p - margin))
                 }
             };
             lower += part;
@@ -1580,7 +1580,7 @@ impl<'a> View<'a> {
                         holes,
                         step: self.config.tuning.volume_steps.step(shape.grid.voxel_size),
                     }
-                    .amount_near(&ready.near_solid, a, rd, t0, t1, acc, stop)
+                    .amount_near(&ready.cells, a, rd, t0, t1, acc, stop)
                 }
             };
             stopped.then_some(())

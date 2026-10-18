@@ -214,8 +214,8 @@ The fill budget (`Config::fill_budget`, about 0.2 ms a tick on the VM, under 0.1
 
 | | Growing | Grown | Halfway through the fade | Per-tick snapshot |
 |---|---|---|---|---|
-| Volumetric | 0.04 | 0.04 | 0.12 | 0.01 |
-| Volumetric, `VolumeSteps::HalfVoxel` | 0.06 | 0.06 | 0.18 | 0.01 |
+| Volumetric | 0.04 | 0.04 | 0.10 | 0.01 |
+| Volumetric, `VolumeSteps::HalfVoxel` | 0.05 | 0.05 | 0.15 | 0.01 |
 | Faceted, `FacetRule::Exact` | 0.04 | 0.04 | 0.70 | 0.09 |
 | Faceted, `FacetRule::Core` | 0.04 | 0.04 | 0.12 | 0.08 |
 | Crystal, 0.8 m rule | 0.06 | 0.06 | 0.07 | 0.06 |
