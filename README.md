@@ -32,7 +32,7 @@ Smoke that fills rooms, pours through doorways, stops at walls and blocks sight.
 - Lit by the sun with self-shadowing, darker indoors, lit from inside by muzzle flashes and explosions (any Bevy `PointLight`).
 - **Gameplay sees the same smoke.** `blocks_sight(a, b)` and `occlusion(a, b)` for AI, server-side visibility and audio; `density_at(p)` for gas damage.
 - **Level setup without collision code:** mark your level's meshes with `SmokeObstacle`.
-- **One performance dial per camera**, or a GPU millisecond budget that turns it for you. No dial step changes a cloud's shape, so a cheaper setting never shows through smoke a better one hides.
+- **One performance dial per camera**, or a GPU millisecond budget that turns it for you. No dial step changes a cloud's shape, so a cheaper setting doesn't show through smoke a better one hides; volumetric smoke's noise falls a little differently from step to step (under 1 % of its pixels by more than a tenth).
 - **Deterministic core for multiplayer** (`smokescreen`): engine-free, runs on your ticks and in your units, bit-identical on x86-64 and ARM, with a per-tick CPU budget.
 
 | Round walls and down corridors | Indoors, through a doorway | Off a ledge |
@@ -114,7 +114,7 @@ Pick a default with `SmokeSettings::style`, or per smoke with `Smoke::with_style
 | GPU cost² | low: 1.3 ms at mid-range, 5.9 ms filling the screen; one dial per camera | 5–6× volumetric: 7.3 ms at mid-range, 31 ms filling the screen | about 0.2 ms: a few thousand triangles per cloud |
 | 250 sight checks through 4 of 32 clouds¹ | 0.06 ms | 0.04 ms, exact or with `FacetRule::Core` | 0.03 ms (any contact blocks), 0.06 ms (0.8 m rule) |
 | Bullets and explosions | tunnels and cleared spheres | hexagonal tunnels, cavities | knock crystals out of the way |
-| Picture against the rule | the same density, but the noise thins some smoke the rule counts, most while it fades | never shows through what the rule blocks; thin edges drawn solid | exact with `sight_threshold = 0` |
+| Picture against the rule | the same density, but the noise thins some smoke the rule counts, most while it fades; `SmokeSettings::noise_within_rule` (`Capped` or `Filled`) stops that | never shows through what the rule blocks; thin edges drawn solid | exact with `sight_threshold = 0` |
 
 ¹ Fully grown clouds, on an Apple M4; the 2-core 2.1 GHz VM this was built on takes about 3× as long. Halfway through a cloud's fade, when many lines are only partly blocked, they cost more: 3× for volumetric smoke, 0.7 ms for the exact faceted rule, which traces more of them then; see [Performance](#performance). `cargo bench -p smokescreen` measures it on your CPU.
 ² At the best step of the dial, at 1920×1080 on an Apple M4. Close up, the cheapest step costs a sixth (volumetric) to a quarter (faceted) of that. See [Performance](#performance).
@@ -275,6 +275,7 @@ These come from the demo's tier sweep (`SMOKE_DEMO_SCRIPT=tiers`): frame time wi
 | `indoor_ambient` | 0.5 | Ambient kept where the level hides the sky |
 | `anisotropy` | 0.25 | Glow when looking towards the sun through thin smoke |
 | `noise_frequency`, `erosion`, `detail_erosion` | 0.22, 0.6, 0.35 | Billow size and how ragged volumetric edges are |
+| `noise_within_rule` | off | Keeps the volumetric noise from showing through what the rule blocks, for games whose server, bots or abilities use the rule: `Capped` looks smoother inside and costs less, `Filled` keeps the billows and costs more |
 | `wind` | slight upward drift | Drift of the volumetric noise |
 | `crystal_shadows` | on | Crystal puffs cast shadows |
 | `debug_silhouette` | off | Draws faceted and crystal smoke flat magenta, to check silhouettes |

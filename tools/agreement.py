@@ -24,7 +24,9 @@ it. With --chord, compares it with a thickness rule computed here instead: a
 segment is blocked once it passes through that many metres of cloud.
 
 Volumetric smoke (the demo's default style; add `SMOKE_DEMO_SWEEP_AGE=16.5`
-for a fading cloud, `SMOKE_DEMO_NOISE=0` for the picture without its noise):
+for a fading cloud, `SMOKE_DEMO_NOISE=0` for the picture without its noise,
+`SMOKE_DEMO_NOISE_WITHIN_RULE=capped` or `filled` for the noise kept within the rule,
+`SMOKE_DEMO_TIER=0` for the cheapest dial step instead of the top one):
 
     SMOKE_DEMO_SCRIPT=agreement SMOKE_DEMO_CAPTURE=agree cargo run --release --example demo
     python3 tools/agreement.py agree
@@ -45,7 +47,9 @@ by the rule's amount and away from edges: the median of picture / rule, and
 how many pixels. Past -ln(0.01) / sigma (0.66 m by default) the picture is
 opaque and says no more. Without the noise the two differ only where the rule
 and the picture work out the density differently; with it, the noise thins
-the picture.
+the picture. With `SmokeSettings::noise_within_rule` capped or filled (the
+demo's `SMOKE_DEMO_NOISE_WITHIN_RULE`), nothing the rule blocks shows through.
+`overlay.py` paints where the two disagree.
 
 Needs numpy and Pillow.
 """
@@ -174,8 +178,9 @@ def volumetric(src, meta):
     threshold = float(meta["threshold"])
     opaque = -np.log(0.01) / sigma
     print(
-        f"age {meta.get('age', '?')} s, erosion {meta.get('erosion', '?')}, detail erosion "
-        f"{meta.get('detail_erosion', '?')}; the rule blocks from {threshold} m of cloud, the picture is "
+        f"age {meta.get('age', '?')} s, dial step {meta.get('tier', 'ultra')}, erosion {meta.get('erosion', '?')}, "
+        f"detail erosion {meta.get('detail_erosion', '?')}, noise within the rule "
+        f"{meta.get('noise_within_rule', 'Off')}; the rule blocks from {threshold} m of cloud, the picture is "
         f"opaque from {opaque:.2f} m"
     )
     print(
@@ -230,6 +235,8 @@ def main(src, chord_rule=None):
     if meta.get("style") == "Volumetric":
         volumetric(src, meta)
     else:
+        if "tier" in meta:
+            print(f"dial step {meta['tier']}")
         hard(src, chord_rule)
 
 

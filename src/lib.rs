@@ -102,10 +102,10 @@ use smokescreen::light::{LightRays, visibility};
 
 pub mod prelude {
     pub use crate::{
-        BoxObstacles, CrystalPuff, FacetQuality, FacetRule, FacetSettings, FlatGround, ObstacleBox, Polyhedron,
-        ShapeMix, Smoke, SmokeBullet, SmokeCamera, SmokeClock, SmokeExplosion, SmokeLevel, SmokeObstacle, SmokePlugin,
-        SmokeQuality, SmokeResolution, SmokeSettings, SmokeSource, SmokeStyle, SmokeSun, SmokeSystems, SmokeVision,
-        SmokeWorld, Units, UpAxis, VolumetricQuality, VoxelObstacles,
+        BoxObstacles, CrystalPuff, FacetQuality, FacetRule, FacetSettings, FlatGround, NoiseWithinRule, ObstacleBox,
+        Polyhedron, ShapeMix, Smoke, SmokeBullet, SmokeCamera, SmokeClock, SmokeExplosion, SmokeLevel, SmokeObstacle,
+        SmokePlugin, SmokeQuality, SmokeResolution, SmokeSettings, SmokeSource, SmokeStyle, SmokeSun, SmokeSystems,
+        SmokeVision, SmokeWorld, Units, UpAxis, VolumetricQuality, VoxelObstacles,
     };
 }
 
@@ -343,9 +343,15 @@ pub struct SmokeSettings {
     /// Spatial frequency of the detail noise, in tiles per metre.
     pub noise_frequency: f32,
     /// How much the billow noise carves the cloud's outer layers (0..1).
+    /// The noise only ever thins the smoke, so it shows through some smoke
+    /// the rule counts, most while a cloud fades, unless
+    /// [`noise_within_rule`](Self::noise_within_rule) says otherwise.
     pub erosion: f32,
     /// How much the fine noise frays the edges (0..1).
     pub detail_erosion: f32,
+    /// Whether volumetric smoke's noise may show through what the rule
+    /// blocks. Off by default; see [`NoiseWithinRule`].
+    pub noise_within_rule: NoiseWithinRule,
     /// Drift of the noise, in world units per second. A little upward drift
     /// reads as rising smoke.
     pub wind: Vec3,
@@ -379,12 +385,51 @@ impl Default for SmokeSettings {
             noise_frequency: 0.22,
             erosion: 0.6,
             detail_erosion: 0.35,
+            noise_within_rule: NoiseWithinRule::Off,
             wind: Vec3::new(0.12, 0.22, 0.05),
             crystal_shadows: true,
             debug_silhouette: false,
             debug_transmittance: false,
         }
     }
+}
+
+/// How volumetric smoke's noise relates to the rule ([`SmokeSettings::noise_within_rule`]).
+///
+/// The noise only ever thins the smoke, so it can show through some of what
+/// the rule ([`Tuning::sight_threshold`]) blocks, most while a cloud fades.
+/// Every player sees the same thinning, so between players that is fair; a
+/// server, bots or abilities that use the rule see less than players there.
+/// For those games, `Capped` and `Filled` keep volumetric smoke opaque on
+/// every line the rule blocks (at [`Smoke::density`] 1 or more), each with a
+/// different cost. Both leave thin smoke (wisps, edges, silhouettes) all its
+/// noise.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum NoiseWithinRule {
+    /// The noise may thin smoke the rule counts. Billowy, and fading clouds
+    /// dissolve into wisps.
+    #[default]
+    Off,
+    /// Along any line of sight the noise takes no more cloud than the rule
+    /// leaves spare: [`Tuning::sight_threshold`] less the ln(100) /
+    /// [`SmokeSettings::extinction`] of cloud the picture needs to be opaque
+    /// (0.8 − 0.66 = 0.14 m by default). Thicker smoke looks smoother, and a
+    /// fading cloud stays a pale, smooth dome where the rule still blocks. The
+    /// cheapest: a ray stops sampling the noise once it has taken all it may
+    /// (about 20 % less close up at the top dial steps on an Apple M4). A
+    /// threshold under ln(100) / extinction leaves the noise nothing to take,
+    /// so volumetric smoke is then drawn without it.
+    Capped,
+    /// The noise runs as with `Off`, and on a line through more cloud than
+    /// the picture needs to be opaque (ln(100) / extinction, 0.66 m by
+    /// default) the opacity it took is filled back in behind it, completely
+    /// by the rule's threshold. Keeps the billows; a fading cloud stays a
+    /// textured dome with a crisp outline where the rule still blocks. Costs
+    /// about 10 % more close up at the top dial steps on an Apple M4. At the
+    /// two cheapest dial steps, which march at a quarter of the resolution, a
+    /// few pixels along the edge of what the rule blocks can still let a
+    /// little through.
+    Filled,
 }
 
 /// Level geometry the fill respects, in the world's units.
@@ -1020,6 +1065,7 @@ fn build_frame(
     frame.ambient = ambient * settings.ambient_intensity;
     frame.settings = settings.clone();
     frame.settings.wind = units.to_internal(settings.wind);
+    frame.sight_threshold = world.internal_tuning().sight_threshold;
     frame.voxel_size = config.voxel_size;
     frame.grid_dims = config.grid_dims;
     frame.internal_from_world = config.internal_from_world();

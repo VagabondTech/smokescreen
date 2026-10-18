@@ -18,7 +18,9 @@ both).
   picture and rule agree pixel for pixel (beyond one-pixel silhouette
   edges, on the demo's agreement run). The volumetric rule works out
   density in the picture's order (per voxel, then interpolated), so
-  without the noise the two agree too (0.2).
+  without the noise the two agree too, and `SmokeSettings::noise_within_rule`
+  (`Capped` or `Filled`) keeps the noise from showing through what the
+  rule blocks (0.2).
 - **Faster checks:** skipping the parts of a volumetric cloud the growth
   front hasn't reached or the fade has eaten (3× faster late in the fade),
   per-check hole filtering; both leave results bit-identical.
@@ -101,23 +103,34 @@ both).
   more than players). Options: draw chords under the threshold see-through,
   or recommend `FacetRule::Core` plus a lower threshold. Crystal has the
   same trade-off unless its threshold is 0.
-- **Volumetric noise.** The picture's noise erosion must never thin smoke
-  the rule counts as blocking, and it does. `tools/agreement.py` measures
-  it on the demo's `agreement` run: of the pixels the rule blocks, 0.3–5.5 %
-  let more than 30 % of the scene through in a grown cloud, depending on
-  the view, and 19–32 % halfway through the fade, when the fade adds 0.3 to
-  the erosion. Without the noise, none do (docs/design.md, "The picture
-  against the rule"). Keep the noise from eroding below the rule's density
-  where it matters: erode less where the coarse density is high, say, or
-  only where it is too thin to block anyway.
+- **Volumetric noise between players.** The noise animates on each
+  client's own clock (`Time`), so two players looking at each other through
+  the same smoke see different holes at the same moment. Driven by the
+  simulation's ticks instead, it would be the same for everyone, and a hole
+  that lets one player see another would let the other see them back. By
+  default the noise also thins some smoke the rule counts, most while a
+  cloud fades (docs/design.md, "The picture against the rule"): players all
+  see the same thinning, but a server or bots that use the rule see less
+  than they do there. `SmokeSettings::noise_within_rule` is for those games.
+- **`NoiseWithinRule::Filled`.** At the two cheapest dial steps a few pixels
+  just inside the edge of what the rule blocks still let a little through
+  (up to 16 by more than 1 %, none by more than 30 %): their quarter
+  resolution blurs the fill's sharper edge. Ending the fill a little before the threshold would close that. Its
+  cost (about 10 % close up at the top steps) could come down by adding up
+  the baked light channels along the ray instead of working out the light
+  at every sample, and the outline of a fading cloud's dome could be
+  softer.
 - **The march's skip through empty space.** Where the filtered density is
   under 0.002, the volumetric march moves on at least a voxel, but a
   sample can read that little within a voxel of dense smoke (trilinear
   weights are small near a cell's far corner). So it can step over the
-  start of a cloud's edge: through a grown cloud's edge the picture draws
-  up to 10 % less than the rule counts, and with the skip turned off the
-  two agree to within 0.5 %. Look a voxel ahead before skipping, or skip
-  less far, and measure the cost (the tier sweep).
+  start of a cloud's edge: drawn without its noise, the picture shows up
+  to 10 % less than the rule counts through a grown cloud's edges. With
+  the noise on, which erodes that thin smoke anyway, marching it changes
+  nothing visible, and with `noise_within_rule` capped or filled, what it
+  skips counts as cloud the noise took. Going back whenever a jump lands in smoke
+  made the two agree to within 0.5 % but cost 12–17 % close up at the top
+  two dial steps on an Apple M4; a cheaper way would be welcome.
 
 ## Performance
 
