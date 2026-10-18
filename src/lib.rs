@@ -94,7 +94,7 @@ pub use smokescreen::Style as SmokeStyle;
 pub use smokescreen::Timeline as SmokeTimeline;
 pub use smokescreen::{
     BoxObstacles, CloudId, CloudSource, CloudSpec, Config, FacetRule, FacetSettings, FlatGround, HoleSettings, Level,
-    ObstacleBox, Polyhedron, ShapeMix, Smokes, Tuning, Units, UpAxis, VoxelObstacles,
+    ObstacleBox, Polyhedron, ShapeMix, Smokes, Tuning, Units, UpAxis, VolumeSteps, VoxelObstacles,
 };
 
 use render::{FrameFacet, FrameLight, FrameSlot, SlotUpload, SmokeFrame, SmokeUploads};
@@ -105,7 +105,7 @@ pub mod prelude {
         BoxObstacles, CrystalPuff, FacetQuality, FacetRule, FacetSettings, FlatGround, NoiseWithinRule, ObstacleBox,
         Polyhedron, ShapeMix, Smoke, SmokeBullet, SmokeCamera, SmokeClock, SmokeExplosion, SmokeLevel, SmokeObstacle,
         SmokePlugin, SmokeQuality, SmokeResolution, SmokeSettings, SmokeSource, SmokeStyle, SmokeSun, SmokeSystems,
-        SmokeVision, SmokeWorld, Units, UpAxis, VolumetricQuality, VoxelObstacles,
+        SmokeVision, SmokeWorld, Units, UpAxis, VolumeSteps, VolumetricQuality, VoxelObstacles,
     };
 }
 

@@ -14,7 +14,7 @@ use crate::{
     math::{boxes_overlap, clip_segment, distance_to_segment, hash_u32, safe_recip, slab},
     timeline::{DensityTable, Timeline},
     units::Units,
-    volume::VolumeField,
+    volume::{VolumeField, VolumeSteps},
 };
 
 /// The rules: everything that decides a cloud's shape and what it hides.
@@ -52,6 +52,10 @@ pub struct Tuning {
     pub facets: FacetSettings,
     /// What counts as cloud in a faceted cloud's rule.
     pub facet_rule: FacetRule,
+    /// How far apart a volumetric cloud's rule samples a line: every half
+    /// voxel, or every voxel for checks that cost less and count a little
+    /// less precisely.
+    pub volume_steps: VolumeSteps,
     /// Shape of crystal clouds. `blend` is ignored: crystals never merge.
     pub crystals: FacetSettings,
     /// Bullet and explosion holes; `None` turns them off.
@@ -84,6 +88,7 @@ impl Tuning {
             timeline: Timeline::default(),
             facets: FacetSettings::metric(),
             facet_rule: FacetRule::Exact,
+            volume_steps: VolumeSteps::HalfVoxel,
             crystals: FacetSettings::crystal(),
             holes: Some(HoleSettings::metric()),
             max_holes_per_cloud: 16,
@@ -1234,6 +1239,7 @@ pub struct CloudView<'a> {
     pub shape: &'a Arc<CloudShape>,
     pub spec: &'a CloudSpec,
     pub timeline: &'a Timeline,
+    volume_steps: VolumeSteps,
 }
 
 impl<'a> CloudView<'a> {
@@ -1286,6 +1292,7 @@ impl<'a> CloudView<'a> {
             grid: &self.shape.grid,
             density: &self.state.density,
             holes: &self.state.holes,
+            step: self.volume_steps.step(self.shape.grid.voxel_size),
         })
     }
 }
@@ -1298,6 +1305,7 @@ impl<'a> View<'a> {
     /// The clouds present at this tick (started and not yet gone).
     pub fn clouds(&self) -> impl Iterator<Item = CloudView<'a>> + 'a {
         let clouds = self.clouds;
+        let volume_steps = self.config.tuning.volume_steps;
         self.states.iter().filter_map(move |state| {
             let cloud = &clouds[state.cloud];
             let ready = cloud.ready()?;
@@ -1306,6 +1314,7 @@ impl<'a> View<'a> {
                 shape: &ready.shape,
                 spec: &cloud.spec,
                 timeline: &cloud.timeline,
+                volume_steps,
             })
         })
     }
@@ -1438,6 +1447,7 @@ impl<'a> View<'a> {
                         grid: &shape.grid,
                         density: &state.density,
                         holes,
+                        step: self.config.tuning.volume_steps.step(shape.grid.voxel_size),
                     }
                     .amount_near(&ready.near_solid, a, rd, t0, t1, &mut part, &|p| {
                         stop(lower + p - margin)
@@ -1481,6 +1491,7 @@ impl<'a> View<'a> {
                 shape: &ready.shape,
                 spec: &c.spec,
                 timeline: &c.timeline,
+                volume_steps: self.config.tuning.volume_steps,
             };
             let inside = |yes: bool| if yes { 1.0 } else { 0.0 };
             sum += if let Some(c) = cloud.crystal_field() {
@@ -1567,6 +1578,7 @@ impl<'a> View<'a> {
                         grid: &shape.grid,
                         density: &state.density,
                         holes,
+                        step: self.config.tuning.volume_steps.step(shape.grid.voxel_size),
                     }
                     .amount_near(&ready.near_solid, a, rd, t0, t1, acc, stop)
                 }

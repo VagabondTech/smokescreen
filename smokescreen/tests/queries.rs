@@ -382,12 +382,18 @@ fn insert_matches_pop() {
 /// where faceted clouds under the exact rule are settled from chord bounds
 /// rather than traced: random segments, long and short, through clouds of
 /// every style over their whole lives, with bullets and explosions, under
-/// both facet rules and with any contact blocking.
+/// both facet rules, with volumetric samples half a voxel and a voxel apart,
+/// and with any contact blocking.
 fn blocks_sight_agrees_with_occlusion(per_tick: usize) {
     let level = common::level();
-    for (rule, threshold) in [(FacetRule::Exact, 0.8), (FacetRule::Core, 0.8), (FacetRule::Exact, 0.0)] {
+    for (rule, steps, threshold) in [
+        (FacetRule::Exact, VolumeSteps::HalfVoxel, 0.8),
+        (FacetRule::Core, VolumeSteps::Voxel, 0.8),
+        (FacetRule::Exact, VolumeSteps::HalfVoxel, 0.0),
+    ] {
         let mut cfg = config();
         cfg.tuning.facet_rule = rule;
+        cfg.tuning.volume_steps = steps;
         cfg.tuning.sight_threshold = threshold;
         let mut smokes = Smokes::new(cfg, &level);
         let mut rng = common::Rng(0xdead_beef_cafe_f00d);
@@ -421,7 +427,7 @@ fn blocks_sight_agrees_with_occlusion(per_tick: usize) {
                 assert_eq!(
                     blocks,
                     amount > 0.0 && amount >= threshold,
-                    "{rule:?} at {threshold}: from {a} to {b} at tick {tick}, amount {amount}"
+                    "{rule:?}, {steps:?} at {threshold}: from {a} to {b} at tick {tick}, amount {amount}"
                 );
                 blocked += blocks as usize;
             }
@@ -430,7 +436,7 @@ fn blocks_sight_agrees_with_occlusion(per_tick: usize) {
         let total = 19 * 128 * per_tick;
         assert!(
             blocked > total / 5 && blocked < total * 4 / 5,
-            "{rule:?} at {threshold}: {blocked} of {total} blocked"
+            "{rule:?}, {steps:?} at {threshold}: {blocked} of {total} blocked"
         );
     }
 }

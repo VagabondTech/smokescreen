@@ -182,11 +182,12 @@ def volumetric(src, meta):
     # The march draws a ray opaque once less than this shows through.
     stop = 0.01 if meta.get("noise_within_rule", "Off") == "Capped" else 0.05
     opaque = -np.log(stop) / sigma
+    steps = {"HalfVoxel": "half voxel", "Voxel": "voxel"}.get(meta.get("volume_steps", "HalfVoxel"), "?")
     print(
         f"age {meta.get('age', '?')} s, dial step {meta.get('tier', 'ultra')}, erosion {meta.get('erosion', '?')}, "
         f"detail erosion {meta.get('detail_erosion', '?')}, noise within the rule "
-        f"{meta.get('noise_within_rule', 'Off')}; the rule blocks from {threshold} m of cloud, the picture is "
-        f"opaque from {opaque:.2f} m"
+        f"{meta.get('noise_within_rule', 'Off')}; the rule samples every {steps} and "
+        f"blocks from {threshold} m of cloud, the picture is opaque from {opaque:.2f} m"
     )
     print(
         f"{'view':6} {'smoke':>8} {'blocked':>8} | blocked, shows through: {'>1%':>7} {'>10%':>6} {'>30%':>6} "
