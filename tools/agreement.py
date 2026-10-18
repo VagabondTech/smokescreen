@@ -25,6 +25,7 @@ segment is blocked once it passes through that many metres of cloud.
 
 Volumetric smoke (the demo's default style; add `SMOKE_DEMO_SWEEP_AGE=16.5`
 for a fading cloud, `SMOKE_DEMO_NOISE=0` for the picture without its noise,
+`SMOKE_DEMO_NOISE_WITHIN_RULE=1` for the noise kept within the rule,
 `SMOKE_DEMO_TIER=0` for the cheapest dial step instead of the top one):
 
     SMOKE_DEMO_SCRIPT=agreement SMOKE_DEMO_CAPTURE=agree cargo run --release --example demo
@@ -46,7 +47,10 @@ by the rule's amount and away from edges: the median of picture / rule, and
 how many pixels. Past -ln(0.01) / sigma (0.66 m by default) the picture is
 opaque and says no more. Without the noise the two differ only where the rule
 and the picture work out the density differently; with it, the noise thins
-the picture.
+the picture. With `SmokeSettings::noise_within_rule` (the demo's
+`SMOKE_DEMO_NOISE_WITHIN_RULE=1`) it takes no more cloud along a line than the
+rule leaves spare, so nothing the rule blocks shows through. `overlay.py`
+paints where the two disagree.
 
 Needs numpy and Pillow.
 """
@@ -176,8 +180,9 @@ def volumetric(src, meta):
     opaque = -np.log(0.01) / sigma
     print(
         f"age {meta.get('age', '?')} s, dial step {meta.get('tier', 'ultra')}, erosion {meta.get('erosion', '?')}, "
-        f"detail erosion {meta.get('detail_erosion', '?')}; the rule blocks from {threshold} m of cloud, the "
-        f"picture is opaque from {opaque:.2f} m"
+        f"detail erosion {meta.get('detail_erosion', '?')}, noise within the rule "
+        f"{meta.get('noise_within_rule', 'false')}; the rule blocks from {threshold} m of cloud, the picture is "
+        f"opaque from {opaque:.2f} m"
     )
     print(
         f"{'view':6} {'smoke':>8} {'blocked':>8} | blocked, shows through: {'>1%':>7} {'>10%':>6} {'>30%':>6} "

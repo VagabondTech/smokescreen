@@ -2,11 +2,11 @@
 //
 // Per pixel: intersect the view ray with every smoke's bounds (cheap ALU),
 // then march front to back only inside those intervals. Each step costs one
-// fetch of the baked volume (density + lighting), one of the open mask and
-// one or two fetches of the tiling detail noise. Rays stop at scene depth,
-// at full opacity, or at the step budget. The common case of a ray crossing
-// a single smoke takes a fast path with that smoke's data hoisted out of the
-// loop.
+// fetch of the baked volume (density + lighting), one of the open mask and,
+// until the ray's erosion budget is spent (below), one or two fetches of the
+// tiling detail noise. Rays stop at scene depth, at full opacity, or at the
+// step budget. The common case of a ray crossing a single smoke takes a fast
+// path with that smoke's data hoisted out of the loop.
 //
 // The samples of a ray lie on a sequence fixed by the ray alone:
 // t_k = u0·r^k − 1/g with u0 = jitter·b + 1/g and r = 1 + b·g (b the step
@@ -22,6 +22,19 @@
 // jumping them outright, and cost 5–15 % close up and at mid-range both
 // times: the lookups cost more than the iterations they save, and a lane
 // that skips saves nothing while the rest of its SIMD group doesn't.
+//
+// The noise only ever thins the smoke. With `SmokeSettings::noise_within_rule`
+// it may thin a ray only by so much: the cloud the rule leaves spare,
+// `sight_threshold` less the ln(100) / extinction the march needs to draw a
+// line opaque (0.8 − 0.66 = 0.14 m by default), shared front to back by every
+// smoke the ray crosses. Once a ray has spent it, its samples are drawn as the
+// rule counts them. So the noise can't open a line the rule blocks, while thin
+// smoke (wisps, edges, silhouettes) keeps all of it. No march that goes front
+// to back can keep more: the noise never adds smoke, so once more than the
+// budget is gone, a line that turns out to hold the threshold's worth of cloud
+// can't be drawn opaque any more. The budget is compiled in only with the
+// setting (NOISE_WITHIN_RULE): without it, its bookkeeping cost 9–14 % close
+// up at the top dial steps on an Apple M4 for nothing.
 
 import package::shaders::smoke_common::{
     SmokeGlobals, SmokeSlot, SmokeView, MAX_SLOTS, PI, STYLE_FACETED,
@@ -169,8 +182,20 @@ struct StepSample {
     coarse: f32,
 }
 
-// Extinction and in-scattered light of one smoke at one point.
-fn sample_smoke(slot: SmokeSlot, p: vec3<f32>, rd: vec3<f32>, phase_sun: f32, multi_weight: f32) -> StepSample {
+// Extinction and in-scattered light of one smoke at one point, over a step
+// of `dt`. With NOISE_WITHIN_RULE, `budget` is how much more cloud the noise
+// may take from this ray (see `march`), and `skipped` how far before here a
+// jump stepped over samples without reading them; otherwise they're unused.
+fn sample_smoke(
+    slot: SmokeSlot,
+    p: vec3<f32>,
+    dt: f32,
+    skipped: f32,
+    budget: ptr<function, f32>,
+    rd: vec3<f32>,
+    phase_sun: f32,
+    multi_weight: f32,
+) -> StepSample {
     var out: StepSample;
     let lit = sample_lit(slot, p);
     out.coarse = lit.r;
@@ -181,7 +206,32 @@ fn sample_smoke(slot: SmokeSlot, p: vec3<f32>, rd: vec3<f32>, phase_sun: f32, mu
     // a wall is then as dense as the smoke in front of it, so the noise
     // doesn't fray a see-through layer along the wall either.
     let open = sample_open(slot, p);
-    let d = detail_density(min(lit.r / max(open, 0.004), 1.0), p, slot);
+    let base = min(lit.r / max(open, 0.004), 1.0);
+    var d = base;
+    @if(NOISE_WITHIN_RULE) {
+        // A jump that lands in smoke may have stepped over the start of the
+        // cloud's edge: count what it skipped (at most a ramp from nothing
+        // to here) as taken by the noise, which leaves it undrawn too.
+        *budget = max(*budget - base * skipped, 0.0);
+        // The noise only ever thins the smoke. It takes what it would from
+        // this step while the ray's budget lasts, and the last of the budget
+        // once it would take more; after that the smoke is drawn as the rule
+        // counts it.
+        if (*budget > 0.0) {
+            let noisy = detail_density(base, p, slot);
+            let taken = (base - noisy) * dt;
+            if (taken < *budget) {
+                d = noisy;
+                *budget -= taken;
+            } else {
+                d = base - *budget / dt;
+                *budget = 0.0;
+            }
+        }
+    }
+    @else {
+        d = detail_density(base, p, slot);
+    }
     if (d <= 0.0) {
         return out;
     }
@@ -269,6 +319,12 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
     var radiance = vec3<f32>(0.0);
     // Samples consumed, jumped ones included.
     var steps = 0u;
+    // How much more cloud (metres of it at full density) the noise may take
+    // from this ray, front to back, every smoke along it together (see the
+    // top of the file).
+    var budget = globals.fairness.x;
+    // Half the stretch the last jump stepped over, for the sample it lands on.
+    var skipped = 0.0;
 
     if (count == 1u) {
         // Fast path: one smoke along this ray, from where it enters the box
@@ -288,11 +344,15 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
                 break;
             }
             let dt = base_step * (1.0 + t * growth);
-            let smp = sample_smoke(slot, ro + rd * t, rd, phase_sun, multi_weight);
+            let smp = sample_smoke(slot, ro + rd * t, dt, skipped, &budget, rd, phase_sun, multi_weight);
+            skipped = 0.0;
             if (smp.coarse <= 0.002) {
-                // No smoke within a voxel of here: on to the first sample
-                // at least a voxel on, one step as before.
+                // Next to nothing here: on to the first sample at least a
+                // voxel on, one step as before. A sample can read this
+                // little within a voxel of smoke, so what the jump steps
+                // over is charged to the budget if it lands in smoke.
                 steps += 1u;
+                @if(NOISE_WITHIN_RULE) let left = t;
                 let until = t + max(dt, voxel_size);
                 loop {
                     k += 1u;
@@ -300,6 +360,9 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
                     if (t >= until) {
                         break;
                     }
+                }
+                @if(NOISE_WITHIN_RULE) {
+                    skipped = select(0.0, 0.5 * (t - left), t - left > dt * 1.5);
                 }
                 continue;
             }
@@ -354,11 +417,12 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
                     continue;
                 }
                 fetched = true;
-                let smp = sample_smoke(s, p, rd, phase_sun, multi_weight);
+                let smp = sample_smoke(s, p, dt, skipped, &budget, rd, phase_sun, multi_weight);
                 coarse = max(coarse, smp.coarse);
                 sigma_t += smp.sigma;
                 source += smp.source;
             }
+            skipped = 0.0;
             if (!inside) {
                 // Between two smokes: on to the next one, one step as before.
                 if (next_start >= 1e29) {
@@ -381,6 +445,7 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
             if (coarse <= 0.002) {
                 steps += 1u;
+                @if(NOISE_WITHIN_RULE) let left = t;
                 let until = t + max(dt, voxel_size);
                 loop {
                     k += 1u;
@@ -388,6 +453,9 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
                     if (t >= until) {
                         break;
                     }
+                }
+                @if(NOISE_WITHIN_RULE) {
+                    skipped = select(0.0, 0.5 * (t - left), t - left > dt * 1.5);
                 }
                 continue;
             }

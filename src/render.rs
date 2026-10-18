@@ -169,6 +169,8 @@ pub(crate) struct SmokeFrame {
     pub sun_color: Vec3,
     pub ambient: Vec3,
     pub settings: SmokeSettings,
+    /// The rule's [`Tuning::sight_threshold`](smokescreen::Tuning), metres.
+    pub sight_threshold: f32,
     pub voxel_size: f32,
     pub grid_dims: UVec3,
     /// The core's internal frame (metres, Y up) from the Bevy world's: all
@@ -262,6 +264,10 @@ struct GpuGlobals {
     wind: Vec4,
     /// x: multi-scattering, y: indoor ambient, z: ambient occlusion, w: voxel size.
     lighting: Vec4,
+    /// x: how much cloud (metres at full density) the noise may take from a
+    /// line of sight, with `SmokeSettings::noise_within_rule` (the march
+    /// reads it only then).
+    fairness: Vec4,
 }
 
 impl GpuGlobals {
@@ -280,6 +286,7 @@ impl GpuGlobals {
             noise: Vec4::ZERO,
             wind: Vec4::ZERO,
             lighting: Vec4::ZERO,
+            fairness: Vec4::ZERO,
         }
     }
 }
@@ -419,7 +426,8 @@ struct SmokePipelines {
     facet_retrace_layouts: [BindGroupLayoutDescriptor; 2],
     bake_density: CachedComputePipelineId,
     bake_light: CachedComputePipelineId,
-    march: [CachedComputePipelineId; 2],
+    /// By `SmokeSettings::noise_within_rule`, then MSAA.
+    march: [[CachedComputePipelineId; 2]; 2],
     facet_coarse: [CachedComputePipelineId; 2],
     facet_classify: [CachedComputePipelineId; 2],
     facet_retrace: [CachedComputePipelineId; 2],
@@ -950,16 +958,30 @@ fn init_smoke_pipelines(mut commands: Commands, asset_server: Res<AssetServer>, 
         "bake_lighting",
         vec![],
     );
-    let march = [
-        compute("smoke_march", &march_layouts[0], &march_shader, "march", vec![]),
-        compute(
-            "smoke_march_msaa",
-            &march_layouts[1],
-            &march_shader,
-            "march",
-            vec!["MULTISAMPLED".into()],
-        ),
-    ];
+    // The noise's budget is compiled in only where it's used: its
+    // bookkeeping costs even when nothing spends it.
+    let march_with = |within_rule: bool| {
+        let defs = |msaa: bool| {
+            let mut defs: Vec<ShaderDefVal> = Vec::new();
+            if msaa {
+                defs.push("MULTISAMPLED".into());
+            }
+            if within_rule {
+                defs.push("NOISE_WITHIN_RULE".into());
+            }
+            defs
+        };
+        let (label, label_msaa) = if within_rule {
+            ("smoke_march_within_rule", "smoke_march_within_rule_msaa")
+        } else {
+            ("smoke_march", "smoke_march_msaa")
+        };
+        [
+            compute(label, &march_layouts[0], &march_shader, "march", defs(false)),
+            compute(label_msaa, &march_layouts[1], &march_shader, "march", defs(true)),
+        ]
+    };
+    let march = [march_with(false), march_with(true)];
     let both = |label: &'static str,
                 layouts: &[BindGroupLayoutDescriptor; 2],
                 shader: &Handle<Shader>,
@@ -1219,6 +1241,12 @@ fn prepare_smoke(
         s.ambient_occlusion,
         config.voxel_size,
     );
+    // Within the rule, the noise may take from any line of sight only the
+    // cloud the rule leaves spare: the rule blocks a line through
+    // `sight_threshold` of cloud and the march draws a line opaque from
+    // ln(100) / extinction of it, so a line the rule blocks stays opaque.
+    let budget = (frame.sight_threshold - 100f32.ln() / s.extinction.max(1e-6)).max(0.0);
+    g.fairness = Vec4::new(budget, 0.0, 0.0, 0.0);
     gpu.globals.write_buffer(&device, &queue);
 }
 
@@ -1345,7 +1373,7 @@ fn prepare_smoke_views(
                         smoke_size,
                         TextureFormat::Rgba16Float,
                     ),
-                    march_pipeline: pipelines.march[msaa_on as usize],
+                    march_pipeline: pipelines.march[frame.settings.noise_within_rule as usize][msaa_on as usize],
                     composite_pipeline: specialized.specialize(
                         &pipeline_cache,
                         specializer,

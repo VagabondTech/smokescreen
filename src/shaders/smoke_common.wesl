@@ -74,6 +74,9 @@ struct SmokeGlobals {
     wind: vec4<f32>,
     // x: multi-scattering, y: indoor ambient, z: ambient occlusion, w: voxel size
     lighting: vec4<f32>,
+    // x: how much cloud (m at full density) the noise may take from a line
+    // of sight, with NOISE_WITHIN_RULE
+    fairness: vec4<f32>,
 }
 
 struct SmokeView {

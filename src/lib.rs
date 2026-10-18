@@ -343,9 +343,25 @@ pub struct SmokeSettings {
     /// Spatial frequency of the detail noise, in tiles per metre.
     pub noise_frequency: f32,
     /// How much the billow noise carves the cloud's outer layers (0..1).
+    /// The noise only ever thins the smoke, so it shows through some smoke
+    /// the rule counts, most while a cloud fades, unless
+    /// [`noise_within_rule`](Self::noise_within_rule) is on.
     pub erosion: f32,
     /// How much the fine noise frays the edges (0..1).
     pub detail_erosion: f32,
+    /// Keep volumetric smoke's noise within the rule: along any line of
+    /// sight it takes no more cloud than the rule leaves spare,
+    /// [`Tuning::sight_threshold`] less the ln(100) /
+    /// [`extinction`](Self::extinction) of cloud the picture needs to be
+    /// opaque (0.8 − 0.66 = 0.14 m by default). Volumetric smoke then never
+    /// shows through what the rule blocks (at [`Smoke::density`] 1 or more),
+    /// which matters when the rule decides what a server sends, what bots see
+    /// or what abilities reach. Thin smoke keeps all its noise; thicker smoke
+    /// looks smoother, and a fading cloud stays solid where the rule still
+    /// blocks. It also costs less: a ray stops sampling the noise once it has
+    /// taken all it may. A threshold under ln(100) / extinction leaves the
+    /// noise nothing to take, so volumetric smoke is then drawn without it.
+    pub noise_within_rule: bool,
     /// Drift of the noise, in world units per second. A little upward drift
     /// reads as rising smoke.
     pub wind: Vec3,
@@ -379,6 +395,7 @@ impl Default for SmokeSettings {
             noise_frequency: 0.22,
             erosion: 0.6,
             detail_erosion: 0.35,
+            noise_within_rule: false,
             wind: Vec3::new(0.12, 0.22, 0.05),
             crystal_shadows: true,
             debug_silhouette: false,
@@ -1020,6 +1037,7 @@ fn build_frame(
     frame.ambient = ambient * settings.ambient_intensity;
     frame.settings = settings.clone();
     frame.settings.wind = units.to_internal(settings.wind);
+    frame.sight_threshold = world.internal_tuning().sight_threshold;
     frame.voxel_size = config.voxel_size;
     frame.grid_dims = config.grid_dims;
     frame.internal_from_world = config.internal_from_world();
