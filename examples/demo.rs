@@ -11,7 +11,7 @@
 //! - H: throw an HE grenade (it clears a sphere that refills)
 //! - X: clear all smokes
 //! - F: cycle the style: volumetric, faceted, crystal (re-throws current smokes)
-//! - 1-6: the quality dial, cheapest to best; it starts at 4, medium
+//! - 1-6: the quality dial, cheapest to best; it starts at 3, low
 //! - B: budget mode (the dial turns itself to fit a GPU budget), [ and ]: budget -/+
 //! - M: toggle MSAA, T: toggle TAA (enables temporal jitter on the smoke)
 //! - F1: toggle the help
@@ -482,12 +482,12 @@ fn setup_camera_and_hud(mut commands: Commands, target: Res<ShotTarget>) {
     } else {
         Msaa::Sample4
     };
-    // The dial starts at medium; scripted captures (the README's clips and
+    // The dial starts at low; scripted captures (the README's clips and
     // the measurements) at high, as they always have.
     let smoke_camera = if setting("capture").is_some() && !cfg!(target_arch = "wasm32") {
         SmokeCamera::HIGH
     } else {
-        SmokeCamera::with_quality(quality::quality_of_tier(3))
+        SmokeCamera::with_quality(quality::quality_of_tier(2))
     };
     let mut camera = commands.spawn((
         Camera3d::default(),

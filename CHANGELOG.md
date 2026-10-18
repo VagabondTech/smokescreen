@@ -46,6 +46,8 @@ are not in lockstep.
   which counted less of the edges the noise erodes), and a third of them
   halfway through the fade, before and after. Without the noise, none do.
   See the roadmap's "Volumetric noise".
+- The demo starts with the quality dial at low (it was medium), in every
+  look; its scripted captures still start at high.
 
 ## 0.1.1 (2026-10-18)
 
