@@ -75,22 +75,25 @@ are not in lockstep.
   are the same. The cells take no more memory than the flags, and about
   6 µs per cloud to build when its fill finishes, where the flags took
   15–20 µs.
-- Faceted and crystal fills are about a fifth faster. On an Apple M4, in a
-  voxelised level, a faceted fill takes 1.23 instead of 1.52 ms all at
-  once and a crystal one 1.18 instead of 1.47 ms; at the default budget
-  they need 31–36 ticks instead of 37–42, and with the default timeline
-  (the cloud starts 0.1 s after the pop) a faceted fill costs 0.107
-  instead of 0.129 ms a tick (median; 0.166 instead of 0.195 ms at worst;
+- Faceted and crystal fills are about a quarter faster. On an Apple M4, in
+  a voxelised level, a faceted fill takes 1.14 instead of 1.51 ms all at
+  once and a crystal one 1.07 instead of 1.46 ms; at the default budget
+  they need 29–33 ticks instead of 37–42, and with the default timeline
+  (the cloud starts 0.1 s after the pop) a faceted fill costs 0.097
+  instead of 0.128 ms a tick (median; 0.155 instead of 0.195 ms at worst;
   medians of 11 alternated runs). The halo, which keeps puffs out of
   walls, expanded every filled voxel from a heap; it now grows from the
   filled voxels with an open face, through a plain queue, and the voxels
-  at the edge of its reach only ask the level about their neighbours.
-  Results are unchanged: the determinism hashes are the same, and the
-  grids, puffs and bins of 120 test clouds (every style, point, line and
-  box sources, three levels and Z-up inches) are the same as before, bit
-  for bit. The halo's charge is re-measured (15 work units per voxel it
-  expands, where it was 30 per voxel settled), so a faceted fill comes to
-  about 720,000 units instead of 850,000.
+  at the edge of its reach only ask the level about their neighbours. And
+  the distance out of the region (the fill and its halo) runs over the
+  halo's box and one voxel around it, where it ran over the box of the
+  distance in, five voxels bigger. Results are unchanged: the determinism
+  hashes are the same, and the grids, puffs and bins of 120 test clouds
+  (every style, point, line and box sources, three levels and Z-up
+  inches) are the same as before, bit for bit. The halo's charge is
+  re-measured (15 work units per voxel it expands, where it was 30 per
+  voxel settled), so a faceted fill comes to about 660,000 units instead
+  of 850,000.
 - `VolumeField` holds the cloud's `DensityTable` (`density`) instead of
   `growth` and `dissolve`.
 - `SmokeSettings::debug_transmittance` draws volumetric smoke as how much

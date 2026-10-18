@@ -139,11 +139,11 @@ pub struct Config {
     /// the finished cloud is the same whatever the budget.
     ///
     /// With the default tuning a volumetric fill is about 260,000 units and
-    /// a faceted one about 720,000, so at 128 ticks a second the default
-    /// budget needs about 0.1 s for a volumetric fill and 0.28 s for a
+    /// a faceted one about 660,000, so at 128 ticks a second the default
+    /// budget needs about 0.1 s for a volumetric fill and 0.26 s for a
     /// faceted one. With the default [`Timeline::start`] of 0.1 s, faceted
-    /// fills therefore run at nearly three times the budget: give faceted
-    /// clouds a later start to keep to it.
+    /// fills therefore run at about two and a half times the budget: give
+    /// faceted clouds a later start to keep to it.
     pub fill_budget: u32,
     /// Work units charged per level query (default 4, about 40 ns):
     /// [`crate::Level::is_blocked`] or [`crate::Level::is_inside`].
