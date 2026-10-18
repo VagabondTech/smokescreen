@@ -199,11 +199,13 @@ cargo run --example presets                 # every preset and look; also minima
   either: a test around the noise read in every sample cost 4–12 % close
   up even where it skipped nothing (one that changed no pixel cost 10 %),
   and a SIMD group keeps the pace of its rays through thin smoke, which
-  never get nearly opaque. Ending rays sooner paid instead: by default a
-  ray ends once less than 5 % of the scene shows through (`OPAQUE_BELOW`
-  in `smoke_march.wesl`; 1 % with `noise_within_rule`, whose budgets are
-  worked out from it), 8–9 % cheaper close up for at most 6 levels out of
-  255.
+  never get nearly opaque. Ending rays sooner paid instead: a ray ends
+  once less than 5 % of the scene shows through (`OPAQUE_BELOW` in
+  `smoke_march.wesl`), 8–9 % cheaper close up by default for at most 6
+  levels out of 255, and 7 % with `Filled`, which then fills from where
+  its march turns opaque. `Capped` goes on to 1 %: its budget is worked
+  out from it, and at 5 % the larger budget kept rays reading the noise
+  for longer, 15 % slower.
 - The march is just as touchy about state carried along the ray. The
   noise budget's bookkeeping (two floats and a few operations per sample)
   cost 9–14 % close up at the top dial steps even when it limited nothing,

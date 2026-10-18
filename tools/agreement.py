@@ -39,18 +39,18 @@ the same segments. Per view:
   more than 1 %, 10 % or 30 % of the scene through;
 - opaque, not blocked: the picture lets less than 1 % through (the march
   draws a ray opaque once less than 5 % shows through, 1 % with the noise
-  kept within the rule) where the rule doesn't block. The picture errs
-  towards more smoke there, which is fair.
+  capped) where the rule doesn't block. The picture errs towards more
+  smoke there, which is fair.
 
 Then the picture's own amount of cloud, -ln(transmittance) / sigma (metres of
 full-density cloud, as `occlusion` counts them), against the rule's amount,
 by the rule's amount and away from edges: the median of picture / rule, and
 how many pixels. Past -ln(0.05) / sigma (0.43 m by default; -ln(0.01) / sigma,
-0.66 m, with the noise kept within the rule) the picture is opaque and says
-no more. Without the noise the two differ only where the rule and the
-picture work out the density differently; with it, the noise thins
-the picture. With `SmokeSettings::noise_within_rule` capped or filled (the
-demo's `SMOKE_DEMO_NOISE_WITHIN_RULE`), nothing the rule blocks shows through.
+0.66 m, with the noise capped) the picture is opaque and says no more.
+Without the noise the two differ only where the rule and the picture work
+out the density differently; with it, the noise thins the picture. With
+`SmokeSettings::noise_within_rule` capped or filled (the demo's
+`SMOKE_DEMO_NOISE_WITHIN_RULE`), nothing the rule blocks shows through.
 `overlay.py` paints where the two disagree.
 
 Needs numpy and Pillow.
@@ -179,7 +179,7 @@ def volumetric(src, meta):
     sigma = float(meta["sigma"])
     threshold = float(meta["threshold"])
     # The march draws a ray opaque once less than this shows through.
-    stop = 0.05 if meta.get("noise_within_rule", "Off") == "Off" else 0.01
+    stop = 0.01 if meta.get("noise_within_rule", "Off") == "Capped" else 0.05
     opaque = -np.log(stop) / sigma
     print(
         f"age {meta.get('age', '?')} s, dial step {meta.get('tier', 'ultra')}, erosion {meta.get('erosion', '?')}, "
