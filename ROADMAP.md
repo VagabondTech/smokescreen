@@ -19,7 +19,8 @@ both).
   edges, on the demo's agreement run). The volumetric rule works out
   density in the picture's order (per voxel, then interpolated), so
   without the noise the two agree too, and `SmokeSettings::noise_within_rule`
-  keeps the noise from showing through what the rule blocks (0.2).
+  (`Capped` or `Filled`) keeps the noise from showing through what the
+  rule blocks (0.2).
 - **Faster checks:** skipping the parts of a volumetric cloud the growth
   front hasn't reached or the fade has eaten (3× faster late in the fade),
   per-check hole filtering; both leave results bit-identical.
@@ -111,6 +112,14 @@ both).
   cloud fades (docs/design.md, "The picture against the rule"): players all
   see the same thinning, but a server or bots that use the rule see less
   than they do there. `SmokeSettings::noise_within_rule` is for those games.
+- **`NoiseWithinRule::Filled`.** At the two cheapest dial steps a few pixels
+  just inside the edge of what the rule blocks still let a little through
+  (up to 16 by more than 1 %, none by more than 30 %): their quarter
+  resolution blurs the fill's sharper edge. Ending the fill a little before the threshold would close that. Its
+  cost (about 10 % close up at the top steps) could come down by adding up
+  the baked light channels along the ray instead of working out the light
+  at every sample, and the outline of a fading cloud's dome could be
+  softer.
 - **The march's skip through empty space.** Where the filtered density is
   under 0.002, the volumetric march moves on at least a voxel, but a
   sample can read that little within a voxel of dense smoke (trilinear
@@ -118,8 +127,8 @@ both).
   start of a cloud's edge: drawn without its noise, the picture shows up
   to 10 % less than the rule counts through a grown cloud's edges. With
   the noise on, which erodes that thin smoke anyway, marching it changes
-  nothing visible, and with `noise_within_rule` what it skips counts
-  against the noise's budget. Going back whenever a jump lands in smoke
+  nothing visible, and with `noise_within_rule` capped or filled, what it
+  skips counts as cloud the noise took. Going back whenever a jump lands in smoke
   made the two agree to within 0.5 % but cost 12–17 % close up at the top
   two dial steps on an Apple M4; a cheaper way would be welcome.
 

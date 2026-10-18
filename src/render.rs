@@ -264,9 +264,10 @@ struct GpuGlobals {
     wind: Vec4,
     /// x: multi-scattering, y: indoor ambient, z: ambient occlusion, w: voxel size.
     lighting: Vec4,
-    /// x: how much cloud (metres at full density) the noise may take from a
-    /// line of sight, with `SmokeSettings::noise_within_rule` (the march
-    /// reads it only then).
+    /// For `SmokeSettings::noise_within_rule`. Capped: x, how much cloud
+    /// (metres at full density) the noise may take from a line of sight.
+    /// Filled: from y to z metres of cloud, the opacity the noise took is
+    /// filled back in.
     fairness: Vec4,
 }
 
@@ -426,8 +427,8 @@ struct SmokePipelines {
     facet_retrace_layouts: [BindGroupLayoutDescriptor; 2],
     bake_density: CachedComputePipelineId,
     bake_light: CachedComputePipelineId,
-    /// By `SmokeSettings::noise_within_rule`, then MSAA.
-    march: [[CachedComputePipelineId; 2]; 2],
+    /// By `SmokeSettings::noise_within_rule` (off, capped, filled), then MSAA.
+    march: [[CachedComputePipelineId; 2]; 3],
     facet_coarse: [CachedComputePipelineId; 2],
     facet_classify: [CachedComputePipelineId; 2],
     facet_retrace: [CachedComputePipelineId; 2],
@@ -958,30 +959,29 @@ fn init_smoke_pipelines(mut commands: Commands, asset_server: Res<AssetServer>, 
         "bake_lighting",
         vec![],
     );
-    // The noise's budget is compiled in only where it's used: its
-    // bookkeeping costs even when nothing spends it.
-    let march_with = |within_rule: bool| {
+    // Keeping the noise within the rule is compiled in only where it's used:
+    // its bookkeeping costs even when it changes nothing.
+    let march_with = |rule: Option<&'static str>, label: &'static str, label_msaa: &'static str| {
         let defs = |msaa: bool| {
             let mut defs: Vec<ShaderDefVal> = Vec::new();
             if msaa {
                 defs.push("MULTISAMPLED".into());
             }
-            if within_rule {
-                defs.push("NOISE_WITHIN_RULE".into());
+            if let Some(rule) = rule {
+                defs.push(rule.into());
             }
             defs
-        };
-        let (label, label_msaa) = if within_rule {
-            ("smoke_march_within_rule", "smoke_march_within_rule_msaa")
-        } else {
-            ("smoke_march", "smoke_march_msaa")
         };
         [
             compute(label, &march_layouts[0], &march_shader, "march", defs(false)),
             compute(label_msaa, &march_layouts[1], &march_shader, "march", defs(true)),
         ]
     };
-    let march = [march_with(false), march_with(true)];
+    let march = [
+        march_with(None, "smoke_march", "smoke_march_msaa"),
+        march_with(Some("NOISE_CAPPED"), "smoke_march_capped", "smoke_march_capped_msaa"),
+        march_with(Some("NOISE_FILLED"), "smoke_march_filled", "smoke_march_filled_msaa"),
+    ];
     let both = |label: &'static str,
                 layouts: &[BindGroupLayoutDescriptor; 2],
                 shader: &Handle<Shader>,
@@ -1241,12 +1241,18 @@ fn prepare_smoke(
         s.ambient_occlusion,
         config.voxel_size,
     );
-    // Within the rule, the noise may take from any line of sight only the
-    // cloud the rule leaves spare: the rule blocks a line through
-    // `sight_threshold` of cloud and the march draws a line opaque from
-    // ln(100) / extinction of it, so a line the rule blocks stays opaque.
-    let budget = (frame.sight_threshold - 100f32.ln() / s.extinction.max(1e-6)).max(0.0);
-    g.fairness = Vec4::new(budget, 0.0, 0.0, 0.0);
+    // The rule blocks a line through `sight_threshold` of cloud and the march
+    // draws a line opaque from ln(100) / extinction of it. Capped, the noise
+    // may take the difference from any line; filled, what it took is filled
+    // back in between the two (on a line the rule blocks, all of it).
+    let opaque_from = 100f32.ln() / s.extinction.max(1e-6);
+    let threshold = frame.sight_threshold.max(0.02);
+    g.fairness = Vec4::new(
+        (frame.sight_threshold - opaque_from).max(0.0),
+        opaque_from.min(threshold - 0.01),
+        threshold,
+        0.0,
+    );
     gpu.globals.write_buffer(&device, &queue);
 }
 

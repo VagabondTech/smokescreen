@@ -47,26 +47,41 @@ are not in lockstep.
   halfway through the fade, before and after. Without the noise, none do.
   `SmokeSettings::noise_within_rule` (below) keeps the noise from doing
   so.
-- `SmokeSettings::noise_within_rule` keeps volumetric smoke's noise within
-  the rule: along any line of sight it takes no more cloud than the rule
-  leaves spare (`Tuning::sight_threshold` less the ln(100) /
-  `SmokeSettings::extinction` the picture needs to be opaque: 0.14 m by
-  default), so volumetric smoke never shows through what the rule blocks.
-  It is for games whose server, bots or abilities use the rule. On, none of
-  the pixels the rule blocks in the demo's four agreement views let more
-  than 1 % of the scene through (away from edges), at every step of the
-  dial, grown, blooming and halfway through the fade. Thin smoke keeps all
-  its noise; thicker smoke looks smoother, and a fading cloud stays solid
-  where the rule still blocks. It also costs less, as a ray stops sampling
-  the noise once it has taken all it may: on an Apple M4 at 1920×1080,
-  close up, the best step takes 4.43 instead of 5.56 ms once the cloud is
-  grown (−20 %) and 3.16 instead of 3.44 ms halfway through the fade
-  (−8 %), and the two cheapest steps cost about the same (medians of five
-  alternated runs). Off by default, which draws the same picture as
-  before, pixel for pixel, at the same cost: the budget is compiled into
-  separate march pipelines, used only with the setting on. The demo turns
-  it on with `SMOKE_DEMO_NOISE_WITHIN_RULE=1`, its `agreement` script
-  draws at any step of the dial with `SMOKE_DEMO_TIER`, and
+- `SmokeSettings::noise_within_rule` (`NoiseWithinRule`) can keep
+  volumetric smoke's noise from showing through what the rule blocks, for
+  games whose server, bots or abilities use the rule. It is `Off` by
+  default, which draws the same picture as before, pixel for pixel, at the
+  same cost: each of the other two modes is compiled into its own march
+  pipelines, used only when chosen.
+  - `Capped`: along any line of sight the noise takes no more cloud than
+    the rule leaves spare (`Tuning::sight_threshold` less the ln(100) /
+    `SmokeSettings::extinction` the picture needs to be opaque: 0.14 m by
+    default). Thicker smoke looks smoother, and a fading cloud stays a pale,
+    smooth dome where the rule still blocks. It costs less, as a ray stops
+    sampling the noise once it has taken all it may: on an Apple M4 at
+    1920×1080, close up (medians of five alternated runs), the best step
+    takes 4.43 instead of 5.56 ms once the cloud is grown (−20 %) and 3.16
+    instead of 3.44 ms halfway through the fade (−8 %); the two cheapest
+    steps cost about the same.
+  - `Filled`: the noise runs as before, and on lines through more than
+    ln(100) / extinction of cloud the opacity it took is filled back in
+    behind what was drawn, completely by the rule's threshold. The billows
+    stay; a fading cloud stays a textured dome with a crisp outline where
+    the rule still blocks. It costs more: close up, 6.18 instead of 5.63 ms
+    at the best step grown (+10 %), 3.84 instead of 3.43 ms halfway through
+    the fade (+12 %).
+
+  With either, none of the pixels the rule blocks in the demo's four
+  agreement views let more than 1 % of the scene through (away from
+  edges), at the best step, grown, blooming and halfway through the fade;
+  before, up to 5.5 % let more than 30 % through in a grown cloud, and a
+  third of them halfway through the fade. `Capped` does the same at every
+  step of the dial. `Filled` does down to the "low" step, while at the two
+  cheapest a few pixels just inside the edge of the blocked area still let
+  a little through (up to 16 by more than 1 %, none by more than 30 %).
+  Thin smoke keeps all its noise in both. The demo picks the mode with
+  `SMOKE_DEMO_NOISE_WITHIN_RULE=capped` or `filled`, its `agreement`
+  script draws at any step of the dial with `SMOKE_DEMO_TIER`, and
   `tools/overlay.py` paints where the picture and the rule disagree.
 - The demo starts with the quality dial at low (it was medium), in every
   look; its scripted captures still start at high.

@@ -104,11 +104,13 @@ cargo run --example presets                 # every preset and look; also minima
    than a tenth). Then against the rule: the faceted and crystal pictures
    never show through anything the rule blocks. The volumetric noise does,
    most while a cloud fades, unless `SmokeSettings::noise_within_rule` is
-   on; that caps what the noise may take from any ray (`sight_threshold`
-   less ln(100) / extinction, the march's `budget`, which its empty-space
-   jumps also charge). Check with the demo's `agreement` (`SMOKE_DEMO_TIER`
-   for any step) and `tiers` captures and the tools (`tools/overlay.py`
-   paints the disagreements).
+   `Capped` (the noise may take at most `sight_threshold` less ln(100) /
+   extinction from any ray, the march's `budget`) or `Filled` (the march
+   fills the opacity it took back in at the end, from its sum of the
+   rule's cloud); the empty-space jumps charge what they skip to either.
+   Check with the demo's `agreement` (`SMOKE_DEMO_TIER` for any step) and
+   `tiers` captures and the tools (`tools/overlay.py` paints the
+   disagreements).
 6. **Units.** The core works in metres, Y up, internally; everything public
    is in the caller's units (`Units`). Renderers draw in the internal frame
    and convert per view.
@@ -196,11 +198,11 @@ cargo run --example presets                 # every preset and look; also minima
 - The march is just as touchy about state carried along the ray. The
   noise budget's bookkeeping (two floats and a few operations per sample)
   cost 9–14 % close up at the top dial steps even when it limited nothing,
-  so it is compiled in only with `NOISE_WITHIN_RULE`
-  (`SmokeSettings::noise_within_rule`). That makes four march pipelines:
-  with and without it, with and without MSAA. Going back over what an
-  empty-space jump skipped, to draw a cloud's edge exactly, cost 12–17 %
-  close up for no visible change with the noise on.
+  so `SmokeSettings::noise_within_rule`'s modes are compiled in only when
+  chosen (`NOISE_CAPPED`, `NOISE_FILLED`): six march pipelines, three
+  modes with and without MSAA. Going back over what an empty-space jump
+  skipped, to draw a cloud's edge exactly, cost 12–17 % close up for no
+  visible change with the noise on.
 - Crystal puffs are plugin-owned entities (`CrystalPuff`). `sync_crystals`
   runs after transform propagation, so it writes `GlobalTransform` itself.
 - `SmokeObstacle` voxelisation runs on a background task; until the first

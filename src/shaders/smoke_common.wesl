@@ -74,8 +74,10 @@ struct SmokeGlobals {
     wind: vec4<f32>,
     // x: multi-scattering, y: indoor ambient, z: ambient occlusion, w: voxel size
     lighting: vec4<f32>,
-    // x: how much cloud (m at full density) the noise may take from a line
-    // of sight, with NOISE_WITHIN_RULE
+    // For `SmokeSettings::noise_within_rule`. NOISE_CAPPED, x: how much cloud
+    // (m at full density) the noise may take from a line of sight.
+    // NOISE_FILLED: from y to z metres of cloud the opacity the noise took is
+    // filled back in.
     fairness: vec4<f32>,
 }
 

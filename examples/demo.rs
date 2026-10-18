@@ -30,9 +30,9 @@
 //! - `SMOKE_DEMO_SMOKE=0` leaves out the smoke that pops at the start.
 //! - `SMOKE_DEMO_NOISE=0` draws volumetric smoke without its noise: only the
 //!   coarse density, which is what the rule integrates.
-//! - `SMOKE_DEMO_NOISE_WITHIN_RULE=1` turns on
-//!   `SmokeSettings::noise_within_rule`: the noise never shows through what
-//!   the rule blocks.
+//! - `SMOKE_DEMO_NOISE_WITHIN_RULE=capped` or `filled` sets
+//!   `SmokeSettings::noise_within_rule`: either way, volumetric smoke's noise
+//!   never shows through what the rule blocks.
 //! - `SMOKE_DEMO_BUDGET_MS=<ms>` sets the budget for budget mode (default 2).
 //! - `SMOKE_DEMO_GPU_TIMINGS=1` / `0` turns GPU timestamp diagnostics on or
 //!   off (HUD timings, budget mode, the tier sweep). Default: on, except on
@@ -155,7 +155,11 @@ fn main() {
         smoke_settings.erosion = -1.0;
         smoke_settings.detail_erosion = 0.0;
     }
-    smoke_settings.noise_within_rule = setting("noise_within_rule").is_some_and(|v| v != "0");
+    smoke_settings.noise_within_rule = match setting("noise_within_rule").as_deref() {
+        Some("capped") => NoiseWithinRule::Capped,
+        Some("filled") => NoiseWithinRule::Filled,
+        _ => NoiseWithinRule::Off,
+    };
     app.add_plugins((SmokePlugin::default(), FrameTimeDiagnosticsPlugin::default()))
         .insert_resource(smoke_settings)
         .insert_resource(DemoBudget(budget_ms))
@@ -2356,7 +2360,7 @@ fn agreement_run(
                     .filter_map(|c| c.age(clock.drawn(), rate))
                     .fold(0.0, f32::max);
                 let meta = format!(
-                    "style {:?}\nthreshold {}\nsigma {}\nage {age:.3}\nerosion {}\ndetail_erosion {}\ntier {}\nnoise_within_rule {}\n",
+                    "style {:?}\nthreshold {}\nsigma {}\nage {age:.3}\nerosion {}\ndetail_erosion {}\ntier {}\nnoise_within_rule {:?}\n",
                     settings.style,
                     config.tuning.sight_threshold,
                     settings.extinction * smoke.density,
