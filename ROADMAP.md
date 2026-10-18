@@ -156,13 +156,17 @@ The README's tables come from `cargo bench -p smokescreen`. The weak spots:
   position and size: 0.1 to 0.3 ms for 32 clouds) is computed for every
   cloud, whether or not a check comes near it. Compute a cloud's puffs on
   the first check that touches it.
-- Faceted fills cost about 3× volumetric ones (0.33 s of ticks at the
-  default budget), most of it in the halo and the region's two distance
-  transforms. Options, all of which change results: the halo as two
-  dilations (it only produces a set), one distance transform of the
-  boundary instead of two, an integer 3-4-5 chamfer, a narrow band around
-  the fill. A server using `FacetRule::Core` could also skip the wall-clip
-  stages if puff seeding stopped depending on the halo.
+- Faceted fills cost about 2.3× volumetric ones (0.28 s of ticks at the
+  default budget). Since the halo grows from the fill's open faces (0.2),
+  the region's two distance transforms are the biggest part left, about a
+  quarter of a faceted fill on an Apple M4. Both in one pass over one
+  array (a voxel steps from 0 where its neighbour is on the other side)
+  gives the very same values, but took 0.45 ms where the two take 0.30:
+  the test per voxel keeps the loop from vectorising. Options, all of which
+  change results: one distance transform of the boundary instead of two,
+  an integer 3-4-5 chamfer, a narrow band around the fill. A server using
+  `FacetRule::Core` could also skip the wall-clip stages if puff seeding
+  stopped depending on the halo.
 - Crystal clouds are thousands of entities. If entity overhead shows up in
   profiles, draw puffs with one instanced draw per cloud instead.
 - Show a multi-threaded query pattern (a `View` is `Sync`).

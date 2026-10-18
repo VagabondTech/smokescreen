@@ -204,11 +204,11 @@ Measured on an Apple M4 (Mac mini) at 128 ticks a second. Run `cargo bench -p sm
 
 | | Volumetric | Faceted | Crystal |
 |---|---|---|---|
-| All at once | 0.55 ms | 1.6 ms | 1.5 ms |
-| Default timeline (the cloud starts 0.1 s after the pop): per tick, until it starts | median 0.06 ms, worst 0.08 ms, for 14 ticks | median 0.14 ms, worst 0.21 ms, for 13 ticks | median 0.14 ms, worst 0.20 ms, for 13 ticks |
-| A start of 0.4 s or later: per tick | as above | median 0.04 ms, worst 0.09 ms, for 37–42 ticks | median 0.04 ms, worst 0.08 ms, for 37–41 ticks |
+| All at once | 0.55 ms | 1.2 ms | 1.2 ms |
+| Default timeline (the cloud starts 0.1 s after the pop): per tick, until it starts | median 0.06 ms, worst 0.08 ms, for 14 ticks | median 0.11 ms, worst 0.17 ms, for 13 ticks | median 0.11 ms, worst 0.17 ms, for 13 ticks |
+| A start of 0.4 s or later: per tick | as above | median 0.03 ms, worst 0.09 ms, for 31–36 ticks | median 0.03 ms, worst 0.07 ms, for 31–35 ticks |
 
-The fill budget (`Config::fill_budget`, about 0.2 ms a tick on the VM, under 0.1 ms on the M4: it counts work, not time) grows only when a fill would otherwise not be ready by the time its cloud starts. Faceted and crystal fills need about 0.33 s of ticks, so give those clouds a later `Timeline::start` to keep to the budget.
+The fill budget (`Config::fill_budget`, about 0.2 ms a tick on the VM, under 0.1 ms on the M4: it counts work, not time) grows only when a fill would otherwise not be ready by the time its cloud starts. Faceted and crystal fills need about 0.28 s of ticks, so give those clouds a later `Timeline::start` to keep to the budget.
 
 **Sight checks**: 250 a tick, each through 4 of 32 clouds, in milliseconds (the median of 11 runs):
 

@@ -92,7 +92,7 @@ Positions, lengths, volumes and results are in your units;
 ## Cost
 
 On an Apple M4: a volumetric fill is about 0.55 ms of work and a faceted or
-crystal one about 1.6 ms, spread over ticks. 250 sight checks through 4 of
+crystal one about 1.2 ms, spread over ticks. 250 sight checks through 4 of
 32 grown clouds take 0.03 ms (crystal, blocking on any contact) or 0.04 ms
 (faceted, with either `FacetRule`, and volumetric). Halfway through a
 cloud's fade they cost more: up to 3× as much, and 0.7 ms with the exact

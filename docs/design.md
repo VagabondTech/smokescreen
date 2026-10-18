@@ -49,7 +49,7 @@ A level made of surfaces (meshes voxelised by `VoxelObstacles::from_triangles`) 
 
 The fill is a state machine that can stop after any small step and pick up where it left off, which is how it keeps to a per-tick budget (`Config::fill_budget`, work units of about 10 ns). A piece of work too big to split waits for the start of the next tick rather than overrunning this one. If a fill would still be running when its cloud starts, the budget grows to spread the rest evenly over the ticks left. The finished cloud is the same however the work was split.
 
-Faceted and crystal clouds add a halo, two distance transforms, puff seeding and binning to the same state machine. Crystal puffs are sized at seeding so that, at their biggest and in any orientation, they stay inside the space the fill may occupy: they are never clipped when drawn, so they must never poke through a wall.
+Faceted and crystal clouds add a halo, two distance transforms, puff seeding and binning to the same state machine. The halo is the space past the fill that puffs may bulge into: free space within the overhang plus 0.2 m of it (0.65 m, about two voxels), by the same steps as the spread but plain Euclidean lengths. It grows from the filled voxels with an open face, through a queue rather than a heap: a filled voxel whose six face neighbours are all filled reaches nothing sooner than they do. Crystal puffs are sized at seeding so that, at their biggest and in any orientation, they stay inside the space the fill may occupy: they are never clipped when drawn, so they must never poke through a wall.
 
 ## 2. Lighting and upload (volumetric and faceted, once per grenade)
 
