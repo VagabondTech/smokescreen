@@ -37,7 +37,7 @@ Shape controls:
 
 Each voxel stores **when** the smoke reaches it (normalised distance), not whether it's filled. The GPU animates the growth front from that value, so nothing is re-uploaded while the smoke blooms.
 
-The fill also records which voxels the level says are solid; it asks about every neighbour of every filled voxel. Solid voxels hold no smoke, so plain trilinear filtering would fade the smoke out over the last voxel before every wall and floor: a see-through layer up to a voxel and a half deep along every surface, which the noise then frayed to nothing. Instead, every sample averages only the open voxels around it (in the core, `Grid::sample_distance`; on the GPU, filtered density divided by a filtered open mask). Smoke pressed against a wall stays as dense as the smoke in front of it, right up to the middle of the first solid voxel, in the rule and the picture alike.
+The fill also records which voxels the level says are solid; it asks about every neighbour of every filled voxel. Solid voxels hold no smoke, so plain trilinear filtering would fade the smoke out over the last voxel before every wall and floor: a see-through layer up to a voxel and a half deep along every surface, which the noise then frayed to nothing. Instead, every sample averages only the open voxels around it (in the core, `Grid::sample_distance` for distances and `VolumeField::density` for densities; on the GPU, filtered density divided by a filtered open mask). Smoke pressed against a wall stays as dense as the smoke in front of it, right up to the middle of the first solid voxel, in the rule and the picture alike.
 
 A voxel counts as solid once a wall reaches a little way into it (3 cm with `BoxObstacles`, so that thin walls always block), so on its own that would stop the smoke at the middle of a voxel the wall only clips: up to 12 cm short of the wall, a see-through layer along it. The fill therefore pads such voxels. After the spread it asks the level whether the centre of each solid voxel next to the smoke is inside the wall (`Level::is_inside`). A *clipped* voxel, whose centre is open air, takes the smallest fill distance of the filled voxels beside it (and then, for the edges and corners where walls meet floors, of padded ones, towards the inside of the wall only), and samples treat it as open (`occupancy::PADDED`). The smoke then reaches into the wall, where it is hidden.
 
@@ -60,6 +60,8 @@ The grid is 48×24×48 RGBA8 (distance, sun visibility, sky visibility, wall cli
 ## 3. Bake (GPU compute, only for slots that changed)
 
 **Density pass:** per voxel, apply the growth front, the dissolve and every open hole in the core's snapshot. This is the only place holes are evaluated, so a spray of 16 bullet tunnels costs 16 capsule tests per voxel once per frame, instead of per pixel per step. Per-sample hole evaluation is what makes naive implementations slow.
+
+The rule works out density in the same order: density per voxel first, then interpolated between voxels. Each tick the core takes the density of every fill-distance byte once (`DensityTable`, kept while a cloud's growth and dissolve stay the same) and samples interpolate those values over the open voxels, as the sampler interpolates the baked densities. Interpolating distances and then taking the density gives a different answer wherever the density curve bends, most at a cloud's edge, where the picture drew up to six times the smoke such a rule counted. Holes differ: the rule applies them at each sample, exactly, and the bake at each voxel's centre, so the picture's tunnels are smoothed over a voxel.
 
 **Lighting pass:** per voxel, march 10 growing steps towards the sun and 6 upwards through the smoke. It stores single-scattered sun, a multiple-scattering approximation (Wrenninge-style octaves) and ambient occlusion.
 
@@ -205,6 +207,17 @@ On an Apple M4 at 1920×1080 the sweep finds the same: nothing missing beyond th
 The software rasteriser gave the same zeros in the old level.
 
 Both pictures match the core's surface exactly (the two "touch" columns): with `sight_threshold = 0`, what players see is what blocks. With the 0.8 m threshold the picture never shows through anything the rule blocks, but it draws thin edges and corners (less than 0.8 m of cloud) as solid smoke that the rule, and so a server or a bot, sees through. See `ROADMAP.md`.
+
+Volumetric smoke is soft, so for it the demo draws how much of the scene shows through each pixel (`SmokeSettings::debug_transmittance`, with tonemapping off), and the tool compares that with the rule along the same segments. Without the noise (`SMOKE_DEMO_NOISE=0`) the picture is the coarse density the rule integrates. It is opaque wherever the rule blocks, and the amount of cloud it implies, −ln(transmittance) / extinction, agrees with the rule's to within 1 % halfway through the fade for segments through more than 0.05 m of cloud, and to within 10 % on a grown cloud. The rest is the march's skip through empty space: where the filtered density is under 0.002 it moves on at least a voxel, which can step over the start of a cloud's edge. With the skip turned off the two agree to within 0.5 %. (Past −ln(0.01) / extinction, 0.66 m by default, the march draws the smoke opaque, so the picture says no more.) With the noise, the picture shows through some of what the rule blocks: the fewest pixels of a grown cloud, the most once the fade adds to the erosion:
+
+| View | Blocked by the rule, grown | More than 30 % shows through | Blocked by the rule, 16.5 s | More than 30 % shows through |
+|---|---|---|---|---|
+| far | 9,996 | 34 (0.3 %) | 3,078 | 580 (19 %) |
+| front | 43,444 | 1,063 (2.4 %) | 13,076 | 3,345 (26 %) |
+| close | 277,193 | 15,377 (5.5 %) | 71,268 | 22,661 (32 %) |
+| edge | 69,729 | 1,717 (2.5 %) | 11,973 | 3,836 (32 %) |
+
+That is the next thing to fix for volumetric fairness (`ROADMAP.md`, "Volumetric noise").
 
 ## Cost and memory
 

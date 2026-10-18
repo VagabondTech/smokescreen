@@ -1,6 +1,6 @@
 //! A cloud's life, and the volumetric style's density model.
 
-use crate::math::smoothstep;
+use crate::math::{BYTE_TO_UNIT, smoothstep};
 
 /// Timing of a cloud's life, in seconds after the pop. Defaults: starts
 /// growing 0.1 s after the pop, full after another 1.4 s, dissolves over the
@@ -86,6 +86,103 @@ pub fn shape_density(d: f32, growth: f32, dissolve: f32) -> f32 {
     shell * front * keep * (1.0 - 0.35 * dissolve)
 }
 
+/// A volumetric cloud's density (0..1) for every fill-distance byte at one
+/// age: [`shape_density`] of each byte's distance (`byte / 255`).
+///
+/// A sample interpolates these values between voxels, the way a renderer's
+/// linear sampler interpolates a texture of densities baked per voxel. Taking
+/// the density of the interpolated distance instead would give a different
+/// answer wherever the density curve bends (the feathered shell, the growth
+/// front and the fade): this way the rule counts the density the picture
+/// draws.
+#[derive(Clone, PartialEq)]
+pub struct DensityTable {
+    values: [f32; 256],
+    growth: f32,
+    dissolve: f32,
+    empty_from: u8,
+}
+
+impl Default for DensityTable {
+    /// No density anywhere, as before a cloud starts to grow.
+    fn default() -> Self {
+        Self {
+            values: [0.0; 256],
+            growth: 0.0,
+            dissolve: 0.0,
+            empty_from: 0,
+        }
+    }
+}
+
+impl core::fmt::Debug for DensityTable {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DensityTable")
+            .field("growth", &self.growth)
+            .field("dissolve", &self.dissolve)
+            .field("empty_from", &self.empty_from)
+            .finish_non_exhaustive()
+    }
+}
+
+impl DensityTable {
+    /// The table of a cloud at the age with this [`Timeline::growth`] and
+    /// [`Timeline::dissolve`].
+    pub fn new(growth: f32, dissolve: f32) -> Self {
+        let mut table = Self::default();
+        table.set(growth, dissolve);
+        table
+    }
+
+    /// Make this the table for `growth` and `dissolve`. Nothing to do if it
+    /// already is: the table depends on nothing else.
+    pub(crate) fn set(&mut self, growth: f32, dissolve: f32) {
+        if growth.to_bits() == self.growth.to_bits() && dissolve.to_bits() == self.dissolve.to_bits() {
+            return;
+        }
+        // Density is exactly 0 at or past this distance: past the growth
+        // front, where the fade has eaten, or empty.
+        let cutoff = growth.min(1.2 * (1.0 - dissolve)).min(0.999);
+        let empty_from = BYTE_TO_UNIT.partition_point(|&v| v < cutoff);
+        for (value, &d) in self.values[..empty_from].iter_mut().zip(&BYTE_TO_UNIT) {
+            *value = shape_density(d, growth, dissolve);
+        }
+        self.values[empty_from..].fill(0.0);
+        self.growth = growth;
+        self.dissolve = dissolve;
+        // At most 255: the cutoff is below 1, byte 255's distance.
+        self.empty_from = empty_from as u8;
+    }
+
+    /// The density at a voxel with this fill-distance byte.
+    #[inline]
+    pub fn get(&self, byte: u8) -> f32 {
+        self.values[byte as usize]
+    }
+
+    /// Every byte's density, by byte.
+    #[inline]
+    pub fn values(&self) -> &[f32; 256] {
+        &self.values
+    }
+
+    pub fn growth(&self) -> f32 {
+        self.growth
+    }
+
+    pub fn dissolve(&self) -> f32 {
+        self.dissolve
+    }
+
+    /// Every byte from this one on has density 0: the growth front hasn't
+    /// reached its distance yet, or the fade has eaten it. 0 when the cloud
+    /// has no density at all.
+    #[inline]
+    pub fn empty_from(&self) -> u8 {
+        self.empty_from
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,5 +201,28 @@ mod tests {
         // Outer layers go first while dissolving.
         let half = tl.dissolve(16.5);
         assert!(shape_density(0.1, 1.2, half) > shape_density(0.7, 1.2, half));
+    }
+
+    /// The table holds `shape_density` of every byte, to the bit, nothing
+    /// from `empty_from` on, and a table set again equals a new one.
+    #[test]
+    fn density_table_is_shape_density_of_every_byte() {
+        let tl = Timeline::default();
+        let mut reused = DensityTable::default();
+        let ages = (0..=190).map(|i| (i as f32 * 0.1, &tl));
+        let beyond = Timeline { grow_time: 0.0, ..tl };
+        let extremes = [0.0, 0.1, 17.9, 18.0, 25.0].map(|a| (a, &beyond));
+        for (age, tl) in ages.chain(extremes) {
+            let (growth, dissolve) = (tl.growth(age), tl.dissolve(age));
+            let table = DensityTable::new(growth, dissolve);
+            for b in 0..=255u8 {
+                let want = shape_density(b as f32 / 255.0, growth, dissolve);
+                assert_eq!(table.get(b).to_bits(), want.to_bits(), "byte {b} at {age} s");
+                assert!(b < table.empty_from() || table.get(b) == 0.0, "byte {b} at {age} s");
+            }
+            reused.set(growth, dissolve);
+            assert!(reused == table, "at {age} s");
+        }
+        assert!(DensityTable::default() == DensityTable::new(0.0, 0.0));
     }
 }

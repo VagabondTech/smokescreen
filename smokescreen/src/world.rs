@@ -11,8 +11,8 @@ use crate::{
     grid::near_solid_cells,
     holes::{HOLE_BUFFER, HoleKind, HoleSettings, HoleShape, holes_near},
     level::Level,
-    math::{BYTE_TO_UNIT, boxes_overlap, clip_segment, distance_to_segment, hash_u32, safe_recip, slab},
-    timeline::Timeline,
+    math::{boxes_overlap, clip_segment, distance_to_segment, hash_u32, safe_recip, slab},
+    timeline::{DensityTable, Timeline},
     units::Units,
     volume::VolumeField,
 };
@@ -357,6 +357,10 @@ pub struct CloudState {
     pub growth: f32,
     /// [`Timeline::dissolve`] at this age.
     pub dissolve: f32,
+    /// Volumetric: the density of every fill-distance byte at this age,
+    /// which samples interpolate (see [`DensityTable`]). Faceted and crystal
+    /// clouds have the empty table.
+    pub density: DensityTable,
     /// Box containing everything the cloud can occupy (internal frame).
     pub bounds: (Vec3, Vec3),
     /// Box containing everything it occupies at this tick, or `None` if
@@ -870,6 +874,13 @@ impl<L: Level> Smokes<L> {
             st.age = age;
             st.growth = tl.growth(age);
             st.dissolve = tl.dissolve(age);
+            // Kept from this slot's last tick while growth and dissolve are
+            // the same (a grown cloud's, every tick).
+            if ready.shape.facets.is_none() {
+                st.density.set(st.growth, st.dissolve);
+            } else {
+                st.density.set(0.0, 0.0);
+            }
             st.bounds = ready.bounds;
             st.holes.clear();
             if let Some(hs) = &self.internal.holes {
@@ -1015,9 +1026,8 @@ fn active_bounds(shape: &CloudShape, state: &CloudState) -> Option<(Vec3, Vec3)>
             if grid.front_bounds.is_empty() {
                 return Some(state.bounds);
             }
-            // As in `VolumeField::amount`: no density at or past the cutoff.
-            let cutoff = state.growth.min(1.2 * (1.0 - state.dissolve)).min(0.999);
-            let skip_from = BYTE_TO_UNIT.partition_point(|&v| v < cutoff);
+            // As in `VolumeField::amount`: no density from this byte on.
+            let skip_from = state.density.empty_from() as usize;
             if skip_from == 0 {
                 return None;
             }
@@ -1274,8 +1284,7 @@ impl<'a> CloudView<'a> {
     pub fn volume_field(&self) -> Option<VolumeField<'a>> {
         self.shape.facets.is_none().then_some(VolumeField {
             grid: &self.shape.grid,
-            growth: self.state.growth,
-            dissolve: self.state.dissolve,
+            density: &self.state.density,
             holes: &self.state.holes,
         })
     }
@@ -1427,8 +1436,7 @@ impl<'a> View<'a> {
                     let holes = holes_near(&state.holes, a, inv, t0, t1, |_| 0.0, &mut buf);
                     VolumeField {
                         grid: &shape.grid,
-                        growth: state.growth,
-                        dissolve: state.dissolve,
+                        density: &state.density,
                         holes,
                     }
                     .amount_near(&ready.near_solid, a, rd, t0, t1, &mut part, &|p| {
@@ -1557,8 +1565,7 @@ impl<'a> View<'a> {
                     let holes = holes_near(&state.holes, a, inv, t0, t1, |_| 0.0, &mut buf);
                     VolumeField {
                         grid: &shape.grid,
-                        growth: state.growth,
-                        dissolve: state.dissolve,
+                        density: &state.density,
                         holes,
                     }
                     .amount_near(&ready.near_solid, a, rd, t0, t1, acc, stop)

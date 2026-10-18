@@ -42,7 +42,9 @@ If you changed anything visual, run the demo (`cargo run --release --example
 demo`, or `presets`) and look. For the faceted and crystal looks, the
 `agreement` and `tiers` captures with `tools/agreement.py` and
 `tools/fairness.py` check that the picture never shows through what the
-rule blocks (see the top of `examples/demo.rs`).
+rule blocks (see the top of `examples/demo.rs`). For the volumetric look,
+the `agreement` capture with `SMOKE_DEMO_NOISE=0` checks that the picture's
+density is the rule's, and without it how much the noise thins the smoke.
 
 ## Determinism
 

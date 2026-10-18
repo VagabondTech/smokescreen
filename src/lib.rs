@@ -354,6 +354,13 @@ pub struct SmokeSettings {
     /// Draw faceted and crystal smoke as flat magenta: shows exactly which
     /// pixels are opaque (useful for checking silhouettes and tier fairness).
     pub debug_silhouette: bool,
+    /// Draw volumetric smoke as how much of the scene shows through it, over
+    /// nothing: full red and blue, and that share in green, so opaque smoke
+    /// is magenta and thin smoke nearly white. With the camera's
+    /// [`Tonemapping`](bevy::core_pipeline::tonemapping::Tonemapping) off,
+    /// a screenshot holds it to 8 bits, sRGB-encoded (the demo's `agreement`
+    /// run and `tools/agreement.py` compare it with the rule).
+    pub debug_transmittance: bool,
 }
 
 impl Default for SmokeSettings {
@@ -375,6 +382,7 @@ impl Default for SmokeSettings {
             wind: Vec3::new(0.12, 0.22, 0.05),
             crystal_shadows: true,
             debug_silhouette: false,
+            debug_transmittance: false,
         }
     }
 }

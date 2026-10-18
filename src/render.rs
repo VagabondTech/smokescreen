@@ -97,10 +97,11 @@ pub(crate) fn pack_puff(p: &LivePuff) -> GpuPuff {
 
 /// `SmokeSlot::holes.z` value marking a faceted smoke.
 const STYLE_FACETED: u32 = 1;
-/// `SmokeView::facet.w` flags.
+/// `SmokeView::facet.w` flags (the last one for the volumetric composite).
 const FLAG_TRACED_SHADOWS: u32 = 1;
 const FLAG_TRACED_OCCLUSION: u32 = 2;
 const FLAG_DEBUG_SILHOUETTE: u32 = 4;
+const FLAG_DEBUG_TRANSMITTANCE: u32 = 8;
 
 // ---------------------------------------------------------------------------
 // Data handed from the main world.
@@ -298,7 +299,8 @@ struct GpuView {
     rect: UVec4,
     /// x: max steps, y: jitter frame.
     params: UVec4,
-    /// Faceted. x: coarse divisor, y: max steps, z: shadow steps, w: flags.
+    /// Faceted. x: coarse divisor, y: max steps, z: shadow steps, w: flags
+    /// (one of them for the volumetric composite).
     facet: UVec4,
     /// Faceted. x: hit tolerance (pixels), y: angle of one pixel (radians),
     /// z: shading tolerance.
@@ -1454,6 +1456,9 @@ fn prepare_smoke_views(
             }
             if frame.settings.debug_silhouette {
                 flags |= FLAG_DEBUG_SILHOUETTE;
+            }
+            if frame.settings.debug_transmittance {
+                flags |= FLAG_DEBUG_TRANSMITTANCE;
             }
             let uniform_offset = uniforms.0.push(&GpuView {
                 world_from_clip: internal_from_world * world_from_view * view.clip_from_view.inverse(),

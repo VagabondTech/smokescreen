@@ -91,6 +91,7 @@ struct SmokeView {
     // x: max steps, y: jitter frame
     params: vec4<u32>,
     // Faceted. x: coarse divisor, y: max steps, z: shadow steps, w: flags
+    // (one of them for the volumetric composite)
     facet: vec4<u32>,
     // Faceted. x: hit tolerance (pixels), y: angle of one pixel (radians),
     // z: shading tolerance
@@ -104,6 +105,7 @@ struct SmokeView {
 const FLAG_TRACED_SHADOWS: u32 = 1u;
 const FLAG_TRACED_OCCLUSION: u32 = 2u;
 const FLAG_DEBUG_SILHOUETTE: u32 = 4u;
+const FLAG_DEBUG_TRANSMITTANCE: u32 = 8u;
 
 // smoothstep with a well-defined result for any edge order.
 fn sstep(e0: f32, e1: f32, x: f32) -> f32 {
