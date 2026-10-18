@@ -28,6 +28,8 @@
 //! - `SMOKE_DEMO_STYLE=faceted` or `crystal` starts in that style.
 //! - `SMOKE_DEMO_LDR=1` draws without HDR; `SMOKE_DEMO_MSAA=0` without MSAA.
 //! - `SMOKE_DEMO_SMOKE=0` leaves out the smoke that pops at the start.
+//! - `SMOKE_DEMO_NOISE=0` draws volumetric smoke without its noise: only the
+//!   coarse density, which is what the rule integrates.
 //! - `SMOKE_DEMO_BUDGET_MS=<ms>` sets the budget for budget mode (default 2).
 //! - `SMOKE_DEMO_GPU_TIMINGS=1` / `0` turns GPU timestamp diagnostics on or
 //!   off (HUD timings, budget mode, the tier sweep). Default: on, except on
@@ -45,8 +47,10 @@
 //!   freezes the smoke that long after its pop instead of once it is grown,
 //!   to measure a cloud that is blooming or fading), `budget` (budget mode while
 //!   a smoke comes close and goes away again), `agreement` (faceted or
-//!   crystal silhouette masks next to the CPU query for every pixel; compare
-//!   with `tools/agreement.py`) or `video` (every frame of short captioned
+//!   crystal silhouette masks, or how much of the scene shows through
+//!   volumetric smoke, next to the CPU query for every pixel; compare with
+//!   `tools/agreement.py`; `SMOKE_DEMO_SWEEP_AGE` sets the smoke's age here
+//!   too) or `video` (every frame of short captioned
 //!   clips, 30 a second, into `<dir>/<clip>/`; `SMOKE_DEMO_CLIPS=hero,ledge`
 //!   records only those).
 
@@ -57,6 +61,7 @@ use bevy::{
     app::ScheduleRunnerPlugin,
     asset::RenderAssetUsages,
     camera::{Exposure, RenderTarget, ShadowLodOrigin},
+    core_pipeline::tonemapping::{DebandDither, Tonemapping},
     diagnostic::{DiagnosticPath, DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     gizmos::config::{DefaultGizmoConfigGroup, GizmoConfigStore},
     input::mouse::AccumulatedMouseMotion,
@@ -139,8 +144,15 @@ fn main() {
         }))
         .insert_resource(ShotTarget::Window);
     }
+    let mut smoke_settings = SmokeSettings { style, ..default() };
+    if setting("noise").as_deref() == Some("0") {
+        // Below 0 the billow erosion also cancels the extra erosion of
+        // fading smoke: the shader adds the two and clamps the sum at 0.
+        smoke_settings.erosion = -1.0;
+        smoke_settings.detail_erosion = 0.0;
+    }
     app.add_plugins((SmokePlugin::default(), FrameTimeDiagnosticsPlugin::default()))
-        .insert_resource(SmokeSettings { style, ..default() })
+        .insert_resource(smoke_settings)
         .insert_resource(DemoBudget(budget_ms))
         .insert_resource(GlobalAmbientLight {
             color: Color::srgb(0.75, 0.82, 1.0),
@@ -2218,10 +2230,11 @@ fn budget_run(
 
 // ---------------------------------------------------------------------------
 // Agreement run: does the picture match the gameplay query, pixel by pixel?
-// For a frozen faceted (or crystal) smoke seen from several places, saves the GPU's
-// silhouette mask and, for every pixel, what the CPU says about the segment
-// from the eye to the scene behind that pixel: blocked or not, and how much
-// cloud the segment passes through.
+// For a frozen smoke seen from several places, saves what the GPU drew (a
+// faceted or crystal smoke's silhouette mask, or how much of the scene shows
+// through a volumetric smoke) and, for every pixel, what the CPU says about
+// the segment from the eye to the scene behind that pixel: blocked or not,
+// and how much cloud the segment passes through.
 // ---------------------------------------------------------------------------
 
 #[derive(Resource)]
@@ -2229,6 +2242,9 @@ struct AgreementRun {
     dir: String,
     stage: usize,
     stage_frame: u32,
+    /// Freeze the smoke this many seconds after its pop
+    /// (`SMOKE_DEMO_SWEEP_AGE`); by default once it is grown.
+    freeze_age: Option<f32>,
 }
 
 impl AgreementRun {
@@ -2237,6 +2253,7 @@ impl AgreementRun {
             dir,
             stage: 0,
             stage_frame: 0,
+            freeze_age: setting("sweep_age").and_then(|s| s.parse().ok()),
         }
     }
 }
@@ -2264,7 +2281,15 @@ fn agreement_run(
     mut commands: Commands,
     target: Res<ShotTarget>,
     mut run: ResMut<AgreementRun>,
-    mut camera: Query<(&mut Transform, &mut FlyCam, &mut SmokeCamera, &Camera, &GlobalTransform)>,
+    mut camera: Query<(
+        &mut Transform,
+        &mut FlyCam,
+        &mut SmokeCamera,
+        &mut Tonemapping,
+        &mut DebandDither,
+        &Camera,
+        &GlobalTransform,
+    )>,
     mut ui: Query<&mut Visibility, Or<(With<Hud>, With<Help>, With<Node>)>>,
     mut virtual_time: ResMut<Time<Virtual>>,
     mut settings: ResMut<SmokeSettings>,
@@ -2273,7 +2298,8 @@ fn agreement_run(
     level: Res<Level>,
     mut finish: ResMut<Finish>,
 ) {
-    let Ok((mut transform, mut cam, mut smoke_cam, camera, global)) = camera.single_mut() else {
+    let Ok((mut transform, mut cam, mut smoke_cam, mut tonemapping, mut dither, camera, global)) = camera.single_mut()
+    else {
         return;
     };
     for mut v in &mut ui {
@@ -2285,22 +2311,49 @@ fn agreement_run(
         run.stage += 1;
         run.stage_frame = 0;
     };
+    let volumetric = settings.style == SmokeStyle::Volumetric;
+    let smoke = Smoke::default().with_seed(7);
     match run.stage {
         0 => {
-            // Hard-edged styles only: faceted unless crystal was asked for.
-            if settings.style == SmokeStyle::Volumetric {
-                settings.style = SmokeStyle::Faceted;
-            }
             smoke_cam.quality = 1.0;
             smoke_cam.budget_ms = None;
+            if volumetric {
+                // The transmittance is read back from screenshots, so nothing
+                // may change the colours on the way (from the start, so the
+                // pipelines are ready by the first shot).
+                *tonemapping = Tonemapping::None;
+                *dither = DebandDither::Disabled;
+            }
             if run.stage_frame > 40 {
-                commands.spawn((Smoke::default().with_seed(7), Transform::from_xyz(0.0, 0.0, 4.6)));
+                commands.spawn((smoke, Transform::from_xyz(0.0, 0.0, 4.6)));
                 advance(run);
             }
         }
         1 => {
-            if grown(&world, &clock, 3.5) {
+            let frozen = match run.freeze_age {
+                Some(age) => older_than(&world, &clock, age),
+                None => grown(&world, &clock, 3.5),
+            };
+            if frozen {
                 virtual_time.pause();
+                // What the report needs to know: the amount of full-density
+                // cloud a volumetric smoke's light passes through is
+                // -ln(transmittance) / sigma.
+                let config = world.config();
+                let rate = config.tick_rate;
+                let age = world
+                    .clouds()
+                    .filter_map(|c| c.age(clock.drawn(), rate))
+                    .fold(0.0, f32::max);
+                let meta = format!(
+                    "style {:?}\nthreshold {}\nsigma {}\nage {age:.3}\nerosion {}\ndetail_erosion {}\n",
+                    settings.style,
+                    config.tuning.sight_threshold,
+                    settings.extinction * smoke.density,
+                    settings.erosion,
+                    settings.detail_erosion,
+                );
+                std::fs::write(format!("{}/meta.txt", run.dir), meta).ok();
                 advance(run);
             }
         }
@@ -2310,12 +2363,16 @@ fn agreement_run(
                 1 => {
                     place(eye, at, &mut transform, &mut cam);
                     settings.debug_silhouette = false;
+                    settings.debug_transmittance = false;
                 }
                 12 => screenshot(&mut commands, &target, &run.dir, &format!("{name}_lit")),
+                16 if volumetric => settings.debug_transmittance = true,
                 16 => settings.debug_silhouette = true,
+                20 if volumetric => screenshot(&mut commands, &target, &run.dir, &format!("{name}_gpu_transmittance")),
                 20 => screenshot(&mut commands, &target, &run.dir, &format!("{name}_gpu_mask")),
                 24 => {
                     settings.debug_silhouette = false;
+                    settings.debug_transmittance = false;
                     // The core's answers at the tick on screen.
                     let view = world.view(clock.drawn());
                     let size = camera.logical_viewport_size().unwrap_or(Vec2::new(960.0, 540.0));

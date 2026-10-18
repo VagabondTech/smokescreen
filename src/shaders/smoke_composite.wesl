@@ -7,7 +7,7 @@
 // close their representative depth is to this pixel's depth, so smoke doesn't
 // bleed across the silhouettes of objects in front of it.
 
-import package::shaders::smoke_common::SmokeView;
+import package::shaders::smoke_common::{SmokeView, FLAG_DEBUG_TRANSMITTANCE};
 
 @group(0) @binding(0) var<uniform> view: SmokeView;
 @if(MULTISAMPLED)
@@ -80,6 +80,10 @@ fn fragment(in: FullscreenOutput) -> @location(0) vec4<f32> {
     let smoke = sum / max(weight_sum, 1e-6);
     if (smoke.a > 0.999) {
         discard;
+    }
+    if ((view.facet.w & FLAG_DEBUG_TRANSMITTANCE) != 0u) {
+        // The transmittance itself, opaque (`SmokeSettings::debug_transmittance`).
+        return vec4<f32>(1.0, smoke.a, 1.0, 1.0);
     }
     var light = smoke.rgb;
     @if(LDR_TARGET) {
