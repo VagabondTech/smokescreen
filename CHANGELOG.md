@@ -107,6 +107,28 @@ are not in lockstep.
   Skipping the noise once a ray is nearly opaque, tried first, cost 6–8 %
   more: rays run in lockstep, and those through thin smoke, which never
   get nearly opaque, set the pace.
+- Volumetric smoke's noise moves on the simulation's clock instead of each
+  machine's own. It scrolled with Bevy's `Time`, so two players drawing
+  the same tick saw different holes in the same smoke whenever their apps
+  had been running for different lengths of time. In the demo, with one
+  app's clock about 20 minutes ahead of the other's, close up at the best
+  step, 11 % of a grown cloud's pixels let more than a tenth more or less
+  of the scene through on one than on the other (4 % more than 0.3), and
+  34 % halfway through the fade (18 %); far more than a cheaper dial step
+  differs from the best one. Now the noise's time is the drawn tick plus
+  the new `SmokeClock::draw_fraction`, how far the frame is past that
+  tick: players who draw the same tick and fraction with the same
+  `SmokeSettings` see the same noise, and a gap that lets one see another
+  lets the other see them back, as closely as each one's march samples
+  it. With `auto` on, the plugin fills the fraction in from virtual time,
+  and the picture is as before: the same pixels in the demo's captures, at
+  every step and age. If you drive the clock yourself, set `draw_fraction`
+  to your interpolation fraction; left at 0, the noise moves once a tick.
+  It still starts again every hour, now after an hour's worth of ticks, on
+  the same tick for everyone. Code that builds `SmokeClock` with a struct
+  literal needs the new field (or `..default()`), and `SmokeClock` is no
+  longer `Eq`. The demo's `SMOKE_DEMO_CLIENT_CLOCK=<seconds>` starts its
+  app's clock that far ahead of the ticks, which must change no pixel.
 - The demo starts with the quality dial at low (it was medium), in every
   look; its scripted captures still start at high.
 

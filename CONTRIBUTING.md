@@ -81,7 +81,9 @@ Two more rules the tests enforce:
 
 The picture must never show through anything the rule blocks, and the
 performance dial may change how precisely smoke is drawn, never its shape.
-Where the two can't agree exactly, draw more smoke, not less.
+Where the two can't agree exactly, draw more smoke, not less. Nothing drawn
+may follow a machine's own clock, only the drawn tick, so that players who
+draw the same tick see the same smoke.
 
 ## Style
 

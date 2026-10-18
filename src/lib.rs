@@ -277,8 +277,13 @@ pub struct SmokeWorld(pub Smokes<SharedLevel>);
 /// By default the plugin counts ticks from Bevy's virtual time
 /// ([`Config::tick_rate`] per second), so pausing virtual time freezes the
 /// smoke. To drive smoke from your own simulation, set `auto` to `false` and
-/// write `tick` (and `draw_tick`) yourself before `PostUpdate`.
-#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+/// write `tick` (and `draw_tick` and `draw_fraction`) yourself before
+/// `PostUpdate`.
+///
+/// Volumetric smoke's noise moves on this clock too, not on each machine's
+/// own: players who draw the same tick and fraction with the same
+/// [`SmokeSettings`] see the same billows.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub struct SmokeClock {
     /// The newest simulation tick: fills advance to it, impacts land on it
     /// and [`SmokeVision`] answers for it.
@@ -286,7 +291,11 @@ pub struct SmokeClock {
     /// The tick drawn, for example your interpolation tick slightly behind
     /// `tick`. `None` draws `tick`.
     pub draw_tick: Option<u64>,
-    /// Count `tick` from `Time<Virtual>` every frame.
+    /// How far the frame is past the drawn tick, from 0 to 1: your
+    /// interpolation fraction. Only the volumetric noise reads it, so that it
+    /// moves smoothly between ticks; left at 0, it moves once a tick.
+    pub draw_fraction: f32,
+    /// Count `tick` and `draw_fraction` from `Time<Virtual>` every frame.
     pub auto: bool,
 }
 
@@ -295,6 +304,7 @@ impl Default for SmokeClock {
         Self {
             tick: 0,
             draw_tick: None,
+            draw_fraction: 0.0,
             auto: true,
         }
     }
@@ -863,11 +873,29 @@ fn find_sun(lights: &Query<(&DirectionalLight, &GlobalTransform, Has<SmokeSun>)>
 
 fn advance_clock(mut clock: ResMut<SmokeClock>, time: Res<Time<Virtual>>, config: Res<SmokeConfig>) {
     if clock.auto {
-        let tick = (time.elapsed_secs_f64() * config.tick_rate as f64).floor() as u64;
-        if clock.tick != tick {
+        let (tick, fraction) = tick_at(time.elapsed_secs_f64(), config.tick_rate);
+        if clock.tick != tick || clock.draw_fraction != fraction {
             clock.tick = tick;
+            clock.draw_fraction = fraction;
         }
     }
+}
+
+/// The tick `seconds` falls in at `tick_rate` ticks a second, and how far
+/// past it.
+fn tick_at(seconds: f64, tick_rate: f32) -> (u64, f32) {
+    let ticks = seconds * tick_rate as f64;
+    (ticks.floor() as u64, (ticks - ticks.floor()) as f32)
+}
+
+/// Seconds on the volumetric noise's clock: the drawn tick and the fraction
+/// past it, never the machine's own clock, so every player drawing the same
+/// tick sees the same noise. It starts again after an hour's worth of ticks,
+/// on the same tick everywhere, so an `f32` keeps its precision (Bevy's
+/// clock wraps hourly too).
+fn noise_time(drawn: u64, fraction: f32, tick_rate: f32) -> f32 {
+    let wrap = (tick_rate as f64 * 3600.0).round().max(1.0) as u64;
+    (((drawn % wrap) as f64 + fraction as f64) / tick_rate as f64) as f32
 }
 
 fn sync_level(level: Option<Res<SmokeLevel>>, mut world: ResMut<SmokeWorld>) {
@@ -1037,7 +1065,6 @@ fn build_frame(
     dir_lights: Query<(&DirectionalLight, &GlobalTransform, Has<SmokeSun>)>,
     point_lights: Query<(&PointLight, &GlobalTransform, &ViewVisibility)>,
     ambient: Option<Res<GlobalAmbientLight>>,
-    time: Res<Time>,
     mut last: Local<Option<(Vec3, u64)>>,
 ) {
     let frame = frame.as_mut();
@@ -1069,7 +1096,7 @@ fn build_frame(
     frame.voxel_size = config.voxel_size;
     frame.grid_dims = config.grid_dims;
     frame.internal_from_world = config.internal_from_world();
-    frame.time = time.elapsed_secs_wrapped();
+    frame.time = noise_time(clock.drawn(), clock.draw_fraction, config.tick_rate);
     frame.frame = frame.frame.wrapping_add(1);
 
     // Re-bake everything when lighting-relevant settings or the sun move.
@@ -1243,5 +1270,49 @@ fn build_frame(
         candidates.sort_by(|a, b| b.color.max_element().total_cmp(&a.color.max_element()));
         candidates.truncate(render::MAX_LIGHTS);
         frame.lights = candidates;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn noise_time_follows_the_drawn_tick() {
+        assert_eq!(noise_time(640, 0.0, 128.0), 5.0);
+        assert_eq!(noise_time(640, 0.5, 128.0), 5.003_906_3);
+        // It starts again after an hour's worth of ticks, a whole number of
+        // them whatever the tick rate, so every machine jumps on the same one.
+        let hour = 460_800;
+        assert_eq!(noise_time(hour, 0.0, 128.0), 0.0);
+        assert_eq!(noise_time(hour + 640, 0.5, 128.0), noise_time(640, 0.5, 128.0));
+        assert!(noise_time(hour - 1, 0.99, 128.0) > 3599.99);
+        let rate = 100.0 / 3.0;
+        assert_eq!(noise_time(120_000 + 7, 0.25, rate), noise_time(7, 0.25, rate));
+    }
+
+    #[test]
+    fn auto_noise_time_is_virtual_time() {
+        // Counted from virtual time, the noise's clock is the one it read
+        // from Bevy before, to within one step of an f32 (Bevy's reading
+        // rounds the nanoseconds to an f32 on their own first). On past the
+        // hour, where both start again.
+        for step in [
+            Duration::from_secs_f32(1.0 / 20.0),
+            Duration::from_secs_f32(1.0 / 30.0),
+            Duration::from_nanos(16_666_667),
+        ] {
+            let mut time = Time::<Virtual>::default();
+            while time.elapsed_secs_f64() < 4000.0 {
+                time.advance_by(step);
+                let (tick, fraction) = tick_at(time.elapsed_secs_f64(), 128.0);
+                let ours = noise_time(tick, fraction, 128.0);
+                let bevy = time.elapsed_secs_wrapped();
+                let ulps = (ours.to_bits() as i64 - bevy.to_bits() as i64).abs();
+                assert!(ulps <= 1, "{step:?}: {ours} against {bevy}");
+            }
+        }
     }
 }

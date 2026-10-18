@@ -97,20 +97,23 @@ cargo run --example presets                 # every preset and look; also minima
 4. **Queries allocate nothing** (`queries_do_not_allocate`). Use stack
    buffers (`holes::HOLE_BUFFER`, `chords::Intervals`).
 5. **Fairness.** First between players: everyone must see the same smoke,
-   whatever their quality-dial step. No step may change a cloud's shape
-   (only how precisely it is drawn), and where steps can't agree exactly
-   the cheaper one errs towards more smoke (volumetric noise falls a little
-   differently from step to step: keep that under 1 % of pixels by more
-   than a tenth). Then against the rule: the faceted and crystal pictures
-   never show through anything the rule blocks. The volumetric noise does,
-   most while a cloud fades, unless `SmokeSettings::noise_within_rule` is
-   `Capped` (the noise may take at most `sight_threshold` less ln(100) /
-   extinction from any ray, the march's `budget`) or `Filled` (the march
-   fills the opacity it took back in at the end, from its sum of the
-   rule's cloud); the empty-space jumps charge what they skip to either.
-   Check with the demo's `agreement` (`SMOKE_DEMO_TIER` for any step) and
-   `tiers` captures and the tools (`tools/overlay.py` paints the
-   disagreements).
+   whatever their quality-dial step, and whatever their machine's clock
+   says: what is drawn follows the drawn tick only (the volumetric noise
+   moves on it and `SmokeClock::draw_fraction`; the demo's
+   `SMOKE_DEMO_CLIENT_CLOCK` must change no pixel). No step may change a
+   cloud's shape (only how precisely it is drawn), and where steps can't
+   agree exactly the cheaper one errs towards more smoke (volumetric noise
+   falls a little differently from step to step: keep that under 1 % of
+   pixels by more than a tenth). Then against the rule: the faceted and
+   crystal pictures never show through anything the rule blocks. The
+   volumetric noise does, most while a cloud fades, unless
+   `SmokeSettings::noise_within_rule` is `Capped` (the noise may take at
+   most `sight_threshold` less ln(100) / extinction from any ray, the
+   march's `budget`) or `Filled` (the march fills the opacity it took back
+   in at the end, from its sum of the rule's cloud); the empty-space jumps
+   charge what they skip to either. Check with the demo's `agreement`
+   (`SMOKE_DEMO_TIER` for any step) and `tiers` captures and the tools
+   (`tools/overlay.py` paints the disagreements).
 6. **Units.** The core works in metres, Y up, internally; everything public
    is in the caller's units (`Units`). Renderers draw in the internal frame
    and convert per view.

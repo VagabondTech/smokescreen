@@ -33,6 +33,12 @@
 //! - `SMOKE_DEMO_NOISE_WITHIN_RULE=capped` or `filled` sets
 //!   `SmokeSettings::noise_within_rule`: either way, volumetric smoke's noise
 //!   never shows through what the rule blocks.
+//! - `SMOKE_DEMO_CLIENT_CLOCK=<seconds>` starts the app's clock that far
+//!   ahead of the smoke's ticks, as on a client whose clock has run longer
+//!   than the match: the demo counts the ticks itself, from the virtual time
+//!   less that. The smoke must look just as it does without it; compare the
+//!   `agreement` or `tiers` captures (the showcase times its shots by the
+//!   app's clock).
 //! - `SMOKE_DEMO_BUDGET_MS=<ms>` sets the budget for budget mode (default 2).
 //! - `SMOKE_DEMO_GPU_TIMINGS=1` / `0` turns GPU timestamp diagnostics on or
 //!   off (HUD timings, budget mode, the tier sweep). Default: on, except on
@@ -211,6 +217,12 @@ fn main() {
     #[cfg(target_arch = "wasm32")]
     app.add_systems(Update, (browser_pointer_lock.before(mouse_capture), mark_ready));
 
+    if let Some(ahead) = setting("client_clock").and_then(|s| s.parse::<f64>().ok()) {
+        app.insert_resource(ClientClock(Duration::from_secs_f64(ahead)))
+            .add_systems(Startup, start_client_clock)
+            .add_systems(PreUpdate, count_client_ticks);
+    }
+
     if gpu_timings {
         app.add_plugins(RenderDiagnosticsPlugin);
     }
@@ -273,6 +285,31 @@ fn setting(name: &str) -> Option<String> {
     }
     #[cfg(not(target_arch = "wasm32"))]
     std::env::var(format!("SMOKE_DEMO_{}", name.to_uppercase())).ok()
+}
+
+/// How far the app's clock starts ahead of the smoke's ticks
+/// (`SMOKE_DEMO_CLIENT_CLOCK`).
+#[derive(Resource)]
+struct ClientClock(Duration);
+
+fn start_client_clock(ahead: Res<ClientClock>, mut time: ResMut<Time<Virtual>>, mut clock: ResMut<SmokeClock>) {
+    time.advance_by(ahead.0);
+    clock.auto = false;
+    info!("The app's clock starts {:?} ahead of the smoke's ticks", ahead.0);
+}
+
+/// Counts the smoke's ticks as the plugin would, from the virtual time less
+/// the head start: in whole nanoseconds, so they come out exactly as they
+/// would without it.
+fn count_client_ticks(
+    ahead: Res<ClientClock>,
+    time: Res<Time<Virtual>>,
+    world: Res<SmokeWorld>,
+    mut clock: ResMut<SmokeClock>,
+) {
+    let ticks = time.elapsed().saturating_sub(ahead.0).as_secs_f64() * world.config().tick_rate as f64;
+    clock.tick = ticks.floor() as u64;
+    clock.draw_fraction = (ticks - ticks.floor()) as f32;
 }
 
 /// The order of the demo's own systems within a frame: input, then a capture
