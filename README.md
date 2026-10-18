@@ -32,7 +32,7 @@ Smoke that fills rooms, pours through doorways, stops at walls and blocks sight.
 - Lit by the sun with self-shadowing, darker indoors, lit from inside by muzzle flashes and explosions (any Bevy `PointLight`).
 - **Gameplay sees the same smoke.** `blocks_sight(a, b)` and `occlusion(a, b)` for AI, server-side visibility and audio; `density_at(p)` for gas damage.
 - **Level setup without collision code:** mark your level's meshes with `SmokeObstacle`.
-- **One performance dial per camera**, or a GPU millisecond budget that turns it for you. No dial step changes a cloud's shape, so a cheaper setting doesn't show through smoke a better one hides; volumetric smoke's noise falls a little differently from step to step (under 1 % of its pixels by more than a tenth).
+- **One performance dial per camera**, or a GPU millisecond budget that turns it for you. No dial step changes a cloud's shape, so a cheaper setting doesn't show through smoke a better one hides; volumetric smoke's noise falls a little differently from step to step (in the demo's views, at most 0.7 % of a smoke's pixels let more than 30 % more of the scene through than at the best step).
 - **Deterministic core for multiplayer** (`smokescreen`): engine-free, runs on your ticks and in your units, bit-identical on x86-64 and ARM, with a per-tick CPU budget.
 
 | Round walls and down corridors | Indoors, through a doorway | Off a ledge |

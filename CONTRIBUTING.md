@@ -45,6 +45,9 @@ demo`, or `presets`) and look. For the faceted and crystal looks, the
 rule blocks (see the top of `examples/demo.rs`). For the volumetric look,
 the `agreement` capture with `SMOKE_DEMO_NOISE=0` checks that the picture's
 density is the rule's, and without it how much the noise thins the smoke.
+Its captures at each dial step (`SMOKE_DEMO_TIER`), compared with
+`tools/fairness.py --volumetric`, check that no cheaper step shows through
+what the best one hides.
 
 ## Determinism
 

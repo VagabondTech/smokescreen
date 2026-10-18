@@ -129,6 +129,18 @@ are not in lockstep.
   literal needs the new field (or `..default()`), and `SmokeClock` is no
   longer `Eq`. The demo's `SMOKE_DEMO_CLIENT_CLOCK=<seconds>` starts its
   app's clock that far ahead of the ticks, which must change no pixel.
+- `tools/fairness.py --volumetric` checks the dial for volumetric smoke.
+  Given the demo's agreement runs at the best step and at others, it
+  compares how much of the scene shows through every smoke pixel, view by
+  view, and fails if more than 1 % of a view's smoke pixels let more than
+  0.3 more of it through at a cheaper step. In the demo's views, grown,
+  blooming and halfway through the fade, at most 0.71 % do (12 of the far
+  smoke's 1,693 pixels halfway through the fade, at the cheapest step).
+  The README's and the design notes' figure, under 1 % of the pixels by
+  more than a tenth, holds by default from the third step up; at the two
+  cheapest, which march at a quarter of the resolution, up to 8.6 % of a
+  far smoke's pixels let a tenth more through (2.3 % in front of it,
+  1.1 % close up), and those docs now say so.
 - The demo starts with the quality dial at low (it was medium), in every
   look; its scripted captures still start at high.
 

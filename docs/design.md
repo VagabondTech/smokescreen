@@ -191,7 +191,16 @@ A step may change how precisely smoke is drawn, never its shape. The shape decid
 
 On an Apple M4 at 1920×1080 the sweep finds the same: nothing missing beyond the band at any step or distance, and close up the cheapest step adds 4,370 pixels around 1.3 million of smoke.
 
-Volumetric smoke has no hard silhouette, so for it the demo's `agreement` run at each step (`SMOKE_DEMO_TIER`) shows how much of the scene shows through every pixel, and those are compared with the best step's. Away from the smoke's outline, under 1 % of its pixels differ by more than a tenth, either way: the noise, sampled at fewer and longer steps, falls a little differently. The most that let over 30 % more through is 121 of 314,514 (close up, the cheapest step, a grown cloud), and 29 of 62,217 halfway through the fade. Ending rays once less than 5 % of the scene shows through, instead of 1 %, left those as they were and added 0.1–0.2 percentage points to the pixels that differ by more than a tenth.
+Volumetric smoke has no hard silhouette, so for it the demo's `agreement` run at each step (`SMOKE_DEMO_TIER`) records how much of the scene shows through every pixel, and `tools/fairness.py --volumetric` compares each step's with the best step's, away from the smoke's outline. The noise, sampled at fewer and longer steps, falls a little differently: most at the two cheapest steps, which march at a quarter of the resolution, and on small, far smokes, where a few pixels are a large share. The tool fails if more than 1 % of a view's smoke pixels let more than 0.3 more of the scene through at any step, enough to make out something the best step hides. In the demo's four views at 960×540, grown, 0.8 s into the bloom and halfway through the fade, at most 0.71 % do: 12 of the far smoke's 1,693 pixels halfway through the fade, at the cheapest step (0.62 % with `NoiseWithinRule::Filled`, 0.17 % with `Capped`). Close up, at most 41 of 287,468 do. Smaller differences are more common. The share of the smoke's pixels that let more than a tenth more of the scene through, at the worst step and age:
+
+| View (smoke pixels) | Minimum and lower | Low, medium and high |
+|---|---|---|
+| far (1,700–8,500) | 8.6 % | 0.93 % |
+| front (8,800–42,000) | 2.3 % | 0.21 % |
+| close (54,000–298,000) | 1.1 % | 0.30 % |
+| edge (8,400–68,000) | 1.4 % | 0.21 % |
+
+With `Capped` those reach 3.2 % and 0.97 %, with `Filled` 6.7 % and 2.0 % (the far and edge views halfway through the fade). Between machines the picture is the same, as nothing drawn follows a machine's own clock: the demo's `SMOKE_DEMO_CLIENT_CLOCK`, which starts its app's clock ahead of the ticks, changes no pixel. While the noise still moved on each app's clock, two clients 20 minutes apart differed by more than a tenth on 11 % of a grown cloud's pixels close up at the best step, and by more than 0.3 on 4 %.
 
 ### The picture against the rule
 
