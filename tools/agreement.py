@@ -24,7 +24,8 @@ it. With --chord, compares it with a thickness rule computed here instead: a
 segment is blocked once it passes through that many metres of cloud.
 
 Volumetric smoke (the demo's default style; add `SMOKE_DEMO_SWEEP_AGE=16.5`
-for a fading cloud, `SMOKE_DEMO_NOISE=0` for the picture without its noise):
+for a fading cloud, `SMOKE_DEMO_NOISE=0` for the picture without its noise,
+`SMOKE_DEMO_TIER=0` for the cheapest dial step instead of the top one):
 
     SMOKE_DEMO_SCRIPT=agreement SMOKE_DEMO_CAPTURE=agree cargo run --release --example demo
     python3 tools/agreement.py agree
@@ -174,9 +175,9 @@ def volumetric(src, meta):
     threshold = float(meta["threshold"])
     opaque = -np.log(0.01) / sigma
     print(
-        f"age {meta.get('age', '?')} s, erosion {meta.get('erosion', '?')}, detail erosion "
-        f"{meta.get('detail_erosion', '?')}; the rule blocks from {threshold} m of cloud, the picture is "
-        f"opaque from {opaque:.2f} m"
+        f"age {meta.get('age', '?')} s, dial step {meta.get('tier', 'ultra')}, erosion {meta.get('erosion', '?')}, "
+        f"detail erosion {meta.get('detail_erosion', '?')}; the rule blocks from {threshold} m of cloud, the "
+        f"picture is opaque from {opaque:.2f} m"
     )
     print(
         f"{'view':6} {'smoke':>8} {'blocked':>8} | blocked, shows through: {'>1%':>7} {'>10%':>6} {'>30%':>6} "
@@ -230,6 +231,8 @@ def main(src, chord_rule=None):
     if meta.get("style") == "Volumetric":
         volumetric(src, meta)
     else:
+        if "tier" in meta:
+            print(f"dial step {meta['tier']}")
         hard(src, chord_rule)
 
 
