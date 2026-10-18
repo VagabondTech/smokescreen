@@ -48,8 +48,9 @@ by the rule's amount and away from edges: the median of picture / rule, and
 how many pixels. Past -ln(0.05) / sigma (0.43 m by default; -ln(0.01) / sigma,
 0.66 m, with the noise capped) the picture is opaque and says no more.
 Without the noise the two differ only where the rule and the picture work
-out the density differently; with it, the noise thins the picture. With `SmokeSettings::noise_within_rule` capped or filled (the
-demo's `SMOKE_DEMO_NOISE_WITHIN_RULE`), nothing the rule blocks shows through.
+out the density differently; with it, the noise thins the picture. With
+`SmokeSettings::noise_within_rule` capped or filled (the demo's
+`SMOKE_DEMO_NOISE_WITHIN_RULE`), nothing the rule blocks shows through.
 `overlay.py` paints where the two disagree.
 
 Needs numpy and Pillow.
