@@ -138,7 +138,7 @@ pub(crate) mod cost {
     /// settles, and the work after the spread per ten grid voxels.
     pub const QUERIES_PER_SETTLE: i64 = 2;
     pub const REST_PER_10_VOXELS: i64 = 14;
-    pub const FACETED_REST_PER_10_VOXELS: i64 = 100;
+    pub const FACETED_REST_PER_10_VOXELS: i64 = 90;
 }
 
 /// Puffs binned per unit of work.
@@ -1376,7 +1376,12 @@ impl FillJob {
         let hi = (rmax + margin).min(self.dims - 1);
         self.region_box = (lo, hi);
         self.to_inside = Some(Chamfer::new(self.dims, lo, hi));
-        self.to_outside = Some(Chamfer::new(self.dims, lo, hi));
+        // The distance out of the region needs only the halo's box and the
+        // layer of voxels around it: those are all outside, so every voxel
+        // of the region has its nearest outside voxel in that box.
+        let olo = (rmin - 1).max(IVec3::ZERO);
+        let ohi = (rmax + 1).min(self.dims - 1);
+        self.to_outside = Some(Chamfer::new(self.dims, olo, ohi));
         self.encode_z = lo.z;
         self.stage = Stage::RegionInside;
     }
