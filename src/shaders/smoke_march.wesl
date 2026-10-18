@@ -2,20 +2,26 @@
 //
 // Per pixel: intersect the view ray with every smoke's bounds (cheap ALU),
 // then march front to back only inside those intervals. Each step costs one
-// fetch of the baked volume (density + lighting) and one or two fetches of
-// the tiling detail noise. Rays stop at scene depth, at full opacity, or at
-// the step budget, and skip empty voxels. The common case of a ray crossing
+// fetch of the baked volume (density + lighting), one of the open mask and
+// one or two fetches of the tiling detail noise. Rays stop at scene depth,
+// at full opacity, or at the step budget. The common case of a ray crossing
 // a single smoke takes a fast path with that smoke's data hoisted out of the
-// loop; it also ends the ray at the far side of the box the smoke occupies
-// at this tick and steps over the run-up to that box without fetching.
+// loop.
 //
-// Samples are placed from where a ray enters a smoke's whole box, so they
-// stay put while the smoke grows and fades. Anything that skips must leave
-// every sample exactly where it is: skipping only ever drops a fetch that
-// would have read nothing. (Dropping fetches is worth little on its own: a
-// lane that skips one saves nothing while the rest of its SIMD group
-// fetches, so per-brick skipping inside the loop measured as a cost on an
-// Apple M4. The clip below has no per-step cost.)
+// The samples of a ray lie on a sequence fixed by the ray alone:
+// t_k = u0·r^k − 1/g with u0 = jitter·b + 1/g and r = 1 + b·g (b the step
+// near the camera, g its growth per metre), which is the recurrence
+// dt = b·(1 + t·g) started at the camera instead of at a smoke's box. The
+// first sample at or past any distance is then a log away, so a ray starts
+// where it enters the box the smoke occupies at this tick, and no sample
+// moves as that box changes tick by tick. Skipped samples count against
+// the step budget as they did, so a tier reaches as far as it did.
+//
+// Skipping the samples inside that box that read nothing (the 4³ bricks the
+// rule skips) was tried twice on an Apple M4, dropping their fetches and
+// jumping them outright, and cost 5–15 % close up and at mid-range both
+// times: the lookups cost more than the iterations they save, and a lane
+// that skips saves nothing while the rest of its SIMD group doesn't.
 
 import package::shaders::smoke_common::{
     SmokeGlobals, SmokeSlot, SmokeView, MAX_SLOTS, PI, STYLE_FACETED,
@@ -35,6 +41,53 @@ import package::shaders::smoke_common::{
 @group(0) @binding(7) var smoke_out: texture_storage_2d<rgba16float, write>;
 // 1 where the level is open, 0 where it is solid, per voxel.
 @group(0) @binding(8) var open_atlas: texture_3d<f32>;
+
+// A ray's sample sequence (see the top of the file). Without growth it is
+// arithmetic: t_k = t_0 + k·b. Between jumps a ray steps by the recurrence
+// t += b·(1 + t·g), which is the same sequence to within rounding; a jump
+// lands on the closed form.
+struct Seq {
+    u0: f32,
+    ln_r: f32,
+    inv_g: f32,
+    b: f32,
+    geometric: bool,
+}
+
+fn seq_new(jitter: f32, b: f32, g: f32) -> Seq {
+    var s: Seq;
+    s.b = b;
+    s.geometric = g > 1e-4;
+    if (s.geometric) {
+        s.inv_g = 1.0 / g;
+        s.u0 = jitter * b + s.inv_g;
+        s.ln_r = log(1.0 + b * g);
+    } else {
+        s.inv_g = 0.0;
+        s.u0 = jitter * b;
+        s.ln_r = 0.0;
+    }
+    return s;
+}
+
+// Where sample k lies.
+fn seq_t(s: Seq, k: u32) -> f32 {
+    if (s.geometric) {
+        return s.u0 * exp(f32(k) * s.ln_r) - s.inv_g;
+    }
+    return s.u0 + f32(k) * s.b;
+}
+
+// The first sample at or past t (the first of all for anything before it).
+fn seq_first(s: Seq, t: f32) -> u32 {
+    var k: f32;
+    if (s.geometric) {
+        k = ceil(log(max(t + s.inv_g, s.u0) / s.u0) / s.ln_r);
+    } else {
+        k = ceil((t - s.u0) / s.b);
+    }
+    return u32(max(k, 0.0));
+}
 
 // Atlas coordinates of a world position, kept inside the slot's layer.
 fn atlas_uvw(slot: SmokeSlot, p: vec3<f32>) -> vec3<f32> {
@@ -210,41 +263,44 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
     let base_step = view.march.y;
     let growth = view.march.z;
     let max_steps = view.params.x;
+    let seq = seq_new(jitter, base_step, growth);
 
-    var t = t_begin + jitter * base_step;
     var transmittance = 1.0;
     var radiance = vec3<f32>(0.0);
+    // Samples consumed, jumped ones included.
     var steps = 0u;
 
     if (count == 1u) {
-        // Fast path: one smoke along this ray.
+        // Fast path: one smoke along this ray, from where it enters the box
+        // the smoke occupies at this tick to where it leaves it: a sample
+        // outside reads nothing.
         let slot = globals.slots[ids[0]];
-        // Where the ray crosses the box the smoke occupies at this tick. A
-        // sample outside it reads nothing: samples before it are stepped
-        // over exactly as empty samples are, without the fetch, and the
-        // march ends at its far side. While the smoke is grown the box is
-        // its whole box and nothing changes; while it blooms and fades the
-        // box is much smaller.
         let drawn = ray_aabb(ro, inv_rd, slot.drawn_min.xyz, slot.drawn_max.xyz);
-        let drawn_end = min(drawn.y, t_end);
-        if (drawn_end <= drawn.x) {
+        let t_stop = min(drawn.y, t_end);
+        var k = seq_first(seq, max(drawn.x, t_begin));
+        var t = seq_t(seq, k);
+        if (t_stop <= t) {
             textureStore(smoke_out, px, vec4<f32>(0.0, 0.0, 0.0, 1.0));
             return;
         }
         loop {
-            if (t >= drawn_end || transmittance < 0.01 || steps >= max_steps) {
+            if (t >= t_stop || transmittance < 0.01 || steps >= max_steps) {
                 break;
             }
-            steps += 1u;
             let dt = base_step * (1.0 + t * growth);
-            if (t < drawn.x) {
-                t += max(dt, voxel_size);
-                continue;
-            }
             let smp = sample_smoke(slot, ro + rd * t, rd, phase_sun, multi_weight);
             if (smp.coarse <= 0.002) {
-                // No smoke within a voxel of here: skip ahead.
-                t += max(dt, voxel_size);
+                // No smoke within a voxel of here: on to the first sample
+                // at least a voxel on, one step as before.
+                steps += 1u;
+                let until = t + max(dt, voxel_size);
+                loop {
+                    k += 1u;
+                    t += base_step * (1.0 + t * growth);
+                    if (t >= until) {
+                        break;
+                    }
+                }
                 continue;
             }
             if (smp.sigma > 0.0) {
@@ -253,46 +309,86 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
                 radiance += transmittance * smp.source * (1.0 - step_t) / smp.sigma;
                 transmittance *= step_t;
             }
+            k += 1u;
+            steps += 1u;
             t += dt;
         }
     } else {
         // Overlapping smokes: sum every smoke whose interval contains t.
+        var k = seq_first(seq, t_begin);
+        var t = seq_t(seq, k);
         loop {
             if (t >= t_end || transmittance < 0.01 || steps >= max_steps) {
                 break;
             }
-            steps += 1u;
-            let dt = base_step * (1.0 + t * growth);
             let p = ro + rd * t;
+            let dt = base_step * (1.0 + t * growth);
             var sigma_t = 0.0;
             var source = vec3<f32>(0.0);
             var inside = false;
+            var fetched = false;
             var coarse = 0.0;
+            // The next smoke's start past t, and how far every smoke here
+            // reads nothing.
             var next_start = 1e30;
-            for (var k = 0u; k < count; k++) {
-                if (t < t0s[k]) {
-                    next_start = min(next_start, t0s[k]);
+            var empty_until = 1e30;
+            for (var i = 0u; i < count; i++) {
+                if (t < t0s[i]) {
+                    next_start = min(next_start, t0s[i]);
                     continue;
                 }
-                if (t > t1s[k]) {
+                if (t > t1s[i]) {
                     continue;
                 }
                 inside = true;
-                let smp = sample_smoke(globals.slots[ids[k]], p, rd, phase_sun, multi_weight);
+                let s = globals.slots[ids[i]];
+                // Outside the box the smoke occupies at this tick, or in a
+                // brick past the cutoff, a sample reads nothing.
+                let d = ray_aabb(ro, inv_rd, s.drawn_min.xyz, s.drawn_max.xyz);
+                if (t < d.x) {
+                    empty_until = min(empty_until, d.x);
+                    continue;
+                }
+                if (t >= d.y) {
+                    empty_until = min(empty_until, t1s[i]);
+                    continue;
+                }
+                fetched = true;
+                let smp = sample_smoke(s, p, rd, phase_sun, multi_weight);
                 coarse = max(coarse, smp.coarse);
                 sigma_t += smp.sigma;
                 source += smp.source;
             }
             if (!inside) {
-                // Between two smokes: jump straight to the next one.
+                // Between two smokes: on to the next one, one step as before.
                 if (next_start >= 1e29) {
                     break;
                 }
-                t = next_start + jitter * base_step;
+                steps += 1u;
+                k = max(seq_first(seq, next_start), k + 1u);
+                t = seq_t(seq, k);
+                continue;
+            }
+            if (!fetched) {
+                // Nothing to read here until a smoke starts or stops being
+                // empty: on to the first sample there, charged as the empty
+                // steps it would have taken.
+                let until = min(empty_until, next_start);
+                steps += u32(ceil((until - t) / max(dt, voxel_size)));
+                k = max(seq_first(seq, until), k + 1u);
+                t = seq_t(seq, k);
                 continue;
             }
             if (coarse <= 0.002) {
-                t += max(dt, voxel_size);
+                steps += 1u;
+                let until = t + max(dt, voxel_size);
+                loop {
+                    k += 1u;
+                    t += base_step * (1.0 + t * growth);
+                    if (t >= until) {
+                        break;
+                    }
+                }
                 continue;
             }
             if (sigma_t > 0.0) {
@@ -300,6 +396,8 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
                 radiance += transmittance * source * (1.0 - step_t) / sigma_t;
                 transmittance *= step_t;
             }
+            k += 1u;
+            steps += 1u;
             t += dt;
         }
     }

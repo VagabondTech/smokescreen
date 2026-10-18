@@ -57,6 +57,21 @@ versions) are marked **results**.
   clouds' boxes but no cloud take half the time; crystal checks a little
   less than before. The per-tick snapshot costs about 0.3 µs more for 32
   clouds.
+- The volumetric march's samples now lie on a sequence fixed by each ray
+  alone (the same spacing and jitter as before, started at the camera
+  instead of at a smoke's box), so a ray starts where it enters the box the
+  smoke occupies at the drawn tick, with no sample moving as that box
+  changes. The dither pattern changes once (at the two best dial steps by
+  a mean of 0.3–0.5 of 255 over the smoke, at the cheapest step far away by
+  about 5); the smoke's shape, the step sizes and the tiers' reach do not.
+  On an Apple M4 at 1920×1080, volumetric smoke halfway through its fade
+  costs 8 % less close up at the best dial step (3.65 → 3.37 ms) and 7–10 %
+  less at mid-range; while it blooms, 5 % less close up (5.97 → 5.67 ms)
+  and 4–6 % less at mid-range; grown smoke costs the same. (Jumping the
+  bricks of voxels the rule skips was tried on top of this and cost 5–15 %
+  close up and at mid-range: the lookups outweigh the iterations they save
+  in a loop that runs in lockstep, so the march only skips a voxel at a
+  time through empty space, as before.)
 - The demo starts with the quality dial at medium (it was high), in every
   look; its scripted captures still start at high.
 - The browser demo has touch controls: drag to look, a thumb stick in the

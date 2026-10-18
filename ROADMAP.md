@@ -122,17 +122,6 @@ The README's tables come from `cargo bench -p smokescreen`. The weak spots:
   position and size: 0.1 to 0.3 ms for 32 clouds) is computed for every
   cloud, whether or not a check comes near it. Compute a cloud's puffs on
   the first check that touches it.
-- **The volumetric march's samples are anchored to each smoke's whole
-  box**, so skipping can only drop fetches, never steps, and a dropped
-  fetch saves nothing while the rest of the lane's SIMD group fetches (the
-  brick skip the rule uses was tried in the march and measured as a cost on
-  an Apple M4; only the clip to the occupied box, which has no per-step
-  cost, stayed). Anchoring the samples to the camera instead (a geometric
-  sequence along the ray, `t_k = (t_0 + 1/g)(1 + b·g)^k − 1/g`, so that any
-  box or brick can be jumped to in one step) would let rays start at the
-  occupied box and jump empty bricks without moving any sample once the
-  switch is made. It changes the picture once (the dither pattern, not the
-  smoke), so it needs the README's clips remade.
 - Volumetric checks: integrate whole bricks of constant density at once;
   consider whole-voxel steps as a tuning option.
 - Faceted fills cost about 3× volumetric ones (0.33 s of ticks at the
