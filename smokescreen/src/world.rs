@@ -8,6 +8,7 @@ use crate::{
     chords::{ChordBounds, CoreField, CrystalField},
     facets::{FacetField, FacetRule, FacetSettings, LivePuff},
     fill::{CloudShape, FillJob, FillSpec, Source, Work},
+    grid::near_solid_cells,
     holes::{HOLE_BUFFER, HoleKind, HoleSettings, HoleShape, holes_near},
     level::Level,
     math::{BYTE_TO_UNIT, boxes_overlap, clip_segment, distance_to_segment, hash_u32, safe_recip, slab},
@@ -255,6 +256,26 @@ struct Ready {
     /// Faceted: seconds after the pop when each puff pops in.
     arrival: Vec<f32>,
     bounds: (Vec3, Vec3),
+    /// Volumetric: per voxel, whether a solid voxel is among the corners
+    /// of the cell starting there (see [`near_solid_cells`]).
+    near_solid: Vec<u8>,
+}
+
+impl Ready {
+    fn new(shape: Arc<CloudShape>) -> Self {
+        let bounds = shape.bounds();
+        let near_solid = if shape.facets.is_none() {
+            near_solid_cells(&shape.grid.occupancy, shape.grid.dims)
+        } else {
+            Vec::new()
+        };
+        Self {
+            shape,
+            arrival: Vec::new(),
+            bounds,
+            near_solid,
+        }
+    }
 }
 
 enum Fill {
@@ -365,6 +386,123 @@ struct Snapshot {
     /// A faceted cloud is present whose puffs are big enough for the chord
     /// bounds to be worth trying (see `View::facet_bounds`).
     facets_to_bound: bool,
+    broad: BroadPhase,
+}
+
+/// Cells per axis of a [`BroadPhase`] grid.
+const BROAD_CELLS: usize = 16;
+
+/// Padding of a query's box when it asks the grid: a segment's end lies
+/// within rounding of where its slab tests put it, so the candidates are
+/// a superset either way and the answers are exactly those of looking at
+/// every cloud.
+const BROAD_PAD: Vec3 = Vec3::splat(1e-3);
+
+/// Which clouds a query has to look at: a coarse grid over the clouds'
+/// boxes (across and along; the up axis is ignored), each cell holding a
+/// bit per cloud whose box overlaps it. A segment looks at the clouds in
+/// the cells its own box covers, in index order, so the sums and early
+/// stops are exactly those of looking at every cloud: a cloud the segment
+/// crosses overlaps every cell its box and the segment's box share, and the
+/// clouds the grid leaves out would have failed the box test anyway.
+#[derive(Default)]
+struct BroadPhase {
+    /// Corner of the grid (x, z) and cells per metre.
+    min: [f32; 2],
+    inv_cell: [f32; 2],
+    /// Per cell, a bit per state index (x fastest). Empty when there are
+    /// no clouds, or more than a mask holds: then every cloud is looked at.
+    masks: Vec<u64>,
+    all: bool,
+}
+
+/// The states a query must look at (see [`BroadPhase`]).
+#[derive(Clone, Copy)]
+enum Candidates {
+    All,
+    /// A bit per state index.
+    Mask(u64),
+}
+
+impl BroadPhase {
+    fn build(&mut self, states: &[CloudState]) {
+        self.masks.clear();
+        self.all = states.len() > 64;
+        if states.is_empty() || self.all {
+            return;
+        }
+        let (mut lo, mut hi) = (Vec3::MAX, Vec3::MIN);
+        for st in states {
+            lo = lo.min(st.bounds.0);
+            hi = hi.max(st.bounds.1);
+        }
+        self.min = [lo.x, lo.z];
+        // Cells at least a millimetre across, so a point maps to one cell.
+        let n = BROAD_CELLS as f32;
+        self.inv_cell = [n / (hi.x - lo.x).max(1e-3), n / (hi.z - lo.z).max(1e-3)];
+        self.masks.resize(BROAD_CELLS * BROAD_CELLS, 0);
+        for (i, st) in states.iter().enumerate() {
+            let (x0, x1) = self.span(0, st.bounds.0.x, st.bounds.1.x);
+            let (z0, z1) = self.span(1, st.bounds.0.z, st.bounds.1.z);
+            for z in z0..=z1 {
+                for x in x0..=x1 {
+                    self.masks[x + BROAD_CELLS * z] |= 1 << i;
+                }
+            }
+        }
+    }
+
+    /// The cells (inclusive, clamped to the grid) an interval covers along
+    /// an axis.
+    #[inline]
+    fn span(&self, axis: usize, lo: f32, hi: f32) -> (usize, usize) {
+        let cell =
+            |v: f32| (((v - self.min[axis]) * self.inv_cell[axis]).floor() as i32).clamp(0, BROAD_CELLS as i32 - 1);
+        (cell(lo) as usize, cell(hi) as usize)
+    }
+
+    /// The clouds whose boxes the box `lo..hi` could touch.
+    #[inline]
+    fn candidates(&self, lo: Vec3, hi: Vec3) -> Candidates {
+        if self.all {
+            return Candidates::All;
+        }
+        if self.masks.is_empty() {
+            return Candidates::Mask(0);
+        }
+        let (x0, x1) = self.span(0, lo.x, hi.x);
+        let (z0, z1) = self.span(1, lo.z, hi.z);
+        let mut mask = 0;
+        for z in z0..=z1 {
+            for x in x0..=x1 {
+                mask |= self.masks[x + BROAD_CELLS * z];
+            }
+        }
+        Candidates::Mask(mask)
+    }
+}
+
+/// Call `visit` on the candidate states in index order until it returns
+/// `Some`, and return that.
+#[inline]
+fn visit_candidates<T>(
+    states: &[CloudState],
+    candidates: Candidates,
+    mut visit: impl FnMut(&CloudState) -> Option<T>,
+) -> Option<T> {
+    match candidates {
+        Candidates::All => states.iter().find_map(visit),
+        Candidates::Mask(mut mask) => {
+            while mask != 0 {
+                let i = mask.trailing_zeros() as usize;
+                mask &= mask - 1;
+                if let Some(out) = visit(&states[i]) {
+                    return Some(out);
+                }
+            }
+            None
+        }
+    }
 }
 
 /// Every cloud of a match, and the gameplay queries against them.
@@ -512,15 +650,7 @@ impl<L: Level> Smokes<L> {
     /// received from a server). It must come from the same spec, level and
     /// tuning, or machines will disagree.
     pub fn insert(&mut self, spec: CloudSpec, shape: Arc<CloudShape>) -> CloudId {
-        let bounds = shape.bounds();
-        self.new_cloud(
-            spec,
-            Fill::Ready(Ready {
-                shape,
-                arrival: Vec::new(),
-                bounds,
-            }),
-        )
+        self.new_cloud(spec, Fill::Ready(Ready::new(shape)))
     }
 
     /// Remove a cloud now, whatever its age.
@@ -602,10 +732,9 @@ impl<L: Level> Smokes<L> {
             return;
         }
         let job = std::mem::replace(job, Box::new(FillJob::new(placeholder_spec())));
-        let shape = Arc::new(job.into_shape());
-        let bounds = shape.bounds();
-        let arrival = arrival_times(&shape, &cloud.timeline);
-        cloud.fill = Fill::Ready(Ready { shape, arrival, bounds });
+        let mut ready = Ready::new(Arc::new(job.into_shape()));
+        ready.arrival = arrival_times(&ready.shape, &cloud.timeline);
+        cloud.fill = Fill::Ready(ready);
     }
 
     /// Finish every fill whose cloud has started growing by `tick`.
@@ -708,6 +837,7 @@ impl<L: Level> Smokes<L> {
                 len: 0,
                 states: Vec::new(),
                 facets_to_bound: false,
+                broad: BroadPhase::default(),
             });
             self.snapshots.len() - 1
         } else {
@@ -792,6 +922,7 @@ impl<L: Level> Smokes<L> {
         snap.facets_to_bound = snap.states[..snap.len]
             .iter()
             .any(|st| st.dissolve <= LATE_FADE && clouds[st.cloud].spec.style == Style::Faceted);
+        snap.broad.build(&snap.states[..snap.len]);
         slot
     }
 
@@ -807,6 +938,7 @@ impl<L: Level> Smokes<L> {
             clouds: &self.clouds,
             config: &self.config,
             facets_to_bound: snap.facets_to_bound,
+            broad: &snap.broad,
         }
     }
 
@@ -1082,6 +1214,7 @@ pub struct View<'a> {
     clouds: &'a [Cloud],
     config: &'a Config,
     facets_to_bound: bool,
+    broad: &'a BroadPhase,
 }
 
 /// One cloud at the view's tick.
@@ -1235,25 +1368,23 @@ impl<'a> View<'a> {
         let (mut lower, mut upper) = (0.0f32, 0.0f32);
         let mut crossed = false;
         let mut buf = [HoleShape::NONE; HOLE_BUFFER];
-        for state in self.states {
+        let end = units.to_internal(to);
+        let candidates = self.broad.candidates(a.min(end) - BROAD_PAD, a.max(end) + BROAD_PAD);
+        let settled = visit_candidates(self.states, candidates, |state| {
             let (lo, hi) = state.bounds;
             let (t0, t1) = slab(a, inv, lo, hi);
             let (t0, t1) = (t0.max(0.0), t1.min(len));
             if t1 <= t0 {
-                continue;
+                return None;
             }
-            let Some((alo, ahi)) = state.active else {
-                continue;
-            };
+            let (alo, ahi) = state.active?;
             let (u0, u1) = slab(a, inv, alo, ahi);
             let (u0, u1) = (u0.max(t0), u1.min(t1));
             if u1 < u0 {
-                continue;
+                return None;
             }
             let cloud = &self.clouds[state.cloud];
-            let Some(ready) = cloud.ready() else {
-                continue;
-            };
+            let ready = cloud.ready()?;
             let shape = &ready.shape;
             crossed = true;
             // Faceted: chord bounds. Any other cloud: its exact amount,
@@ -1264,12 +1395,12 @@ impl<'a> View<'a> {
                     // Late in the fade the puffs left are small next to
                     // the blend radius, so the bounds seldom settle a line;
                     // the trace is cheap then anyway.
-                    return Verdict::Trace;
+                    return Some(Verdict::Trace);
                 }
                 Some(_) if cloud.spec.style == Style::Faceted && state.holes.len() > HOLE_BUFFER => {
                     // More holes than the bounds keep on the stack: they
                     // would leave some out, so the trace decides.
-                    return Verdict::Trace;
+                    return Some(Verdict::Trace);
                 }
                 Some(f) if cloud.spec.style == Style::Faceted => {
                     // Over the whole box, like the trace: a grown polyhedron
@@ -1300,14 +1431,17 @@ impl<'a> View<'a> {
                         dissolve: state.dissolve,
                         holes,
                     }
-                    .amount(a, rd, t0, t1, &mut part, &|p| stop(lower + p - margin))
+                    .amount_near(&ready.near_solid, a, rd, t0, t1, &mut part, &|p| {
+                        stop(lower + p - margin)
+                    })
                 }
             };
             lower += part;
             upper += part;
-            if stopped {
-                return Verdict::Blocked;
-            }
+            stopped.then_some(Verdict::Blocked)
+        });
+        if let Some(verdict) = settled {
+            return verdict;
         }
         // Nothing crossed, or the bounds settle it (with the margin: the
         // amounts of the other clouds were summed in a different order
@@ -1326,11 +1460,20 @@ impl<'a> View<'a> {
         let p = self.config.units.to_internal(p);
         let core_rule = self.config.tuning.facet_rule == FacetRule::Core;
         let mut sum = 0.0;
-        for cloud in self.clouds() {
-            let (lo, hi) = cloud.state.bounds;
+        let candidates = self.broad.candidates(p - BROAD_PAD, p + BROAD_PAD);
+        visit_candidates(self.states, candidates, |state| {
+            let (lo, hi) = state.bounds;
             if p.cmplt(lo).any() || p.cmpgt(hi).any() {
-                continue;
+                return None;
             }
+            let c = &self.clouds[state.cloud];
+            let ready = c.ready()?;
+            let cloud = CloudView {
+                state,
+                shape: &ready.shape,
+                spec: &c.spec,
+                timeline: &c.timeline,
+            };
             let inside = |yes: bool| if yes { 1.0 } else { 0.0 };
             sum += if let Some(c) = cloud.crystal_field() {
                 inside(c.inside(p))
@@ -1343,7 +1486,8 @@ impl<'a> View<'a> {
             } else {
                 0.0
             };
-        }
+            None::<()>
+        });
         sum
     }
 
@@ -1358,26 +1502,24 @@ impl<'a> View<'a> {
         let rd = delta / len;
         let inv = safe_recip(rd);
         let facet_rule = self.config.tuning.facet_rule;
-        for state in self.states {
+        let end = units.to_internal(to);
+        let candidates = self.broad.candidates(a.min(end) - BROAD_PAD, a.max(end) + BROAD_PAD);
+        visit_candidates(self.states, candidates, |state| {
             // Broad phase: the cloud's box, then what it occupies now.
             let (lo, hi) = state.bounds;
             let (t0, t1) = slab(a, inv, lo, hi);
             let (t0, t1) = (t0.max(0.0), t1.min(len));
             if t1 <= t0 {
-                continue;
+                return None;
             }
-            let Some((alo, ahi)) = state.active else {
-                continue;
-            };
+            let (alo, ahi) = state.active?;
             let (u0, u1) = slab(a, inv, alo, ahi);
             let (u0, u1) = (u0.max(t0), u1.min(t1));
             if u1 < u0 {
-                continue;
+                return None;
             }
             let cloud = &self.clouds[state.cloud];
-            let Some(ready) = cloud.ready() else {
-                continue;
-            };
+            let ready = cloud.ready()?;
             let shape = &ready.shape;
             // Only the holes that could matter along this segment; the rest
             // would change nothing.
@@ -1419,13 +1561,11 @@ impl<'a> View<'a> {
                         dissolve: state.dissolve,
                         holes,
                     }
-                    .amount(a, rd, t0, t1, acc, stop)
+                    .amount_near(&ready.near_solid, a, rd, t0, t1, acc, stop)
                 }
             };
-            if stopped {
-                return true;
-            }
-        }
-        false
+            stopped.then_some(())
+        })
+        .is_some()
     }
 }

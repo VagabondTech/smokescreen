@@ -112,7 +112,7 @@ Pick a default with `SmokeSettings::style`, or per smoke with `Smoke::with_style
 | Look | soft, light-scattering | hard facets, merged like metaballs | hard, separate tumbling crystals |
 | Drawn by | raymarching at reduced resolution | sphere tracing a distance field | plain meshes (Bevy's PBR) |
 | GPU cost² | low: 1.3 ms at mid-range, 5.9 ms filling the screen; one dial per camera | 5–6× volumetric: 7.3 ms at mid-range, 31 ms filling the screen | about 0.2 ms: a few thousand triangles per cloud |
-| 250 sight checks through 4 of 32 clouds¹ | 0.10 ms | 0.04 ms, exact or with `FacetRule::Core` | 0.03 ms (any contact blocks), 0.06 ms (0.8 m rule) |
+| 250 sight checks through 4 of 32 clouds¹ | 0.07 ms | 0.04 ms, exact or with `FacetRule::Core` | 0.03 ms (any contact blocks), 0.06 ms (0.8 m rule) |
 | Bullets and explosions | tunnels and cleared spheres | hexagonal tunnels, cavities | knock crystals out of the way |
 | Picture against the rule | thin smoke is see-through in both | never shows through what the rule blocks; thin edges drawn solid | exact with `sight_threshold = 0` |
 
@@ -214,7 +214,7 @@ The fill budget (`Config::fill_budget`, about 0.2 ms a tick on the VM, under 0.1
 
 | | Growing | Grown | Halfway through the fade | Per-tick snapshot |
 |---|---|---|---|---|
-| Volumetric | 0.10 | 0.10 | 0.31 | 0.001 |
+| Volumetric | 0.07 | 0.07 | 0.22 | 0.001 |
 | Faceted, `FacetRule::Exact` | 0.04 | 0.04 | 0.70 | 0.09 |
 | Faceted, `FacetRule::Core` | 0.04 | 0.04 | 0.12 | 0.08 |
 | Crystal, 0.8 m rule | 0.06 | 0.06 | 0.07 | 0.06 |
