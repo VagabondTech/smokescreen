@@ -84,7 +84,7 @@ pub use fill::{CloudShape, Facets};
 pub use grid::Grid;
 pub use holes::{HoleKind, HoleSettings, HoleShape};
 pub use level::{BoxObstacles, FlatGround, Level, ObstacleBox, VoxelObstacles};
-pub use timeline::Timeline;
+pub use timeline::{DensityTable, Timeline};
 pub use units::{Units, UpAxis};
 pub use volume::VolumeField;
 pub use world::{

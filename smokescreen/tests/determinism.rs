@@ -10,9 +10,10 @@ mod common;
 use smokescreen::glam::Vec3;
 use smokescreen::*;
 
-/// Recorded on x86_64-unknown-linux-gnu. Any platform (or optimisation level,
-/// or CPU feature set) that differs breaks lockstep.
-const EXPECTED: u64 = 0xf5b2_932d_9a1a_1419;
+/// Recorded on aarch64-apple-darwin; CI checks it on x86-64 Linux and Windows
+/// too. Any platform (or optimisation level, or CPU feature set) that differs
+/// breaks lockstep.
+const EXPECTED: u64 = 0xfe37_f661_c249_b2fb;
 
 struct Fnv(u64);
 
@@ -121,7 +122,7 @@ fn determinism_hash() {
     }
 }
 
-/// Recorded on x86_64-unknown-linux-gnu, like [`EXPECTED`].
+/// Recorded on x86_64-unknown-linux-gnu.
 const EXPECTED_MESHES: u64 = 0x5eef_51a1_bce5_3bc4;
 
 /// Voxelising triangles (what `SmokeObstacle` does on every machine that

@@ -3,26 +3,38 @@
 use glam::Vec3;
 
 use crate::{
-    grid::{Grid, sample_open_near},
+    grid::{Grid, sample_open, sample_open_near},
     holes::{HoleShape, hole_attenuation},
-    math::{BYTE_TO_UNIT, safe_recip, slab},
-    timeline::shape_density,
+    math::{safe_recip, slab},
+    timeline::DensityTable,
 };
 
 /// A volumetric cloud at one tick. Internal frame.
 #[derive(Clone, Copy, Debug)]
 pub struct VolumeField<'a> {
     pub grid: &'a Grid,
-    pub growth: f32,
-    pub dissolve: f32,
+    /// The density of each fill-distance byte at this tick (the cloud's
+    /// [`crate::CloudState::density`]).
+    pub density: &'a DensityTable,
     pub holes: &'a [HoleShape],
 }
 
 impl VolumeField<'_> {
     /// Density (0..1) at a point: the coarse shape without noise detail,
-    /// minus holes.
+    /// minus holes. The voxels' densities are interpolated, open voxels
+    /// only (see [`Grid::sample_distance`]), as a renderer's sampler does
+    /// with densities baked per voxel.
     pub fn density(&self, p: Vec3) -> f32 {
-        let d = shape_density(self.grid.sample_distance(p), self.growth, self.dissolve);
+        let g = self.grid;
+        let d = sample_open(
+            &g.distance,
+            self.density.values(),
+            &g.occupancy,
+            g.min,
+            g.voxel_size,
+            g.dims,
+            p,
+        );
         if d > 0.0 {
             d * hole_attenuation(p, self.holes)
         } else {
@@ -36,8 +48,16 @@ impl VolumeField<'_> {
     #[inline]
     pub(crate) fn density_near(&self, near: &[u8], p: Vec3) -> f32 {
         let g = self.grid;
-        let sampled = sample_open_near(&g.distance, &g.occupancy, near, g.min, g.voxel_size, g.dims, p);
-        let d = shape_density(sampled, self.growth, self.dissolve);
+        let d = sample_open_near(
+            &g.distance,
+            self.density.values(),
+            &g.occupancy,
+            near,
+            g.min,
+            g.voxel_size,
+            g.dims,
+            p,
+        );
         if d > 0.0 {
             d * hole_attenuation(p, self.holes)
         } else {
@@ -88,9 +108,8 @@ impl VolumeField<'_> {
         let n = (len / step).ceil().max(1.0) as u32;
         let dt = len / n as f32;
         let inv = safe_recip(rd);
-        // Density is exactly 0 at or past this distance.
-        let cutoff = self.growth.min(1.2 * (1.0 - self.dissolve)).min(0.999);
-        let skip_from = BYTE_TO_UNIT.partition_point(|&v| v < cutoff) as u16;
+        // Every byte from this one on has density 0.
+        let skip_from = self.density.empty_from();
         if skip_from == 0 {
             return false;
         }
@@ -121,7 +140,7 @@ impl VolumeField<'_> {
                 let (brick, lo, hi) = self.grid.brick_at(p);
                 let (_, exit) = slab(ro, inv, lo, hi);
                 brick_exit = exit;
-                if self.grid.bricks[brick] as u16 >= skip_from && p.cmpge(lo).all() && p.cmple(hi).all() {
+                if self.grid.bricks[brick] >= skip_from && p.cmpge(lo).all() && p.cmple(hi).all() {
                     // On to the first sample past the brick.
                     let next = ((exit - t0) / dt - 0.5).ceil();
                     i = if next > i as f32 { (next as u32).min(end) } else { i + 1 };
@@ -138,5 +157,79 @@ impl VolumeField<'_> {
             i += 1;
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use glam::UVec3;
+
+    use super::*;
+    use crate::{
+        grid::{EMPTY_VOXEL, occupancy},
+        math::hash_u32,
+        timeline::shape_density,
+    };
+
+    /// A sample is the average of the densities of the open voxels around
+    /// it, weighted as a trilinear filter weights them: the order a
+    /// renderer's sampler works in with densities baked per voxel, not the
+    /// density of the averaged distance.
+    #[test]
+    fn samples_average_the_voxels_densities() {
+        let dims = UVec3::new(8, 8, 8);
+        let n = (dims.x * dims.y * dims.z) as usize;
+        let bytes = [0, 120, 150, 175, 204, EMPTY_VOXEL];
+        let grid = Grid {
+            min: Vec3::new(-1.0, 0.0, 2.0),
+            voxel_size: 0.3,
+            dims,
+            distance: (0..n)
+                .map(|i| bytes[hash_u32(i as u32) as usize % bytes.len()])
+                .collect(),
+            region: vec![255; n],
+            occupancy: (0..n)
+                .map(|i| match hash_u32(i as u32 ^ 0x9e37_79b9) % 7 {
+                    0 => occupancy::SOLID,
+                    1 => occupancy::PADDED,
+                    _ => occupancy::OPEN,
+                })
+                .collect(),
+            filled: n as u32,
+            bounds_min: Vec3::ZERO,
+            bounds_max: Vec3::ZERO,
+            bricks: Vec::new(),
+            front_bounds: Vec::new(),
+        };
+        let corner = |n: u32| UVec3::new(n & 1, (n >> 1) & 1, n >> 2);
+        for (growth, dissolve) in [(1.2, 0.0), (0.8, 0.0), (1.2, 0.5), (1.2, 0.9)] {
+            let table = DensityTable::new(growth, dissolve);
+            let field = VolumeField {
+                grid: &grid,
+                density: &table,
+                holes: &[],
+            };
+            for k in 0..2000u32 {
+                let r = |s: u32| (hash_u32(k.wrapping_mul(7) ^ s) >> 8) as f32 / (1u32 << 24) as f32;
+                // Between voxel centres, away from the grid's edges.
+                let g = Vec3::new(r(1), r(2), r(3)) * (dims - 1).as_vec3() * 0.999;
+                let p = grid.min + (g + 0.5) * grid.voxel_size;
+                let (c, f) = (g.floor().as_uvec3(), g - g.floor());
+                let (mut sum, mut weight) = (0.0, 0.0);
+                for o in (0..8).map(corner) {
+                    let i = grid.index(c + o);
+                    if grid.occupancy[i] == occupancy::SOLID {
+                        continue;
+                    }
+                    let w = Vec3::select(o.cmpeq(UVec3::ONE), f, 1.0 - f);
+                    let w = w.x * w.y * w.z;
+                    sum += w * shape_density(grid.distance[i] as f32 / 255.0, growth, dissolve);
+                    weight += w;
+                }
+                let want = if weight > 0.0 { sum / weight } else { 0.0 };
+                let got = field.density(p);
+                assert!((got - want).abs() < 1e-5, "{got} against {want} at {p:?}");
+            }
+        }
     }
 }
