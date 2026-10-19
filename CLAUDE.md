@@ -75,12 +75,15 @@ cargo run --example presets                 # every preset and look; also minima
    break this; keep clippy clean.
 2. **The determinism hash.** `smokescreen/tests/determinism.rs` hashes
    10,000 query results over the lives of eight clouds (all three styles, a
-   line and a box source, holes, metres and Z-up inches, both facet rules,
-   both volumetric steps),
-   and separately a level voxelised from meshes with clouds filled in it.
-   `EXPECTED` and `EXPECTED_MESHES` must match on every platform. If you change results on
-   purpose, re-record it and check it on x86-64 *and* aarch64 (CI runs
-   macOS ARM, Linux and Windows). Locally, aarch64 under emulation:
+   line and a box source, holes, metres and Z-up inches, the exact and core
+   facet rules, both volumetric steps); the metres and inches runs again
+   under the chord rule, apart (`EXPECTED_CHORDS`, so adding that rule left
+   `EXPECTED` alone); and separately a level voxelised from meshes with
+   clouds filled in it.
+   `EXPECTED`, `EXPECTED_CHORDS` and `EXPECTED_MESHES` must match on every
+   platform. If you change results on purpose, re-record them and check
+   them on x86-64 *and* aarch64 (CI runs macOS ARM, Linux and Windows).
+   Locally, aarch64 under emulation:
    ```sh
    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER="qemu-aarch64 -L /usr/aarch64-linux-gnu" \
