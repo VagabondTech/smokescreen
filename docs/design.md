@@ -138,7 +138,7 @@ Every camera has one number, `SmokeCamera::quality`, from 0 (cheapest) to 1 (bes
 
 ```rust
 commands.spawn((Camera3d::default(), SmokeCamera { quality: 0.6, ..default() }));
-// LOW / MEDIUM / HIGH / ULTRA are 0.2 / 0.4 / 0.8 / 1.0.
+// MINIMUM / LOWER / LOW / MEDIUM / HIGH / ULTRA are 0.0 / 0.2 / 0.4 / 0.6 / 0.8 / 1.0.
 ```
 
 To hit a frame-time target instead, give it a budget:
@@ -153,12 +153,14 @@ The budget controller re-decides the step every frame:
 - It predicts each step's cost from how much of the screen the smokes cover this frame, times a per-step factor, times a scale it learns from the measured GPU time of the smoke passes. It reacts the moment a smoke fills the screen, not two frames later when the slow frame is measured.
 - It drops steps immediately and climbs back one step at a time, after the next step has fitted with room to spare for 30 frames, so it doesn't oscillate.
 - `quality` becomes the ceiling: `SmokeCamera { quality: 0.8, budget_ms: Some(1.5), ..default() }` never goes above "high".
-- The `SmokeQuality` component on the camera reports the step in use, the measured and predicted milliseconds and the coverage, for HUDs and logs.
+- The `SmokeQuality` component on the camera reports the step in use, the resolution volumetric smoke is marched at, the measured and predicted milliseconds and the coverage, for HUDs and logs.
 - Without GPU timestamp support it warns once and holds a cautious step.
 
 In the demo's scripted test (`SMOKE_DEMO_SCRIPT=budget`), the camera walks from 24 m into a smoke and back out. With the faceted style and a 250 ms budget on the software rasteriser, 11 of 750 frames were over. One of them was a one-off shader compile, which that rasteriser counts as GPU time. The other 10 were at most 17 % over, all while the camera was moving. With the volumetric style and a 40 ms budget, 6 of 734 frames were over, by at most 13 %.
 
 To pin individual knobs instead, set `SmokeCamera::facets` or `SmokeCamera::volumetric` to a `FacetQuality` / `VolumetricQuality`.
+
+**Coarser close up.** A step's volumetric resolution is the finest it marches at. Close up, the finest texel of the noise (2.6 cm with the default `SmokeSettings::noise_frequency`) spans several pixels, so marching every pixel there pays for the same picture. With `VolumetricQuality::resolution_by_distance` (on at every step), each camera marches as coarse as still gives every texel of the finest noise a raymarched pixel of its own at the far side of the farthest volumetric smoke on screen: ⅔, ½ or ¼ resolution. The quality controller picks it with the step (`quality::march_resolution`), once per camera and frame. It goes coarser only once that smoke is within 0.8 of a resolution's distance limit, and back finer only past the limit, so a camera walking to and fro at a limit doesn't flip between two grains. In the demo's budget walk at the best step, the march went to ⅔ 12.9 m from the smoke's middle and to ½ at 8.2 m on the way in, and back to ⅔ at 12.0 m and to full resolution at 17.8 m on the way out: four changes in the whole walk. Taking the far side of the smoke's box is cautious: rays end inside a dense cloud long before it, so close up a quarter would still keep the noise, but it would need the march to measure how far its rays get.
 
 ### What each step does
 
@@ -168,15 +170,15 @@ To pin individual knobs instead, set `SmokeCamera::facets` or `SmokeCamera::volu
 
 | Step (`quality`) | Faceted | Cost¹ | Volumetric | Cost² |
 |---|---|---|---|---|
-| ultra (1.0) | full resolution, traced shadows and occlusion | 29.7 ms | full resolution, 128 steps of 0.07 m | 0.59 ms |
-| high (0.8) | coarse 2×2, traced shadows and occlusion | 14.6 ms (0.49) | ⅔ resolution, 96 steps | 0.39 ms (0.66) |
-| medium (0.6) | coarse 2×2, baked shadows, traced occlusion | 10.7 ms (0.36) | ½ resolution, 72 steps | 0.28 ms (0.47) |
-| low (0.4) | coarse 2×2, baked lighting | 9.8 ms (0.33) | ½ resolution, 48 steps | 0.27 ms (0.46) |
-| lower (0.2) | coarse 4×4, baked lighting | 7.8 ms (0.26) | ¼ resolution, 40 steps | 0.19 ms (0.32) |
-| minimum (0.0) | coarse 4×4, baked lighting, looser hit tolerance | 7.5 ms (0.25) | ¼ resolution, 28 steps | 0.19 ms (0.32) |
+| ultra (1.0) | full resolution, traced shadows and occlusion | 29.7 ms | full resolution (coarser close up), 128 steps of 0.07 m | 0.44 ms |
+| high (0.8) | coarse 2×2, traced shadows and occlusion | 14.6 ms (0.49) | ⅔ resolution, 96 steps | 0.41 ms (0.93) |
+| medium (0.6) | coarse 2×2, baked shadows, traced occlusion | 10.7 ms (0.36) | ½ resolution, 72 steps | 0.29 ms (0.66) |
+| low (0.4) | coarse 2×2, baked lighting | 9.8 ms (0.33) | ½ resolution, 48 steps | 0.25 ms (0.57) |
+| lower (0.2) | coarse 4×4, baked lighting | 7.8 ms (0.26) | ¼ resolution, 40 steps | 0.22 ms (0.50) |
+| minimum (0.0) | coarse 4×4, baked lighting, looser hit tolerance | 7.5 ms (0.25) | ¼ resolution, 28 steps | 0.20 ms (0.45) |
 
 ¹ With the smoke covering two-thirds of the screen; in brackets, relative to ultra. At mid-range the reduced resolutions don't apply (see above) and the steps cost 6.6 / 4.7 / 3.5 / 3.4 / 3.3 / 3.1 ms (1.0 / 0.71 / 0.53 / 0.51 / 0.49 / 0.47).
-² With the smoke at mid-range, where the two cheapest steps cost the same. Close up, covering two-thirds of the screen, the steps cost 3.2 / 1.8 / 1.2 / 1.1 / 0.88 / 0.85 ms (1.0 / 0.55 / 0.38 / 0.35 / 0.28 / 0.27).
+² With the smoke at mid-range, where the two cheapest steps cost the same. Close up, covering two-thirds of the screen, where the two best steps march at ½ (see Coarser close up above), the steps cost 1.45 / 1.36 / 1.24 / 1.15 / 0.85 / 0.88 ms (1.0 / 0.94 / 0.86 / 0.79 / 0.59 / 0.61).
 
 What the smoke adds to a 1920×1080 frame with MSAA on an Apple M4, from the demo's tier sweep (`SMOKE_DEMO_SCRIPT=tiers`), the median of five runs (six for volumetric smoke). Metal's GPU timestamp queries lose the device, so there the sweep times whole frames instead, each waiting for the GPU, and subtracts the same view without smoke; that counts the CPU's share of drawing the smoke too. On the software rasteriser, the faceted steps cost 1.00 / 0.52 / 0.42 / 0.36 / 0.29 / 0.27 of ultra close up, and the volumetric ones 1.00 / 0.51 / 0.44 / 0.29 / 0.19 / 0.16 at mid-range. Run the same sweep on your target hardware. The budget controller only uses ratios like these to guess what a step change will save; it learns the absolute cost from your GPU.
 

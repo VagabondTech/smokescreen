@@ -133,18 +133,21 @@ both).
 
 The README's tables come from `cargo bench -p smokescreen`. The weak spots:
 
-- **Volumetric frame time.** Close up, the march is the largest cost
-  (3.2 ms at the best step on an Apple M4, down from 5.1 since each smoke
-  gets a dispatch of its own and the composite got cheaper). From medium
-  down it is the composite's draw, about 0.4–0.5 ms close up. Its pass
-  over the multisampled target (about 0.2 ms at any distance) is gone
-  while nothing transparent is on screen. With something transparent,
-  the composite could join Bevy's transparent pass instead of a pass of
-  its own, if its upsample moved to a compute pass. Next: march close
-  smoke at a coarser resolution (the finest noise texel spans many pixels
-  close up), and point lights baked per voxel (each light in range costs
-  every sample with smoke: close up at the best step, one muzzle flash in
-  a grown cloud costs 14 % more, eight 2.1 times as much). Tried on the M4
+- **Volumetric frame time.** Close up at the best step, the smoke now
+  costs 1.45 ms on an Apple M4 (5.1 before 0.2): each smoke gets a
+  dispatch of its own, the composite got cheaper, and the march goes
+  coarser close up. About 0.4–0.5 ms of that is the composite's draw. Its
+  pass over the multisampled target (about 0.2 ms at any distance) is
+  gone while nothing transparent is on screen. With something
+  transparent, the composite could join Bevy's transparent pass instead
+  of a pass of its own, if its upsample moved to a compute pass. The
+  coarser march takes the far side of the farthest smoke's box, which is
+  cautious: inside a dense cloud rays end long before it, so close up a
+  quarter would keep the noise too, but the march would have to measure
+  how far its rays get. Next: point lights baked per voxel (each light in
+  range costs every sample with smoke: close up at the best step, one
+  muzzle flash in a grown cloud costs 14 % more, eight 2.1 times as
+  much). Tried on the M4
   and dropped: a third fewer instructions in the sample loop (6–7 %
   slower), the lighting read once per four samples (no faster on a grown
   cloud, and up to 87 levels of change at the cheapest steps), and the

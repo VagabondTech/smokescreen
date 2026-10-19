@@ -162,7 +162,7 @@ cargo run --example presets                 # every preset and look; also minima
 | `src/render.rs` | Atlas, uploads, bake, raymarch, faceted passes, composite |
 | `src/crystal.rs` | Crystal meshes and the per-frame puff sync |
 | `src/obstacles.rs` | `SmokeObstacle`: voxelises marked meshes into the level |
-| `src/quality.rs` | The dial and the budget controller |
+| `src/quality.rs` | The dial, the budget controller, and the march's resolution by distance (`march_resolution`, kept in `SmokeQuality`) |
 | `src/shaders/` | WGSL (`.wesl`); `smoke_common.wesl` mirrors the `Gpu*` structs and limits in `render.rs` |
 | `examples/` | `minimal`, `presets`, `demo` (also scripted captures and the README's clips), `viewmodel`, `units` |
 | `tools/` | `agreement.py`, `fairness.py`: reports from the demo's captures |
