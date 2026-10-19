@@ -169,6 +169,29 @@ are not in lockstep.
   Skipping the noise once a ray is nearly opaque, tried first, cost 6–8 %
   more: rays run in lockstep, and those through thin smoke, which never
   get nearly opaque, set the pace.
+- Volumetric smoke costs 27–32 % less to draw close up at the best dial
+  step, with the same picture. Where no ray can meet two smokes' boxes,
+  each smoke is marched by a dispatch of its own, with a kernel compiled
+  for one smoke: it keeps none of the per-ray intervals the march collects
+  for overlapping smokes, and its smoke's data is the same for the whole
+  dispatch. Smokes that no point light reaches use a variant without the
+  point-light code. On an Apple M4 at 1920×1080, close up at the best step
+  (medians of five or six alternated runs), a grown cloud takes 3.67
+  instead of 5.15 ms (−29 %), 0.8 s into the bloom 3.73 instead of 5.20
+  (−28 %), and halfway through the fade 2.45 instead of 3.36 (−27 %); with
+  `NoiseWithinRule::Capped` a grown cloud takes 3.18 instead of 4.46 ms
+  (−29 %), and with `Filled` 3.88 instead of 5.71 (−32 %). At mid-range the
+  best step takes 0.97 instead of 1.19 ms (−19 %). Close up, the steps in
+  between gain 10–32 %, the two cheapest, which march a sixteenth of the
+  pixels, up to 9 %; far away the best step gains 5–12 % and the rest is
+  within the noise. Where smokes overlap on screen, one march adds them up
+  as before, at the same cost. The pixels are the old march's, but for one
+  level out of 255 in a few dozen pixels a frame (rounding). The new
+  kernels compile on first use, for the noise mode and MSAA a camera uses;
+  the old march draws until they are ready. On the M4 the march is short of
+  registers rather than of arithmetic: taking a third of the sample loop's
+  instructions out (folding constants per smoke, advancing coordinates
+  along the ray) made it 6–7 % slower, so that isn't done.
 - Volumetric smoke's noise moves on the simulation's clock instead of each
   machine's own. It scrolled with Bevy's `Time`, so two players drawing
   the same tick saw different holes in the same smoke whenever their apps
