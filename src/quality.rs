@@ -179,10 +179,13 @@ impl VolumetricQuality {
 /// Cost of each tier relative to the top tier, used by the budget controller
 /// to predict what a tier switch will save. Measured with the demo's scripted
 /// tier sweep with the smoke close up (where budgets bind; at a distance the
-/// faceted tiers save less, about 0.5× at the bottom); the controller learns
-/// the absolute scale on the player's GPU.
-pub const FACET_RELATIVE_COST: [f32; TIERS] = [0.27, 0.29, 0.36, 0.42, 0.52, 1.0];
-pub const VOLUMETRIC_RELATIVE_COST: [f32; TIERS] = [0.09, 0.10, 0.18, 0.22, 0.38, 1.0];
+/// faceted tiers save less, about 0.5× at the bottom), on an Apple M4. Close
+/// up the volumetric tiers are near each other: the top ones march coarser
+/// there too ([`VolumetricQuality::resolution_by_distance`]), and the
+/// composite costs the same at every tier. The controller learns the
+/// absolute scale on the player's GPU.
+pub const FACET_RELATIVE_COST: [f32; TIERS] = [0.25, 0.26, 0.33, 0.36, 0.49, 1.0];
+pub const VOLUMETRIC_RELATIVE_COST: [f32; TIERS] = [0.59, 0.59, 0.79, 0.85, 0.94, 1.0];
 
 /// What the dial is doing on a camera this frame. Added automatically with
 /// [`SmokeCamera`]; read it for HUDs and logs.

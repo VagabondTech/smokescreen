@@ -1444,6 +1444,13 @@ fn update_hud(
         ),
         None => format!("dial {} ({}/6)", status.tier_name(), status.tier + 1),
     };
+    // Volumetric smoke marches coarser than the step's resolution close up.
+    let dial = match (settings.style, status.volumetric_resolution) {
+        (SmokeStyle::Volumetric, SmokeResolution::TwoThirds) => format!("{dial}, marched at 2/3"),
+        (SmokeStyle::Volumetric, SmokeResolution::Half) => format!("{dial}, marched at 1/2"),
+        (SmokeStyle::Volumetric, SmokeResolution::Quarter) => format!("{dial}, marched at 1/4"),
+        _ => dial,
+    };
     // A gameplay query: can the camera see the red box behind the smoke?
     let target = Vec3::new(0.0, 0.9, 10.0);
     let seen = vision.transmittance(cam.translation(), target);
