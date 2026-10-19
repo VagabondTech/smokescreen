@@ -133,6 +133,19 @@ both).
 
 The README's tables come from `cargo bench -p smokescreen`. The weak spots:
 
+- **Volumetric frame time.** Close up, the march is the largest cost
+  (3.7 ms at the best step on an Apple M4, down from 5.1 since each smoke
+  gets a dispatch of its own). From medium down it is the composite:
+  about 0.7 ms close up at every step, 0.25 ms of it the separate pass
+  over the multisampled target, and 0.2–0.35 ms at mid-range and far
+  away. Next: march close smoke at a coarser resolution (the finest noise
+  texel spans many pixels close up), a cheaper composite, and point
+  lights baked per voxel (each light in range costs every sample with
+  smoke). Tried on the M4 and dropped: a third fewer instructions in the
+  sample loop (6–7 % slower), and the lighting read once per four samples
+  (no faster on a grown cloud, and up to 87 levels of change at the
+  cheapest steps).
+
 - **Thin clouds.** Halfway through the fade, volumetric checks cost 2.7×
   what they cost when grown (0.098 against 0.036 ms per 250 on an Apple
   M4): lines that never reach the threshold are integrated to the end. An

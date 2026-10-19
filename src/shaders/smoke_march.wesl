@@ -9,6 +9,23 @@
 // case of a ray crossing a single smoke takes a fast path with that smoke's
 // data hoisted out of the loop.
 //
+// Two compile-time variants make that fast path cheaper still, without
+// changing a sample:
+// - SINGLE_SMOKE: the dispatch marches one smoke, the slot in
+//   `view.params.z`, over its own screen rectangle. The renderer dispatches
+//   it once per smoke, and only when no ray can meet two smokes' boxes, so
+//   every ray takes the fast path. The kernel then needs none of the per-ray
+//   interval arrays, and the slot is the same for every invocation, so its
+//   data can stay out of the per-ray registers. On an Apple M4 that made the
+//   march 27-32 % cheaper close up at the best dial step.
+// - NO_POINT_LIGHTS: the point lights compiled out, for smokes no light
+//   reaches (a light out of range adds exactly nothing). Unused, their code
+//   still cost registers: 8 % close up once the arrays were gone, nothing
+//   while they were there.
+// The march is short of registers rather than of arithmetic: removing a
+// third of the sample loop's instructions (constants folded per smoke,
+// coordinates advanced along the ray) made it 6-7 % slower on the M4.
+//
 // The samples of a ray lie on a sequence fixed by the ray alone:
 // t_k = u0·r^k − 1/g with u0 = jitter·b + 1/g and r = 1 + b·g (b the step
 // near the camera, g its growth per metre), which is the recurrence
@@ -274,8 +291,10 @@ fn sample_smoke(
     let sigma = d * globals.medium.w * slot.params.y;
     var light = globals.sun_color.rgb * (lit.g * phase_sun + lit.b * multi_weight)
         + globals.ambient.rgb * lit.a;
-    if (globals.counts.y > 0u) {
-        light += point_lights(slot, p, rd);
+    @if(!NO_POINT_LIGHTS) {
+        if (globals.counts.y > 0u) {
+            light += point_lights(slot, p, rd);
+        }
     }
     out.sigma = sigma;
     out.source = sigma * globals.medium.rgb * slot.tint.rgb * light;
@@ -310,27 +329,41 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Which smokes does this ray pass through, and where?
     // Avoid infinities for axis-aligned rays in the slab tests.
     let inv_rd = 1.0 / select(rd, vec3<f32>(1e-6), abs(rd) < vec3<f32>(1e-6));
-    var t0s: array<f32, MAX_SLOTS>;
-    var t1s: array<f32, MAX_SLOTS>;
-    var ids: array<u32, MAX_SLOTS>;
+    @if(!SINGLE_SMOKE) var t0s: array<f32, MAX_SLOTS>;
+    @if(!SINGLE_SMOKE) var t1s: array<f32, MAX_SLOTS>;
+    @if(!SINGLE_SMOKE) var ids: array<u32, MAX_SLOTS>;
     var count = 0u;
     var t_begin = 1e30;
     var t_end = 0.0;
-    for (var i = 0u; i < globals.counts.x; i++) {
-        let s = globals.slots[i];
-        if (s.holes.z == STYLE_FACETED) {
-            continue;
-        }
+    @if(SINGLE_SMOKE) {
+        // This dispatch's smoke, the only one any of its rays can meet.
+        let s = globals.slots[view.params.z];
         let hit = ray_aabb(ro, inv_rd, s.bounds_min.xyz, s.bounds_max.xyz);
         let a = max(hit.x, 0.0);
         let b = min(hit.y, t_scene);
         if (b > a) {
-            t0s[count] = a;
-            t1s[count] = b;
-            ids[count] = i;
-            count += 1u;
-            t_begin = min(t_begin, a);
-            t_end = max(t_end, b);
+            count = 1u;
+            t_begin = a;
+            t_end = b;
+        }
+    }
+    @else {
+        for (var i = 0u; i < globals.counts.x; i++) {
+            let s = globals.slots[i];
+            if (s.holes.z == STYLE_FACETED) {
+                continue;
+            }
+            let hit = ray_aabb(ro, inv_rd, s.bounds_min.xyz, s.bounds_max.xyz);
+            let a = max(hit.x, 0.0);
+            let b = min(hit.y, t_scene);
+            if (b > a) {
+                t0s[count] = a;
+                t1s[count] = b;
+                ids[count] = i;
+                count += 1u;
+                t_begin = min(t_begin, a);
+                t_end = max(t_end, b);
+            }
         }
     }
     if (count == 0u) {
@@ -365,11 +398,15 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Half the stretch the last jump stepped over, for the sample it lands on.
     var skipped = 0.0;
 
-    if (count == 1u) {
+    // With SINGLE_SMOKE every ray that gets here meets exactly one smoke.
+    @if(SINGLE_SMOKE) let one = true;
+    @else let one = count == 1u;
+    if (one) {
         // Fast path: one smoke along this ray, from where it enters the box
         // the smoke occupies at this tick to where it leaves it: a sample
         // outside reads nothing.
-        let slot = globals.slots[ids[0]];
+        @if(SINGLE_SMOKE) let slot = globals.slots[view.params.z];
+        @else let slot = globals.slots[ids[0]];
         let drawn = ray_aabb(ro, inv_rd, slot.drawn_min.xyz, slot.drawn_max.xyz);
         let t_stop = min(drawn.y, t_end);
         var k = seq_first(seq, max(drawn.x, t_begin));
@@ -417,10 +454,11 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
             t += dt;
         }
     } else {
-        // Overlapping smokes: sum every smoke whose interval contains t.
-        var k = seq_first(seq, t_begin);
-        var t = seq_t(seq, k);
-        loop {
+        // Overlapping smokes: sum every smoke whose interval contains t
+        // (never with SINGLE_SMOKE).
+        @if(!SINGLE_SMOKE) var k = seq_first(seq, t_begin);
+        @if(!SINGLE_SMOKE) var t = seq_t(seq, k);
+        @if(!SINGLE_SMOKE) loop {
             if (t >= t_end || transmittance < OPAQUE_BELOW || steps >= max_steps) {
                 break;
             }

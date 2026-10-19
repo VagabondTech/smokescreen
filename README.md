@@ -111,13 +111,13 @@ Pick a default with `SmokeSettings::style`, or per smoke with `Smoke::with_style
 |---|---|---|---|
 | Look | soft, light-scattering | hard facets, merged like metaballs | hard, separate tumbling crystals |
 | Drawn by | raymarching at reduced resolution | sphere tracing a distance field | plain meshes (Bevy's PBR) |
-| GPU cost² | low: 1.2 ms at mid-range, 5.1 ms filling the screen; one dial per camera | about 6× volumetric: 7.3 ms at mid-range, 31 ms filling the screen | about 0.2 ms: a few thousand triangles per cloud |
+| GPU cost² | low: 0.97 ms at mid-range, 3.7 ms filling the screen; one dial per camera | about 8× volumetric: 7.3 ms at mid-range, 31 ms filling the screen | about 0.2 ms: a few thousand triangles per cloud |
 | 250 sight checks through 4 of 32 clouds¹ | 0.04 ms | 0.04 ms, exact or with `FacetRule::Core` | 0.03 ms (any contact blocks), 0.06 ms (0.8 m rule) |
 | Bullets and explosions | tunnels and cleared spheres | hexagonal tunnels, cavities | knock crystals out of the way |
 | Picture against the rule | the same density, but the noise thins some smoke the rule counts, most while it fades; `SmokeSettings::noise_within_rule` (`Capped` or `Filled`) stops that | never shows through what the rule blocks; thin edges drawn solid | exact with `sight_threshold = 0` |
 
 ¹ Fully grown clouds, on an Apple M4; the 2-core 2.1 GHz VM this was built on takes about 3× as long. Halfway through a cloud's fade, when many lines are only partly blocked, they cost more: 3× for volumetric smoke, 0.7 ms for the exact faceted rule, which traces more of them then; see [Performance](#performance). `cargo bench -p smokescreen` measures it on your CPU.
-² At the best step of the dial, at 1920×1080 on an Apple M4. Close up, the cheapest step costs a fifth (volumetric) to a quarter (faceted) of that. See [Performance](#performance).
+² At the best step of the dial, at 1920×1080 on an Apple M4. Close up, the cheapest step costs a quarter (faceted) to under a third (volumetric) of that. See [Performance](#performance).
 
 How each look works, and why faceted costs more than volumetric despite its hard edges, is in [docs/design.md](https://github.com/VagabondTech/smokescreen/blob/main/docs/design.md).
 
@@ -227,11 +227,11 @@ Halfway through the fade the clouds are thin, so many lines never reach the thre
 
 | The smoke | Volumetric | Faceted | Crystal |
 |---|---|---|---|
-| far away (27 m) | 0.48 → 0.24 ms | 2.9 → 1.2 ms | 0.05 ms |
-| mid-range (14 m) | 1.2 → 0.45 ms | 7.3 → 3.4 ms | 0.13 ms |
-| close, covering two-thirds of the screen | 5.1 → 1.1 ms | 31 → 7.9 ms | 0.2 ms |
+| far away (27 m) | 0.48 → 0.26 ms | 2.9 → 1.2 ms | 0.05 ms |
+| mid-range (14 m) | 0.97 → 0.48 ms | 7.3 → 3.4 ms | 0.13 ms |
+| close, covering two-thirds of the screen | 3.7 → 1.0 ms | 31 → 7.9 ms | 0.2 ms |
 
-These come from the demo's tier sweep (`SMOKE_DEMO_SCRIPT=tiers`): frame time with the smoke minus the same view without, every frame waiting for the GPU, the median of five runs. (Metal's GPU timestamp queries lose the device, so the sweep times whole frames on macOS; with GPU timestamps, on Vulkan or DX12, it and the demo's HUD report each pass's GPU time.) The dial is per camera (`SmokeCamera::quality`, or `SmokeCamera::budget(ms)` to fit a GPU time budget); [docs/design.md](https://github.com/VagabondTech/smokescreen/blob/main/docs/design.md#the-performance-dial) has every step. Crystal smoke is ordinary geometry, with no dial.
+These come from the demo's tier sweep (`SMOKE_DEMO_SCRIPT=tiers`): frame time with the smoke minus the same view without, every frame waiting for the GPU, the median of five runs (six for volumetric smoke). (Metal's GPU timestamp queries lose the device, so the sweep times whole frames on macOS; with GPU timestamps, on Vulkan or DX12, it and the demo's HUD report each pass's GPU time.) The dial is per camera (`SmokeCamera::quality`, or `SmokeCamera::budget(ms)` to fit a GPU time budget); [docs/design.md](https://github.com/VagabondTech/smokescreen/blob/main/docs/design.md#the-performance-dial) has every step. Crystal smoke is ordinary geometry, with no dial.
 
 ## Tuning
 

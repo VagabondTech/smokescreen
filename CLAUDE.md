@@ -217,9 +217,21 @@ cargo run --example presets                 # every preset and look; also minima
   cost 9–14 % close up at the top dial steps even when it limited nothing,
   so `SmokeSettings::noise_within_rule`'s modes are compiled in only when
   chosen (`NOISE_CAPPED`, `NOISE_FILLED`): six march pipelines, three
-  modes with and without MSAA. Going back over what an empty-space jump
-  skipped, to draw a cloud's edge exactly, cost 12–17 % close up for no
-  visible change with the noise on.
+  modes with and without MSAA, plus the single-smoke kernels below. Going
+  back over what an empty-space jump skipped, to draw a cloud's edge
+  exactly, cost 12–17 % close up for no visible change with the noise on.
+- The march is short of registers rather than arithmetic on the M4. One
+  dispatch per smoke with a kernel compiled for one smoke (`SINGLE_SMOKE`:
+  no per-ray interval arrays, the slot in `view.params.z`, so its data is
+  the same for the whole dispatch) made the best step 27–32 % cheaper
+  close up; compiling out the unused point-light code (`NO_POINT_LIGHTS`)
+  was worth 8 % once the arrays were gone and nothing before. Taking a
+  third of the sample loop's instructions out (constants folded per smoke,
+  coordinates advanced along the ray) made it 6–7 % slower, with the slot
+  uniform or not. `render.rs` picks per camera and frame (`apart`,
+  `reaches`); smokes whose screen rectangles come close fall back to the
+  general kernel. The two share the one-smoke path's text through
+  `@if(SINGLE_SMOKE)`: keep it shared, so they draw the same pixels.
 - Crystal puffs are plugin-owned entities (`CrystalPuff`). `sync_crystals`
   runs after transform propagation, so it writes `GlobalTransform` itself.
 - `SmokeObstacle` voxelisation runs on a background task; until the first

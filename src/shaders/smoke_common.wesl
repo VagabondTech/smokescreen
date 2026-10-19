@@ -93,7 +93,7 @@ struct SmokeView {
     march: vec4<f32>,
     // smoke-buffer rectangle to march: min.xy, max.xy (exclusive)
     rect: vec4<u32>,
-    // x: max steps, y: jitter frame
+    // x: max steps, y: jitter frame, z: the slot a SINGLE_SMOKE march reads
     params: vec4<u32>,
     // Faceted. x: coarse divisor, y: max steps, z: shadow steps, w: flags
     // (one of them for the volumetric composite)

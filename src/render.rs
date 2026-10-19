@@ -54,7 +54,7 @@ use bevy::{
 use smokescreen::{CloudShape, Facets, HoleShape, LivePuff};
 
 use crate::{
-    SmokeCamera, SmokeConfig, SmokeSettings,
+    NoiseWithinRule, SmokeCamera, SmokeConfig, SmokeSettings,
     noise::{self, NOISE_SIZE},
     quality::{FacetOcclusion, FacetShadows, SmokeQuality, screen_rect},
 };
@@ -306,7 +306,7 @@ struct GpuView {
     march: Vec4,
     /// Volumetric smoke-buffer rectangle to march: min.xy, max.xy (exclusive).
     rect: UVec4,
-    /// x: max steps, y: jitter frame.
+    /// x: max steps, y: jitter frame, z: the slot a single-smoke march reads.
     params: UVec4,
     /// Faceted. x: coarse divisor, y: max steps, z: shadow steps, w: flags
     /// (one of them for the volumetric composite).
@@ -435,6 +435,51 @@ struct SmokePipelines {
     facet_retrace: [CachedComputePipelineId; 2],
 }
 
+/// The volumetric march's single-smoke kernels (`SINGLE_SMOKE`): one smoke
+/// per dispatch, with or without its point lights, per noise mode and MSAA.
+/// Unlike `SmokePipelines::march`, which the renderer falls back on, they
+/// compile on first use: the noise mode and MSAA in use on the first frame.
+#[derive(Resource, Clone)]
+struct MarchSpecializer {
+    layouts: [BindGroupLayoutDescriptor; 2],
+    shader: Handle<Shader>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct MarchKey {
+    rule: NoiseWithinRule,
+    msaa: bool,
+    /// Whether the point lights are compiled in.
+    lights: bool,
+}
+
+impl SpecializedComputePipeline for MarchSpecializer {
+    type Key = MarchKey;
+
+    fn specialize(&self, key: Self::Key) -> ComputePipelineDescriptor {
+        let mut defs: Vec<ShaderDefVal> = vec!["SINGLE_SMOKE".into()];
+        if key.msaa {
+            defs.push("MULTISAMPLED".into());
+        }
+        match key.rule {
+            NoiseWithinRule::Off => {}
+            NoiseWithinRule::Capped => defs.push("NOISE_CAPPED".into()),
+            NoiseWithinRule::Filled => defs.push("NOISE_FILLED".into()),
+        }
+        if !key.lights {
+            defs.push("NO_POINT_LIGHTS".into());
+        }
+        ComputePipelineDescriptor {
+            label: Some("smoke_march_single".into()),
+            layout: vec![self.layouts[key.msaa as usize].clone()],
+            shader: self.shader.clone(),
+            shader_defs: defs,
+            entry_point: Some("march".into()),
+            ..default()
+        }
+    }
+}
+
 /// Fullscreen pipelines blended over the main texture: the volumetric
 /// composite, the full-resolution faceted trace, and the faceted composite.
 #[derive(Resource, Clone)]
@@ -539,11 +584,24 @@ impl SpecializedRenderPipeline for OverlaySpecializer {
 /// Volumetric passes of one camera.
 struct VolumetricView {
     texture: CachedTexture,
-    march_pipeline: CachedComputePipelineId,
+    /// One march over every smoke's rectangle that adds up the smokes a ray
+    /// crosses, or one single-smoke march per smoke.
+    marches: Vec<MarchDispatch>,
     composite_pipeline: CachedRenderPipelineId,
-    dispatch: UVec2,
-    /// Composite scissor in render-target pixels: x, y, width, height.
-    scissor: UVec4,
+    /// Composite scissors in render-target pixels: x, y, width, height. One
+    /// per march.
+    scissors: Vec<UVec4>,
+}
+
+struct MarchDispatch {
+    pipeline: CachedComputePipelineId,
+    /// Smoke-buffer rectangle to march: min.xy, max.xy (exclusive).
+    rect: UVec4,
+    /// The slot a single-smoke march reads; none for the march over every
+    /// smoke, which reads the camera's view uniforms as they are.
+    slot: Option<u32>,
+    /// This march's view uniforms: the camera's, with its rectangle and slot.
+    uniform_offset: u32,
 }
 
 /// Faceted passes of one camera.
@@ -616,6 +674,7 @@ pub(crate) fn build(app: &mut App, config: SmokeConfig, uploads: SmokeUploads) {
         .init_resource::<FacetWork>()
         .init_gpu_resource::<SmokeViewUniforms>()
         .init_gpu_resource::<SpecializedRenderPipelines<OverlaySpecializer>>()
+        .init_gpu_resource::<SpecializedComputePipelines<MarchSpecializer>>()
         .add_systems(RenderStartup, (init_smoke_gpu, init_smoke_pipelines))
         .add_systems(ExtractSchedule, extract_uploads)
         .add_systems(
@@ -1006,6 +1065,10 @@ fn init_smoke_pipelines(mut commands: Commands, asset_server: Res<AssetServer>, 
         "retrace",
     );
 
+    commands.insert_resource(MarchSpecializer {
+        layouts: march_layouts.clone(),
+        shader: march_shader.clone(),
+    });
     commands.insert_resource(SmokePipelines {
         bake_density_layout,
         bake_light_layout,
@@ -1285,6 +1348,25 @@ fn cached_texture(
     )
 }
 
+/// Whether no two of these screen rectangles (`None` for one out of view)
+/// come within `gap` pixels of each other.
+fn apart(rects: &[Option<(Vec2, Vec2)>], gap: f32) -> bool {
+    let rects: Vec<_> = rects.iter().flatten().collect();
+    let near = |a0: f32, a1: f32, b0: f32, b1: f32| a0 < b1 + gap && b0 < a1 + gap;
+    rects.iter().enumerate().all(|(i, a)| {
+        rects[i + 1..]
+            .iter()
+            .all(|b| !(near(a.0.x, a.1.x, b.0.x, b.1.x) && near(a.0.y, a.1.y, b.0.y, b.1.y)))
+    })
+}
+
+/// Whether a point light can light anything in a box: the march adds a
+/// light's share only within its range (here with a centimetre to spare).
+fn reaches(light: &FrameLight, min: Vec3, max: Vec3) -> bool {
+    let range = light.range + 0.01;
+    light.position.clamp(min, max).distance_squared(light.position) < range * range
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn prepare_smoke_views(
     mut commands: Commands,
@@ -1304,6 +1386,8 @@ fn prepare_smoke_views(
     pipelines: Option<Res<SmokePipelines>>,
     specializer: Option<Res<OverlaySpecializer>>,
     mut specialized: ResMut<SpecializedRenderPipelines<OverlaySpecializer>>,
+    march_specializer: Option<Res<MarchSpecializer>>,
+    mut march_specialized: ResMut<SpecializedComputePipelines<MarchSpecializer>>,
     pipeline_cache: Res<PipelineCache>,
     mut work: ResMut<FacetWork>,
 ) {
@@ -1313,6 +1397,23 @@ fn prepare_smoke_views(
         let prepared = (|| {
             let pipelines = pipelines.as_ref()?;
             let specializer = specializer.as_ref()?;
+            let msaa_on = msaa.samples() > 1;
+            // The single-smoke kernels for this camera's noise mode and MSAA,
+            // queued on the first frame (later calls look them up).
+            let rule = frame.settings.noise_within_rule;
+            let single_kernel = |march_specialized: &mut SpecializedComputePipelines<MarchSpecializer>, lights| {
+                let spec = march_specializer.as_deref()?;
+                let key = MarchKey {
+                    rule,
+                    msaa: msaa_on,
+                    lights,
+                };
+                Some(march_specialized.specialize(&pipeline_cache, spec, key))
+            };
+            let single_kernels = [
+                single_kernel(&mut march_specialized, false),
+                single_kernel(&mut march_specialized, true),
+            ];
             if frame.slots.is_empty() {
                 return None;
             }
@@ -1354,7 +1455,6 @@ fn prepare_smoke_views(
             if vol_rect.is_none() && facet_rect.is_none() {
                 return None;
             }
-            let msaa_on = msaa.samples() > 1;
             let scissor = |(lo, hi): (Vec2, Vec2)| {
                 let (lo, hi) = (lo.as_uvec2(), hi.as_uvec2());
                 UVec4::new(viewport.x + lo.x, viewport.y + lo.y, hi.x - lo.x, hi.y - lo.y)
@@ -1363,17 +1463,79 @@ fn prepare_smoke_views(
             // Volumetric.
             let vol_divisor = vol_q.resolution.divisor();
             let smoke_size = (size.as_vec2() / vol_divisor).ceil().as_uvec2().max(UVec2::ONE);
-            let mut march_rect = UVec4::ZERO;
-            let volumetric = vol_rect.map(|rect| {
-                // March a one-texel margin around the composite area so the
-                // bilinear footprint at the edges is always freshly written.
+            // March a one-texel margin around a composite area so the bilinear
+            // footprint at the edges is always freshly written.
+            let march_rect = |rect: (Vec2, Vec2)| {
                 let (lo, hi) = (rect.0.as_uvec2(), rect.1.as_uvec2());
                 let march_min = (lo.as_vec2() / vol_divisor)
                     .floor()
                     .as_uvec2()
                     .saturating_sub(UVec2::ONE);
                 let march_max = ((hi.as_vec2() / vol_divisor).ceil().as_uvec2() + UVec2::ONE).min(smoke_size);
-                march_rect = UVec4::new(march_min.x, march_min.y, march_max.x, march_max.y);
+                UVec4::new(march_min.x, march_min.y, march_max.x, march_max.y)
+            };
+            // Each smoke on its own, with its slot in a uniform, where no ray
+            // can meet two smokes' boxes: a ray then takes the march's
+            // one-smoke path either way, so the picture is the same, and the
+            // single-smoke kernel needs fewer registers. The smokes'
+            // rectangles stay three smoke-buffer texels and two pixels apart,
+            // so no march, margin included, reaches into another smoke's
+            // rectangle or writes another's texels. Elsewhere, and until the
+            // kernels have compiled, one march adds up the smokes a ray crosses.
+            let volumetric_slots = frame
+                .slots
+                .iter()
+                .enumerate()
+                .take(MAX_SLOTS)
+                .filter(|(_, s)| s.facet.is_none());
+            let box_rect = |min, max| screen_rect(clip_from_internal, camera_pos, near, size.as_vec2(), [(min, max)]);
+            let bounds: Vec<_> = volumetric_slots
+                .clone()
+                .map(|(_, s)| box_rect(s.bounds_min, s.bounds_max))
+                .collect();
+            let lights = &frame.lights[..frame.lights.len().min(MAX_LIGHTS)];
+            let singles: Option<Vec<_>> = apart(&bounds, 3.0 * vol_divisor + 2.0)
+                .then(|| {
+                    volumetric_slots
+                        .filter_map(|(slot, s)| {
+                            let rect = box_rect(s.drawn_min, s.drawn_max)?;
+                            let lit = lights.iter().any(|l| reaches(l, s.bounds_min, s.bounds_max));
+                            Some(single_kernels[lit as usize].map(|kernel| (kernel, rect, slot as u32)))
+                        })
+                        .collect::<Option<Vec<_>>>()
+                })
+                .flatten()
+                .filter(|marches| {
+                    !marches.is_empty()
+                        && marches
+                            .iter()
+                            .all(|&(kernel, ..)| pipeline_cache.get_compute_pipeline(kernel).is_some())
+                });
+            let union_rect = vol_rect.map_or(UVec4::ZERO, march_rect);
+            let mut volumetric = vol_rect.map(|rect| {
+                let (marches, scissors) = match singles {
+                    Some(singles) => singles
+                        .into_iter()
+                        .map(|(pipeline, rect, slot)| {
+                            let march = MarchDispatch {
+                                pipeline,
+                                rect: march_rect(rect),
+                                slot: Some(slot),
+                                uniform_offset: 0,
+                            };
+                            (march, scissor(rect))
+                        })
+                        .unzip(),
+                    None => {
+                        let march = MarchDispatch {
+                            pipeline: pipelines.march[rule as usize][msaa_on as usize],
+                            rect: union_rect,
+                            slot: None,
+                            uniform_offset: 0,
+                        };
+                        (vec![march], vec![scissor(rect)])
+                    }
+                };
                 VolumetricView {
                     texture: cached_texture(
                         &mut texture_cache,
@@ -1382,7 +1544,7 @@ fn prepare_smoke_views(
                         smoke_size,
                         TextureFormat::Rgba16Float,
                     ),
-                    march_pipeline: pipelines.march[frame.settings.noise_within_rule as usize][msaa_on as usize],
+                    marches,
                     composite_pipeline: specialized.specialize(
                         &pipeline_cache,
                         specializer,
@@ -1394,8 +1556,7 @@ fn prepare_smoke_views(
                             format: view.target_format,
                         },
                     ),
-                    dispatch: (march_max - march_min + MARCH_WORKGROUP - 1) / MARCH_WORKGROUP,
-                    scissor: scissor(rect),
+                    scissors,
                 }
             });
 
@@ -1497,7 +1658,7 @@ fn prepare_smoke_views(
             if frame.settings.debug_transmittance {
                 flags |= FLAG_DEBUG_TRANSMITTANCE;
             }
-            let uniform_offset = uniforms.0.push(&GpuView {
+            let view_uniforms = GpuView {
                 world_from_clip: internal_from_world * world_from_view * view.clip_from_view.inverse(),
                 camera_position: camera_pos.extend(near),
                 target_size: Vec4::new(size.x as f32, size.y as f32, smoke_size.x as f32, smoke_size.y as f32),
@@ -1508,7 +1669,7 @@ fn prepare_smoke_views(
                     vol_q.step_growth.max(0.0),
                     vol_divisor,
                 ),
-                rect: march_rect,
+                rect: union_rect,
                 params: UVec4::new(
                     vol_q.max_steps.max(1),
                     if settings.temporal_jitter { frame.frame } else { 0 },
@@ -1524,7 +1685,22 @@ fn prepare_smoke_views(
                 ),
                 facet_rect: coarse_rect,
                 facet_px,
-            });
+            };
+            let uniform_offset = uniforms.0.push(&view_uniforms);
+            // A single-smoke march reads its own rectangle and slot.
+            for march in volumetric.iter_mut().flat_map(|v| &mut v.marches) {
+                march.uniform_offset = match march.slot {
+                    Some(slot) => uniforms.0.push(&GpuView {
+                        rect: march.rect,
+                        params: UVec4 {
+                            z: slot,
+                            ..view_uniforms.params
+                        },
+                        ..view_uniforms
+                    }),
+                    None => uniform_offset,
+                };
+            }
 
             Some(ViewSmoke {
                 uniform_offset,
@@ -1832,10 +2008,12 @@ fn smoke_pass(
 
     // Volumetric: raymarch at reduced resolution, then composite.
     if let Some(vol) = &smoke.volumetric
-        && let (Some(march_pipeline), Some(composite_pipeline)) = (
-            pipeline_cache.get_compute_pipeline(vol.march_pipeline),
-            pipeline_cache.get_render_pipeline(vol.composite_pipeline),
-        )
+        && let Some(march_pipelines) = vol
+            .marches
+            .iter()
+            .map(|m| pipeline_cache.get_compute_pipeline(m.pipeline))
+            .collect::<Option<Vec<_>>>()
+        && let Some(composite_pipeline) = pipeline_cache.get_render_pipeline(vol.composite_pipeline)
     {
         let march_group = device.create_bind_group(
             "smoke_march",
@@ -1864,21 +2042,79 @@ fn smoke_pass(
                 label: Some("smoke_march"),
                 timestamp_writes: None,
             });
-            pass.set_pipeline(march_pipeline);
-            pass.set_bind_group(0, &march_group, &offsets);
-            pass.dispatch_workgroups(vol.dispatch.x.max(1), vol.dispatch.y.max(1), 1);
+            for (march, pipeline) in vol.marches.iter().zip(march_pipelines) {
+                let r = march.rect;
+                let dispatch = (UVec2::new(r.z, r.w) - UVec2::new(r.x, r.y) + MARCH_WORKGROUP - 1) / MARCH_WORKGROUP;
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, &march_group, &[march.uniform_offset]);
+                pass.dispatch_workgroups(dispatch.x.max(1), dispatch.y.max(1), 1);
+            }
         }
         span.end(ctx.command_encoder());
 
         let span = diagnostics.time_span(ctx.command_encoder(), "smoke_composite");
         {
             let mut pass = overlay_pass!(ctx, target, "smoke_composite");
-            let s = vol.scissor;
-            pass.set_scissor_rect(s.x, s.y, s.z.max(1), s.w.max(1));
             pass.set_pipeline(composite_pipeline);
             pass.set_bind_group(0, &composite_group, &offsets);
-            pass.draw(0..3, 0..1);
+            for s in &vol.scissors {
+                pass.set_scissor_rect(s.x, s.y, s.z.max(1), s.w.max(1));
+                pass.draw(0..3, 0..1);
+            }
         }
         span.end(ctx.command_encoder());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `apart` for rectangles given as [x0, y0, x1, y1].
+    fn apart_of(rects: &[[f32; 4]], gap: f32) -> bool {
+        let rects: Vec<_> = rects
+            .iter()
+            .map(|r| Some((Vec2::new(r[0], r[1]), Vec2::new(r[2], r[3]))))
+            .collect();
+        apart(&rects, gap)
+    }
+
+    #[test]
+    fn apart_needs_the_gap_on_one_axis() {
+        let a = [0.0, 0.0, 100.0, 100.0];
+        // Side by side: apart only once the gap between them reaches `gap`.
+        assert!(apart_of(&[a, [110.0, 0.0, 200.0, 100.0]], 10.0));
+        assert!(!apart_of(&[a, [109.0, 0.0, 200.0, 100.0]], 10.0));
+        // Overlapping, or one inside the other.
+        assert!(!apart_of(&[a, [50.0, 50.0, 150.0, 150.0]], 0.0));
+        assert!(!apart_of(&[a, [40.0, 40.0, 60.0, 60.0]], 0.0));
+        // Diagonal neighbours are apart if either axis has the gap.
+        assert!(apart_of(&[a, [105.0, 120.0, 200.0, 200.0]], 10.0));
+        // One rectangle, or none: apart. Any close pair spoils it.
+        assert!(apart_of(&[[0.0, 0.0, 1920.0, 1080.0]], 10.0));
+        assert!(apart_of(&[], 10.0));
+        assert!(!apart_of(
+            &[a, [500.0, 0.0, 600.0, 100.0], [595.0, 50.0, 700.0, 150.0]],
+            10.0
+        ));
+        // Out of view: ignored.
+        let b = Some((Vec2::new(0.0, 200.0), Vec2::new(100.0, 300.0)));
+        assert!(apart(&[Some((Vec2::ZERO, Vec2::splat(100.0))), None, b], 10.0));
+    }
+
+    #[test]
+    fn reaches_within_range_of_the_box() {
+        let light = |x: f32, range: f32| FrameLight {
+            position: Vec3::new(x, 0.5, 0.5),
+            range,
+            color: Vec3::ONE,
+        };
+        let (min, max) = (Vec3::ZERO, Vec3::ONE);
+        // Inside the box, or near enough to its face.
+        assert!(reaches(&light(0.5, 0.1), min, max));
+        assert!(reaches(&light(3.0, 2.5), min, max));
+        // Farther from the face than the range (and the centimetre spare).
+        assert!(!reaches(&light(3.0, 1.95), min, max));
+        assert!(!reaches(&light(-2.0, 1.95), min, max));
     }
 }
