@@ -403,18 +403,8 @@ impl CoreField<'_> {
     /// `acc`, a bin cell at a time. Stops (and returns `true`) as soon as
     /// `stop(*acc)` holds.
     pub fn amount(&self, ro: Vec3, rd: Vec3, t0: f32, t1: f32, acc: &mut f32, stop: &dyn Fn(f32) -> bool) -> bool {
-        // Where the ray is inside a hole, sorted and merged.
-        let mut holes = [(0.0_f32, 0.0_f32); HOLE_BUFFER];
-        let mut n = 0;
-        for h in self.holes.iter().take(HOLE_BUFFER) {
-            if let Some(r) = hole_bound(h)
-                && let Some(span) = capsule_interval(h.a, h.b, r, ro, rd)
-            {
-                holes[n] = span;
-                n += 1;
-            }
-        }
-        let holes = merge_sorted(&mut holes[..n]);
+        let mut spans = [(0.0_f32, 0.0_f32); HOLE_BUFFER];
+        let holes = hole_spans(self.holes, ro, rd, &mut spans);
         let mut iv = Intervals::new(holes);
         walk_bins(self.bins, ro, rd, t0, t1, |list, enter, exit| {
             iv.clear();
@@ -474,18 +464,8 @@ impl ChordBounds<'_> {
     /// upper bound) as soon as `enough(lower)` holds for the lower bound.
     /// Never allocates.
     pub fn amount_until(&self, ro: Vec3, rd: Vec3, t0: f32, t1: f32, enough: &dyn Fn(f32) -> bool) -> Bounds {
-        // Where the ray is inside a hole's capsule, sorted and merged.
-        let mut holes = [(0.0_f32, 0.0_f32); HOLE_BUFFER];
-        let mut n = 0;
-        for h in self.holes.iter().take(HOLE_BUFFER) {
-            if let Some(r) = hole_bound(h)
-                && let Some(span) = capsule_interval(h.a, h.b, r, ro, rd)
-            {
-                holes[n] = span;
-                n += 1;
-            }
-        }
-        let holes = merge_sorted(&mut holes[..n]);
+        let mut spans = [(0.0_f32, 0.0_f32); HOLE_BUFFER];
+        let holes = hole_spans(self.holes, ro, rd, &mut spans);
         // Each puff's chord is one interval along the whole ray (puffs are
         // convex), found the first time a cell lists the puff; the unions
         // are taken over the segment, not per cell. The grown chords are
@@ -572,6 +552,68 @@ fn hole_bound(h: &HoleShape) -> Option<f32> {
     Some(if h.a == h.b { r * 1.01 } else { r * 1.16 })
 }
 
+/// Where the ray `ro + rd·t` (`rd` a unit vector) is inside a capsule
+/// around a hole (see [`hole_bound`]), from every hole, sorted and merged
+/// in `buf`. When more separate stretches cross the ray than `buf` holds,
+/// the two nearest are joined, so the gap between them counts as hole too:
+/// the rules that subtract these count less cloud for it, never more.
+#[inline(always)]
+fn hole_spans<'b>(holes: &[HoleShape], ro: Vec3, rd: Vec3, buf: &'b mut [(f32, f32); HOLE_BUFFER]) -> &'b [(f32, f32)] {
+    let mut n = 0;
+    for (k, h) in holes.iter().enumerate() {
+        if let Some(r) = hole_bound(h)
+            && let Some(span) = capsule_interval(h.a, h.b, r, ro, rd)
+        {
+            if n == HOLE_BUFFER {
+                return more_hole_spans(&holes[k..], ro, rd, buf);
+            }
+            buf[n] = span;
+            n += 1;
+        }
+    }
+    merge_sorted(&mut buf[..n])
+}
+
+/// [`hole_spans`] once `buf` is full: the spans of `holes` too, making room
+/// for each by merging the buffer and, if its spans are all apart, joining
+/// the two nearest (the first such pair, on a tie). Out of line and called
+/// from outside the loop: handled inside it, inline or by a call, it made
+/// the core rule's checks 9–11 % slower halfway through a fade on an Apple
+/// M4, though it never ran.
+#[cold]
+#[inline(never)]
+fn more_hole_spans<'b>(
+    holes: &[HoleShape],
+    ro: Vec3,
+    rd: Vec3,
+    buf: &'b mut [(f32, f32); HOLE_BUFFER],
+) -> &'b [(f32, f32)] {
+    let mut n = HOLE_BUFFER;
+    for h in holes {
+        let Some(span) = hole_bound(h).and_then(|r| capsule_interval(h.a, h.b, r, ro, rd)) else {
+            continue;
+        };
+        if n == HOLE_BUFFER {
+            n = merge_sorted(&mut buf[..]).len();
+            if n == HOLE_BUFFER {
+                // Sorted and disjoint: join the pair with the smallest gap.
+                let mut k = 1;
+                for j in 2..n {
+                    if buf[j].0 - buf[j - 1].1 < buf[k].0 - buf[k - 1].1 {
+                        k = j;
+                    }
+                }
+                buf[k - 1].1 = buf[k].1;
+                buf.copy_within(k + 1..n, k);
+                n -= 1;
+            }
+        }
+        buf[n] = span;
+        n += 1;
+    }
+    merge_sorted(&mut buf[..n])
+}
+
 /// Sort intervals by start and merge overlaps; returns the merged prefix.
 fn merge_sorted(v: &mut [(f32, f32)]) -> &[(f32, f32)] {
     for i in 1..v.len() {
@@ -656,6 +698,53 @@ mod tests {
         // Along the axis: from cap to cap.
         let along = capsule_interval(a, b, 0.3, a - (b - a).normalize() * 2.0, (b - a).normalize()).unwrap();
         assert!((along.1 - along.0 - ((b - a).length() + 0.6)).abs() < 1e-4, "{along:?}");
+    }
+
+    #[test]
+    fn hole_spans_cover_every_hole() {
+        // Small blasts along the ray, unevenly spaced: more separate spans
+        // than the buffer holds.
+        let holes: Vec<HoleShape> = (0..41)
+            .map(|i| {
+                let c = Vec3::new(i as f32 * 0.25 + if i % 3 == 0 { 0.05 } else { 0.0 }, 0.0, 0.0);
+                HoleShape {
+                    a: c,
+                    b: c,
+                    radius: 0.08,
+                    strength: 1.0,
+                }
+            })
+            .collect();
+        let (ro, rd) = (Vec3::new(-1.0, 0.0, 0.0), Vec3::X);
+        let truth: Vec<(f32, f32)> = holes
+            .iter()
+            .filter_map(|h| hole_bound(h).and_then(|r| capsule_interval(h.a, h.b, r, ro, rd)))
+            .collect();
+        assert_eq!(truth.len(), 41);
+        let mut buf = [(0.0, 0.0); HOLE_BUFFER];
+        let spans = hole_spans(&holes, ro, rd, &mut buf);
+        assert_eq!(spans.len(), HOLE_BUFFER);
+        assert!(
+            spans.windows(2).all(|w| w[0].1 < w[1].0),
+            "not sorted and disjoint: {spans:?}"
+        );
+        // Every hole is covered, and every span starts and ends where a
+        // hole does: joining only adds the gaps between them.
+        for t in &truth {
+            assert!(spans.iter().any(|s| s.0 <= t.0 && t.1 <= s.1), "{t:?} is left out");
+        }
+        for s in spans {
+            assert!(
+                truth.iter().any(|t| t.0 == s.0) && truth.iter().any(|t| t.1 == s.1),
+                "{s:?}"
+            );
+        }
+        // With room for them all, the spans are the holes themselves.
+        let mut buf = [(0.0, 0.0); HOLE_BUFFER];
+        assert_eq!(
+            hole_spans(&holes[..HOLE_BUFFER], ro, rd, &mut buf),
+            &truth[..HOLE_BUFFER]
+        );
     }
 
     #[test]

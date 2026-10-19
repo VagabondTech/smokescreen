@@ -57,6 +57,21 @@ are not in lockstep.
   again and now covers both settings; `EXPECTED_MESHES` did not.
   `CloudView` gained a private field, so only a `View` makes one. The
   demo's `SMOKE_DEMO_VOLUME_STEPS=half` samples every half voxel.
+- **results** `FacetRule::Core` counts every hole. With
+  `Tuning::max_holes_per_cloud` above 32 it read only a cloud's first 32
+  holes, which are its oldest, so the newest tunnels and blasts cleared
+  nothing under the core rule: it could block a line that the picture and
+  the exact rule showed open. In a test, a line along a cloud's 33rd hole
+  passed through 4.86 m of cloud instead of none. Now every hole counts.
+  Where more than 32 separate stretches of hole cross one line, the two
+  nearest are joined and the smoke between them counts as cleared too, so
+  the rule still never counts more than the picture draws. With 32 holes
+  or fewer per cloud (the default is 16) results are the same to the bit:
+  the determinism hashes are unchanged. The exact rule's chord bounds
+  count every hole too, so `blocks_sight` no longer traces every line
+  through a faceted cloud with more than 32 holes. Checks cost the same:
+  on an Apple M4 every figure of the bench is within its run-to-run noise
+  of before.
 - Volumetric checks skip the samples that read nothing. In place of the
   flags that marked the cells of eight voxels next to a wall, each cloud
   keeps a byte per cell: 0 next to a wall, else the smallest fill-distance
