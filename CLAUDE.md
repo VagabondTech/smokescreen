@@ -175,10 +175,15 @@ cargo run --example presets                 # every preset and look; also minima
 
 - The smoke composite runs in Bevy's `Core3d` schedule between
   `main_opaque_pass_3d` (and the transmissive pass) and
-  `main_transparent_pass_3d`, drawing into `ViewTarget::get_color_attachment()`
-  so it works with MSAA; the overlay pipelines are specialised on the sample
-  count. Bevy's render internals change every release: expect this file to
-  need work on each Bevy upgrade.
+  `main_transparent_pass_3d`. With MSAA, the overlay passes draw into
+  `ViewTarget::get_color_attachment()` (the multisampled texture) when the
+  camera's `Transparent3d` phase has items, so Bevy's transparent pass
+  continues from it. Otherwise they draw into the resolved image
+  (`get_unsampled_color_attachment()`), which skips loading, storing and
+  resolving the multisampled target: about 0.2 ms a frame at 1080p on an
+  Apple M4. So each overlay pipeline exists for both sample counts
+  (`OverlayPipelines`). Bevy's render internals change every release:
+  expect this file to need work on each Bevy upgrade.
 - `gather_point_lights` reads `ViewVisibility`, which Bevy clears in
   `VisibilitySystems::VisibilityPropagate` and sets again in
   `CheckVisibility`: keep it ordered after `CheckVisibility`. Read before
