@@ -5,7 +5,8 @@
 // full-resolution texel. For every full-resolution pixel we take the 2x2
 // smoke texels around it and weight them by bilinear position and by how
 // close their representative depth is to this pixel's depth, so smoke doesn't
-// bleed across the silhouettes of objects in front of it.
+// bleed across the silhouettes of objects in front of it. At full resolution
+// a pixel's own texel is all it needs.
 
 import package::shaders::smoke_common::{SmokeView, FLAG_DEBUG_TRANSMITTANCE};
 
@@ -47,6 +48,17 @@ fn fragment(in: FullscreenOutput) -> @location(0) vec4<f32> {
     let base = vec2<i32>(floor(u));
     let f = u - vec2<f32>(base);
 
+    // At full resolution every pixel has a smoke texel of its own, marched
+    // against its own depth: the bilinear weights of its neighbours are all
+    // but zero, so take it alone and leave the depth buffer unread.
+    if (divisor == 1.0) {
+        let smoke = textureLoad(smoke_texture, clamp(base, vec2<i32>(0), low_max), 0);
+        if (smoke.a > 0.999) {
+            discard;
+        }
+        return finish(smoke);
+    }
+
     // Fetch the 2x2 smoke texels first: most pixels in the scissor rect see
     // no smoke at all and can leave before touching the depth buffer.
     var texels: array<vec4<f32>, 4>;
@@ -81,6 +93,11 @@ fn fragment(in: FullscreenOutput) -> @location(0) vec4<f32> {
     if (smoke.a > 0.999) {
         discard;
     }
+    return finish(smoke);
+}
+
+// The premultiplied colour and coverage the blender applies.
+fn finish(smoke: vec4<f32>) -> vec4<f32> {
     if ((view.facet.w & FLAG_DEBUG_TRANSMITTANCE) != 0u) {
         // The transmittance itself, opaque (`SmokeSettings::debug_transmittance`).
         return vec4<f32>(1.0, smoke.a, 1.0, 1.0);

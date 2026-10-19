@@ -24,7 +24,7 @@ use bevy::{
     asset::{embedded_asset, load_embedded_asset},
     camera::Camera3d,
     core_pipeline::{
-        core_3d::{main_opaque_pass_3d, main_transparent_pass_3d, prepare_core_3d_depth_textures},
+        core_3d::{Transparent3d, main_opaque_pass_3d, main_transparent_pass_3d, prepare_core_3d_depth_textures},
         schedule::{Core3d, Core3dSystems, camera_driver},
     },
     pbr::main_transmissive_pass_3d,
@@ -36,6 +36,7 @@ use bevy::{
         diagnostic::RecordDiagnostics,
         extract_component::ExtractComponentPlugin,
         extract_resource::{ExtractResource, ExtractResourcePlugin},
+        render_phase::ViewSortedRenderPhases,
         render_resource::{
             binding_types::{
                 sampler, storage_buffer_read_only_sized, storage_buffer_sized, texture_2d, texture_3d,
@@ -500,12 +501,18 @@ enum OverlayKind {
     FacetComposite,
 }
 
+/// An overlay pipeline for each target it can draw into: the camera's
+/// colour target (the multisampled texture with MSAA), then the resolved
+/// image. Without MSAA the two are the same pipeline.
+type OverlayPipelines = [CachedRenderPipelineId; 2];
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct OverlayKey {
     kind: OverlayKind,
     msaa: bool,
-    /// MSAA samples of the colour target (the pass draws into the
-    /// multisampled texture, which the transparent pass then continues).
+    /// MSAA samples of the colour target: the camera's (the multisampled
+    /// texture, which the transparent pass then continues), or 1 for the
+    /// resolved image when nothing transparent follows.
     samples: u32,
     hdr: bool,
     format: TextureFormat,
@@ -588,7 +595,7 @@ struct VolumetricView {
     /// One march over every smoke's rectangle that adds up the smokes a ray
     /// crosses, or one single-smoke march per smoke.
     marches: Vec<MarchDispatch>,
-    composite_pipeline: CachedRenderPipelineId,
+    composite: OverlayPipelines,
     /// Composite scissors in render-target pixels: x, y, width, height. One
     /// per march.
     scissors: Vec<UVec4>,
@@ -615,7 +622,7 @@ struct FacetView {
 #[allow(clippy::large_enum_variant)]
 enum FacetPasses {
     /// One fragment pass traces every pixel.
-    Full { trace: CachedRenderPipelineId },
+    Full { trace: OverlayPipelines },
     /// Coarse trace, classify, retrace, composite.
     Reduced {
         coarse_texture: CachedTexture,
@@ -623,10 +630,20 @@ enum FacetPasses {
         coarse: CachedComputePipelineId,
         classify: CachedComputePipelineId,
         retrace: CachedComputePipelineId,
-        composite: CachedRenderPipelineId,
+        composite: OverlayPipelines,
         coarse_dispatch: UVec2,
         classify_dispatch: UVec2,
     },
+}
+
+impl FacetPasses {
+    /// The pass that draws onto the camera's target.
+    fn overlay(&self) -> &OverlayPipelines {
+        match self {
+            Self::Full { trace } => trace,
+            Self::Reduced { composite, .. } => composite,
+        }
+    }
 }
 
 /// Per-camera smoke state for this frame. Absent when no smoke is on screen,
@@ -1422,6 +1439,22 @@ fn prepare_smoke_views(
             if view.clip_from_view.w_axis.w == 1.0 {
                 return None;
             }
+            // Each overlay for both of its targets (`OverlayPipelines`).
+            let overlay = |specialized: &mut SpecializedRenderPipelines<OverlaySpecializer>, kind| {
+                [msaa.samples(), 1].map(|samples| {
+                    specialized.specialize(
+                        &pipeline_cache,
+                        specializer,
+                        OverlayKey {
+                            kind,
+                            msaa: msaa_on,
+                            samples,
+                            hdr: camera.hdr,
+                            format: view.target_format,
+                        },
+                    )
+                })
+            };
             let tier = quality.map_or_else(|| crate::quality::tier_from_quality(settings.quality), |q| q.tier);
             let vol_q = settings.volumetric_quality(tier);
             let facet_q = settings.facet_quality(tier);
@@ -1546,17 +1579,7 @@ fn prepare_smoke_views(
                         TextureFormat::Rgba16Float,
                     ),
                     marches,
-                    composite_pipeline: specialized.specialize(
-                        &pipeline_cache,
-                        specializer,
-                        OverlayKey {
-                            kind: OverlayKind::Composite,
-                            msaa: msaa_on,
-                            samples: msaa.samples(),
-                            hdr: camera.hdr,
-                            format: view.target_format,
-                        },
-                    ),
+                    composite: overlay(&mut specialized, OverlayKind::Composite),
                     scissors,
                 }
             });
@@ -1592,22 +1615,9 @@ fn prepare_smoke_views(
             let facets = facet_rect.map(|rect| {
                 let (lo, hi) = (rect.0.as_uvec2(), rect.1.as_uvec2());
                 facet_px = UVec4::new(lo.x, lo.y, hi.x, hi.y);
-                let mut overlay = |kind| {
-                    specialized.specialize(
-                        &pipeline_cache,
-                        specializer,
-                        OverlayKey {
-                            kind,
-                            msaa: msaa_on,
-                            samples: msaa.samples(),
-                            hdr: camera.hdr,
-                            format: view.target_format,
-                        },
-                    )
-                };
                 let passes = if facet_divisor == 1 {
                     FacetPasses::Full {
-                        trace: overlay(OverlayKind::FacetTrace),
+                        trace: overlay(&mut specialized, OverlayKind::FacetTrace),
                     }
                 } else {
                     let coarse_size = (size + facet_divisor - 1) / facet_divisor;
@@ -1635,7 +1645,7 @@ fn prepare_smoke_views(
                         coarse: pipelines.facet_coarse[m],
                         classify: pipelines.facet_classify[m],
                         retrace: pipelines.facet_retrace[m],
-                        composite: overlay(OverlayKind::FacetComposite),
+                        composite: overlay(&mut specialized, OverlayKind::FacetComposite),
                         coarse_dispatch: (cmax - cmin + MARCH_WORKGROUP - 1) / MARCH_WORKGROUP,
                         classify_dispatch: (hi - lo + MARCH_WORKGROUP - 1) / MARCH_WORKGROUP,
                     }
@@ -1814,14 +1824,19 @@ fn bake_smoke(
     state.bake_count = 0;
 }
 
-/// A render pass that blends onto the main texture.
+/// A render pass that blends onto the main texture: the multisampled one
+/// (resolved at the end) when MSAA is on, so the transparent pass that
+/// follows continues from it, or the resolved image (`resolved`) when nothing
+/// transparent follows.
 macro_rules! overlay_pass {
-    ($ctx:expr, $target:expr, $label:expr) => {
+    ($ctx:expr, $target:expr, $resolved:expr, $label:expr) => {
         $ctx.command_encoder().begin_render_pass(&RenderPassDescriptor {
             label: Some($label),
-            // The multisampled texture (resolved at the end) when MSAA is on,
-            // so the transparent pass that follows continues from it.
-            color_attachments: &[Some($target.get_color_attachment())],
+            color_attachments: &[Some(if $resolved {
+                $target.get_unsampled_color_attachment()
+            } else {
+                $target.get_color_attachment()
+            })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
@@ -1833,7 +1848,8 @@ macro_rules! overlay_pass {
 /// Faceted, then volumetric passes for one camera.
 #[allow(clippy::too_many_arguments)]
 fn smoke_pass(
-    view: ViewQuery<(&ViewTarget, &ViewDepthStencilTexture, &ViewSmoke)>,
+    view: ViewQuery<(&ViewTarget, &ViewDepthStencilTexture, &ViewSmoke, &ExtractedView)>,
+    transparent_phases: Res<ViewSortedRenderPhases<Transparent3d>>,
     gpu: Option<Res<SmokeGpu>>,
     pipelines: Option<Res<SmokePipelines>>,
     specializer: Option<Res<OverlaySpecializer>>,
@@ -1845,7 +1861,7 @@ fn smoke_pass(
     let (Some(gpu), Some(pipelines), Some(specializer)) = (gpu, pipelines, specializer) else {
         return;
     };
-    let (target, depth, smoke) = view.into_inner();
+    let (target, depth, smoke, extracted_view) = view.into_inner();
     let (Some(globals), Some(view_binding)) = (gpu.globals.binding(), view_uniforms.0.binding()) else {
         return;
     };
@@ -1857,6 +1873,21 @@ fn smoke_pass(
     let diagnostics = diagnostics.as_deref();
     let msaa = smoke.msaa as usize;
     let offsets = [smoke.uniform_offset];
+    // With MSAA, the overlays draw into the resolved image when nothing
+    // transparent draws after them this frame: Bevy runs its transparent pass
+    // only when something is queued in it, and nothing else reads the
+    // multisampled target again. That skips loading, storing and resolving it
+    // (about 0.2 ms a frame at 1080p on an Apple M4, whatever the smoke's
+    // size). Otherwise, and until the resolved pipelines have compiled, they
+    // draw into the multisampled target as the transparent pass needs.
+    let resolved_ready = |p: &OverlayPipelines| pipeline_cache.get_render_pipeline(p[1]).is_some();
+    let resolved = smoke.msaa
+        && transparent_phases
+            .get(&extracted_view.retained_view_entity)
+            .is_none_or(|phase| phase.items.is_empty())
+        && smoke.facets.as_ref().is_none_or(|f| resolved_ready(f.passes.overlay()))
+        && smoke.volumetric.as_ref().is_none_or(|v| resolved_ready(&v.composite));
+    let to = resolved as usize;
 
     // Faceted: opaque surfaces, drawn first like geometry.
     if let Some(facets) = &smoke.facets {
@@ -1876,7 +1907,7 @@ fn smoke_pass(
         let s = facets.scissor;
         match &facets.passes {
             FacetPasses::Full { trace } => {
-                if let Some(trace_pipeline) = pipeline_cache.get_render_pipeline(*trace) {
+                if let Some(trace_pipeline) = pipeline_cache.get_render_pipeline(trace[to]) {
                     let group = device.create_bind_group(
                         "smoke_facet_trace",
                         &pipeline_cache.get_bind_group_layout(&specializer.trace_layouts[msaa]),
@@ -1884,7 +1915,7 @@ fn smoke_pass(
                     );
                     let span = diagnostics.time_span(ctx.command_encoder(), "smoke_facet_trace");
                     {
-                        let mut pass = overlay_pass!(ctx, target, "smoke_facet_trace");
+                        let mut pass = overlay_pass!(ctx, target, resolved, "smoke_facet_trace");
                         pass.set_scissor_rect(s.x, s.y, s.z.max(1), s.w.max(1));
                         pass.set_pipeline(trace_pipeline);
                         pass.set_bind_group(0, &group, &offsets);
@@ -1913,7 +1944,7 @@ fn smoke_pass(
                     pipeline_cache.get_compute_pipeline(*coarse),
                     pipeline_cache.get_compute_pipeline(*classify),
                     pipeline_cache.get_compute_pipeline(*retrace),
-                    pipeline_cache.get_render_pipeline(*composite),
+                    pipeline_cache.get_render_pipeline(composite[to]),
                     work.buffer.as_ref(),
                 ) {
                     fn with_extra<'a>(
@@ -1995,7 +2026,7 @@ fn smoke_pass(
 
                     let span = diagnostics.time_span(ctx.command_encoder(), "smoke_facet_composite");
                     {
-                        let mut pass = overlay_pass!(ctx, target, "smoke_facet_composite");
+                        let mut pass = overlay_pass!(ctx, target, resolved, "smoke_facet_composite");
                         pass.set_scissor_rect(s.x, s.y, s.z.max(1), s.w.max(1));
                         pass.set_pipeline(composite_pipeline);
                         pass.set_bind_group(0, &composite_group, &offsets);
@@ -2014,7 +2045,7 @@ fn smoke_pass(
             .iter()
             .map(|m| pipeline_cache.get_compute_pipeline(m.pipeline))
             .collect::<Option<Vec<_>>>()
-        && let Some(composite_pipeline) = pipeline_cache.get_render_pipeline(vol.composite_pipeline)
+        && let Some(composite_pipeline) = pipeline_cache.get_render_pipeline(vol.composite[to])
     {
         let march_group = device.create_bind_group(
             "smoke_march",
@@ -2055,7 +2086,7 @@ fn smoke_pass(
 
         let span = diagnostics.time_span(ctx.command_encoder(), "smoke_composite");
         {
-            let mut pass = overlay_pass!(ctx, target, "smoke_composite");
+            let mut pass = overlay_pass!(ctx, target, resolved, "smoke_composite");
             pass.set_pipeline(composite_pipeline);
             pass.set_bind_group(0, &composite_group, &offsets);
             for s in &vol.scissors {
