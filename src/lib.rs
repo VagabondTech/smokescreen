@@ -74,6 +74,7 @@ mod render;
 use std::sync::Arc;
 
 use bevy::{
+    camera::visibility::VisibilitySystems,
     ecs::system::SystemParam,
     light::{DirectionalLight, GlobalAmbientLight, PointLight},
     platform::collections::HashMap,
@@ -151,6 +152,9 @@ pub enum SmokeSystems {
     /// [`SmokeClock::tick`].
     Simulate,
     /// Gather everything the renderer needs and pick each camera's tier.
+    /// Point lights are read after Bevy's
+    /// [`VisibilitySystems::CheckVisibility`], which decides which of them
+    /// can reach a camera's view.
     PrepareRender,
 }
 
@@ -220,6 +224,11 @@ impl Plugin for SmokePlugin {
                         quality::update_smoke_quality,
                     )
                         .chain()
+                        .in_set(SmokeSystems::PrepareRender),
+                    // Reads `ViewVisibility`, which Bevy has cleared until then.
+                    gather_point_lights
+                        .after(build_frame)
+                        .after(VisibilitySystems::CheckVisibility)
                         .in_set(SmokeSystems::PrepareRender),
                 ),
             );
@@ -1063,14 +1072,12 @@ fn build_frame(
     settings: Res<SmokeSettings>,
     config: Res<SmokeConfig>,
     dir_lights: Query<(&DirectionalLight, &GlobalTransform, Has<SmokeSun>)>,
-    point_lights: Query<(&PointLight, &GlobalTransform, &ViewVisibility)>,
     ambient: Option<Res<GlobalAmbientLight>>,
     mut last: Local<Option<(Vec3, u64)>>,
 ) {
     let frame = frame.as_mut();
     frame.slots.clear();
     frame.holes.clear();
-    frame.lights.clear();
     frame.bake.clear();
     frame.facet_puffs.clear();
 
@@ -1243,34 +1250,49 @@ fn build_frame(
     if slots.owners.iter().any(Option::is_none) {
         slots.warned_full = false;
     }
+}
 
-    // Point lights near any smoke, brightest first, in the internal frame.
-    if !frame.slots.is_empty() {
-        let m = units.metres_per_unit;
-        let mut candidates: Vec<FrameLight> = point_lights
-            .iter()
-            .filter(|(light, _, vis)| vis.get() && light.intensity > 0.0)
-            .filter_map(|(light, transform, _)| {
-                let p = units.to_internal(transform.translation());
-                let r = light.range * m;
-                let near_smoke = frame.slots.iter().any(|s| {
-                    let closest = p.clamp(s.bounds_min, s.bounds_max);
-                    closest.distance_squared(p) < r * r
-                });
-                near_smoke.then(|| FrameLight {
-                    position: p,
-                    range: r,
-                    // Lumens to candela, matching Bevy's point lights; Bevy
-                    // measures falloff in world units, so scale it to metres.
-                    color: light.color.to_linear().to_vec3() * light.intensity / (4.0 * core::f32::consts::PI)
-                        * (m * m),
-                })
-            })
-            .collect();
-        candidates.sort_by(|a, b| b.color.max_element().total_cmp(&a.color.max_element()));
-        candidates.truncate(render::MAX_LIGHTS);
-        frame.lights = candidates;
+/// Point lights near any smoke, brightest first, in the internal frame.
+///
+/// Runs after Bevy's `CheckVisibility`: Bevy clears every `ViewVisibility`
+/// earlier in `PostUpdate` and sets a point light's again where its range
+/// reaches into a camera's view. So this keeps every light that can light
+/// smoke on screen, flashes spawned this frame included, and no light the
+/// game has hidden.
+fn gather_point_lights(
+    mut frame: ResMut<SmokeFrame>,
+    config: Res<SmokeConfig>,
+    point_lights: Query<(&PointLight, &GlobalTransform, &ViewVisibility)>,
+) {
+    let frame = frame.as_mut();
+    frame.lights.clear();
+    if frame.slots.is_empty() {
+        return;
     }
+    let units = config.units;
+    let m = units.metres_per_unit;
+    let mut candidates: Vec<FrameLight> = point_lights
+        .iter()
+        .filter(|(light, _, vis)| vis.get() && light.intensity > 0.0)
+        .filter_map(|(light, transform, _)| {
+            let p = units.to_internal(transform.translation());
+            let r = light.range * m;
+            let near_smoke = frame.slots.iter().any(|s| {
+                let closest = p.clamp(s.bounds_min, s.bounds_max);
+                closest.distance_squared(p) < r * r
+            });
+            near_smoke.then(|| FrameLight {
+                position: p,
+                range: r,
+                // Lumens to candela, matching Bevy's point lights; Bevy
+                // measures falloff in world units, so scale it to metres.
+                color: light.color.to_linear().to_vec3() * light.intensity / (4.0 * core::f32::consts::PI) * (m * m),
+            })
+        })
+        .collect();
+    candidates.sort_by(|a, b| b.color.max_element().total_cmp(&a.color.max_element()));
+    candidates.truncate(render::MAX_LIGHTS);
+    frame.lights = candidates;
 }
 
 #[cfg(test)]
@@ -1314,5 +1336,86 @@ mod tests {
                 assert!(ulps <= 1, "{step:?}: {ours} against {bevy}");
             }
         }
+    }
+
+    /// A headless app with Bevy's own visibility systems: no window, no GPU.
+    fn headless_app() -> App {
+        use bevy::{
+            log::LogPlugin,
+            render::{RenderPlugin, settings::WgpuSettings},
+            time::TimeUpdateStrategy,
+            window::ExitCondition,
+            winit::WinitPlugin,
+        };
+        let mut app = App::new();
+        app.add_plugins((
+            DefaultPlugins
+                .build()
+                .disable::<WinitPlugin>()
+                .disable::<LogPlugin>()
+                .set(RenderPlugin {
+                    render_creation: WgpuSettings {
+                        backends: None,
+                        ..default()
+                    }
+                    .into(),
+                    ..default()
+                })
+                .set(WindowPlugin {
+                    primary_window: None,
+                    exit_condition: ExitCondition::DontExit,
+                    ..default()
+                }),
+            SmokePlugin::default(),
+        ))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(50)));
+        app.finish();
+        app.cleanup();
+        app
+    }
+
+    #[test]
+    fn point_lights_that_reach_the_view_light_the_smoke() {
+        let mut app = headless_app();
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                Transform::from_xyz(0.0, 1.5, 9.0).looking_at(Vec3::new(0.0, 1.0, 0.0), Vec3::Y),
+            ))
+            .id();
+        app.world_mut().spawn((Smoke::default(), Transform::default()));
+        for _ in 0..100 {
+            app.update();
+            if !app.world().resource::<SmokeFrame>().slots.is_empty() {
+                break;
+            }
+        }
+        assert!(
+            !app.world().resource::<SmokeFrame>().slots.is_empty(),
+            "the smoke never popped"
+        );
+
+        // Spawned this frame, so Bevy sets its `ViewVisibility` in this
+        // frame's `PostUpdate`; the lights are read after that.
+        let flash = PointLight {
+            intensity: 60_000.0,
+            range: 6.0,
+            ..default()
+        };
+        let shown = Vec3::new(0.0, 1.0, 0.0);
+        app.world_mut().spawn((flash, Transform::from_translation(shown)));
+        app.world_mut()
+            .spawn((flash, Transform::from_xyz(0.5, 1.0, 0.0), Visibility::Hidden));
+        app.update();
+        let lights = &app.world().resource::<SmokeFrame>().lights;
+        assert_eq!(lights.len(), 1, "only the light that isn't hidden");
+        assert_eq!(lights[0].position, shown);
+
+        // Looking away, the light can't reach anything on screen.
+        *app.world_mut().get_mut::<Transform>(camera).unwrap() =
+            Transform::from_xyz(0.0, 1.5, 9.0).looking_to(Vec3::Z, Vec3::Y);
+        app.update();
+        assert!(app.world().resource::<SmokeFrame>().lights.is_empty());
     }
 }

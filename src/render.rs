@@ -153,7 +153,8 @@ pub(crate) struct FrameLight {
     pub color: Vec3,
 }
 
-/// Everything the renderer needs this frame. Rebuilt by `build_frame`.
+/// Everything the renderer needs this frame. Rebuilt by `build_frame`, its
+/// lights by `gather_point_lights`.
 #[derive(Resource, Clone, Default, ExtractResource)]
 #[extract_app(RenderApp)]
 pub(crate) struct SmokeFrame {
