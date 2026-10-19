@@ -242,6 +242,43 @@ are not in lockstep.
   mid-range (−8 %). Without MSAA only the best step gains (−8 % close up),
   and while something transparent is on screen its −10 % is all that's
   left.
+- Volumetric smoke marches coarser close up, where marching every pixel
+  paid for the same picture: the finest texel of the noise spans several
+  pixels there. `VolumetricQuality` gains `resolution_by_distance`, on at
+  every step of the dial. A step's resolution is now the finest it
+  marches at: each camera marches as coarse as still gives every texel of
+  the finest noise a raymarched pixel of its own at the far side of the
+  farthest volumetric smoke on screen, down to a quarter. The quality
+  controller picks it with the step (`quality::march_resolution`), and
+  `SmokeQuality::volumetric_resolution` reports it. It goes coarser only
+  once the smoke is within 0.8 of a resolution's distance limit, and back
+  finer only past the limit, so a camera at a limit doesn't flip between
+  two grains: in the demo's budget walk at the best step, four changes on
+  the way in and out. On an Apple M4 at 1920×1080 (medians of four to
+  eight alternated runs), close up at the best step a grown cloud takes
+  1.45 instead of 3.26 ms (−55 %), and 0.97 instead of 2.13 halfway
+  through the fade (−54 %); the high step takes 23 % less, and at
+  mid-range the best step 0.44 instead of 0.61 ms (−28 %). With
+  `NoiseWithinRule::Capped` the best step close up takes 1.34 instead of
+  2.66 ms (−50 %), and with `Filled` 1.57 instead of 3.42 (−54 %). Far
+  away, and at the steps that already march at a half or a quarter, nothing
+  changes. The picture stays within 19 levels out of 255 (37 with
+  `Capped`, along the edges the rule blocks), on at most 0.04 % of a frame
+  by more than 8. `tools/fairness.py --volumetric` passes at every step as
+  before: the worst view is still the cheapest step's, and the best step's
+  close view lets more than a tenth more of the scene through on 0.02 % of
+  the smoke's pixels. With `Capped` and `Filled`, nothing the rule blocks
+  shows through. Close up the volumetric steps now cost much the same, so
+  the budget controller's per-step cost ratios are measured again (the
+  faceted ones too). Code that builds `VolumetricQuality` or
+  `SmokeQuality` with a struct literal needs the new field. The demo's
+  HUD shows the march's resolution when it is coarser than the step's, and
+  its budget script logs it.
+- `SmokeCamera` has a constant for each step of the dial: `MINIMUM`,
+  `LOWER`, `LOW`, `MEDIUM`, `HIGH` and `ULTRA`. `LOW` (0.2) and `MEDIUM`
+  (0.4) used to select the dial's "lower" and "low" steps; they now select
+  the steps they are named after (0.4 and 0.6). Use `LOWER` and `LOW` for
+  what they selected before.
 - Volumetric smoke's noise moves on the simulation's clock instead of each
   machine's own. It scrolled with Bevy's `Time`, so two players drawing
   the same tick saw different holes in the same smoke whenever their apps

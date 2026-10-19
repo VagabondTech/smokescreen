@@ -541,7 +541,7 @@ fn setup_camera_and_hud(mut commands: Commands, target: Res<ShotTarget>) {
     let smoke_camera = if setting("capture").is_some() && !cfg!(target_arch = "wasm32") {
         SmokeCamera::HIGH
     } else {
-        SmokeCamera::with_quality(quality::quality_of_tier(2))
+        SmokeCamera::LOW
     };
     let mut camera = commands.spawn((
         Camera3d::default(),
@@ -1444,6 +1444,13 @@ fn update_hud(
         ),
         None => format!("dial {} ({}/6)", status.tier_name(), status.tier + 1),
     };
+    // Volumetric smoke marches coarser than the step's resolution close up.
+    let dial = match (settings.style, status.volumetric_resolution) {
+        (SmokeStyle::Volumetric, SmokeResolution::TwoThirds) => format!("{dial}, marched at 2/3"),
+        (SmokeStyle::Volumetric, SmokeResolution::Half) => format!("{dial}, marched at 1/2"),
+        (SmokeStyle::Volumetric, SmokeResolution::Quarter) => format!("{dial}, marched at 1/4"),
+        _ => dial,
+    };
     // A gameplay query: can the camera see the red box behind the smoke?
     let target = Vec3::new(0.0, 0.9, 10.0);
     let seen = vision.transmittance(cam.translation(), target);
@@ -1895,7 +1902,7 @@ fn capture_script(
             ),
             "low_quality" => {
                 place(front.0, front.1, &mut transform, &mut cam);
-                *smoke_cam = SmokeCamera::LOW;
+                *smoke_cam = SmokeCamera::LOWER;
                 *msaa = Msaa::Off;
             }
             "restore" => {
@@ -2241,7 +2248,7 @@ impl BudgetRun {
             dir,
             frame: 0,
             timings: Timings::default(),
-            csv: "frame,eye_distance,coverage,tier,predicted_ms,measured_ms\n".into(),
+            csv: "frame,eye_distance,coverage,tier,march_divisor,predicted_ms,measured_ms\n".into(),
         }
     }
 }
@@ -2287,9 +2294,10 @@ fn budget_run(
     if f > 40 {
         let _ = writeln!(
             run.csv,
-            "{f},{d:.2},{:.4},{},{:.4},{}",
+            "{f},{d:.2},{:.4},{},{},{:.4},{}",
             status.coverage,
             status.tier,
+            status.volumetric_resolution.divisor(),
             status.predicted_ms,
             fresh.map_or(String::new(), |m| format!("{m:.4}"))
         );

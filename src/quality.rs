@@ -27,7 +27,7 @@ use bevy::{
     render::{RenderApp, extract_component::ExtractComponent},
 };
 
-use crate::{SmokeCamera, SmokeResolution, render::SmokeFrame};
+use crate::{SmokeCamera, SmokeResolution, noise::NOISE_SIZE, render::SmokeFrame};
 
 /// Number of steps on the dial.
 pub const TIERS: usize = 6;
@@ -95,8 +95,16 @@ pub struct FacetQuality {
 /// Render knobs of the volumetric style for one camera.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VolumetricQuality {
-    /// Raymarch resolution relative to the camera's.
+    /// Raymarch resolution relative to the camera's: the finest the march
+    /// uses.
     pub resolution: SmokeResolution,
+    /// March coarser than `resolution` while the volumetric smoke on screen
+    /// is close: as coarse as still gives every texel of the finest noise
+    /// (`SmokeSettings::noise_frequency`) a raymarched pixel of its own at
+    /// the far side of the farthest smoke (down to a quarter). Close up that
+    /// noise spans several pixels, so marching every pixel only paid for
+    /// the same picture. On at every step of the dial.
+    pub resolution_by_distance: bool,
     /// Upper bound on raymarch steps per pixel.
     pub max_steps: u32,
     /// Step length in metres near the camera.
@@ -156,6 +164,7 @@ impl VolumetricQuality {
     const fn new(resolution: SmokeResolution, max_steps: u32, step_size: f32, step_growth: f32) -> Self {
         Self {
             resolution,
+            resolution_by_distance: true,
             max_steps,
             step_size,
             step_growth,
@@ -170,10 +179,13 @@ impl VolumetricQuality {
 /// Cost of each tier relative to the top tier, used by the budget controller
 /// to predict what a tier switch will save. Measured with the demo's scripted
 /// tier sweep with the smoke close up (where budgets bind; at a distance the
-/// faceted tiers save less, about 0.5× at the bottom); the controller learns
-/// the absolute scale on the player's GPU.
-pub const FACET_RELATIVE_COST: [f32; TIERS] = [0.27, 0.29, 0.36, 0.42, 0.52, 1.0];
-pub const VOLUMETRIC_RELATIVE_COST: [f32; TIERS] = [0.09, 0.10, 0.18, 0.22, 0.38, 1.0];
+/// faceted tiers save less, about 0.5× at the bottom), on an Apple M4. Close
+/// up the volumetric tiers are near each other: the top ones march coarser
+/// there too ([`VolumetricQuality::resolution_by_distance`]), and the
+/// composite costs the same at every tier. The controller learns the
+/// absolute scale on the player's GPU.
+pub const FACET_RELATIVE_COST: [f32; TIERS] = [0.25, 0.26, 0.33, 0.36, 0.49, 1.0];
+pub const VOLUMETRIC_RELATIVE_COST: [f32; TIERS] = [0.59, 0.59, 0.79, 0.85, 0.94, 1.0];
 
 /// What the dial is doing on a camera this frame. Added automatically with
 /// [`SmokeCamera`]; read it for HUDs and logs.
@@ -188,6 +200,10 @@ pub struct SmokeQuality {
     pub predicted_ms: f32,
     /// Fraction of the screen the smokes cover (their screen rectangles).
     pub coverage: f32,
+    /// What volumetric smoke is raymarched at this frame: the step's
+    /// resolution, or coarser close up
+    /// ([`VolumetricQuality::resolution_by_distance`]).
+    pub volumetric_resolution: SmokeResolution,
     pub(crate) controller: BudgetController,
 }
 
@@ -449,6 +465,54 @@ fn pass_path(name: &str) -> DiagnosticPath {
     DiagnosticPath::new(format!("render/{name}/elapsed_gpu"))
 }
 
+/// The fine noise octave's frequency over the base noise's
+/// (`detail_density` in `smoke_march.wesl`).
+const FINE_NOISE_SCALE: f32 = 2.7;
+
+/// How far into a resolution's distance limit the farthest smoke must come
+/// before the march goes that coarse; it goes back finer past the limit
+/// itself, so a camera near a limit doesn't flip between two resolutions.
+const COARSER_WITHIN: f32 = 0.8;
+
+/// The resolution to march volumetric smoke at
+/// ([`VolumetricQuality::resolution_by_distance`]): the step's, or coarser
+/// while every texel of the finest noise (`texel`, metres) still gets a
+/// raymarched pixel of its own at the farthest point of the volumetric smoke
+/// on screen (`far`, metres; `None` with none on screen), for a camera whose
+/// pixels span `pixel_angle` radians. `previous` is last frame's choice: a
+/// coarser resolution is taken once `far` is within 0.8 of its limit, and
+/// kept until `far` passes the limit.
+pub(crate) fn march_resolution(
+    step: SmokeResolution,
+    previous: SmokeResolution,
+    far: Option<f32>,
+    texel: f32,
+    pixel_angle: f32,
+) -> SmokeResolution {
+    let Some(far) = far else {
+        return step;
+    };
+    // The farthest distance at which a march `r` coarse still gives every
+    // noise texel a pixel.
+    let limit = |r: SmokeResolution| texel / (r.divisor() * pixel_angle);
+    let mut chosen = step;
+    for r in [
+        SmokeResolution::TwoThirds,
+        SmokeResolution::Half,
+        SmokeResolution::Quarter,
+    ] {
+        if r.divisor() <= step.divisor() {
+            continue;
+        }
+        let keep = r.divisor() <= previous.divisor() && far <= limit(r);
+        let enter = far <= COARSER_WITHIN * limit(r);
+        if keep || enter {
+            chosen = r;
+        }
+    }
+    chosen
+}
+
 /// Picks every smoke camera's tier for this frame.
 pub(crate) fn update_smoke_quality(
     mut cameras: Query<(&SmokeCamera, &mut SmokeQuality, &Camera, &GlobalTransform)>,
@@ -462,6 +526,10 @@ pub(crate) fn update_smoke_quality(
         // Coverage of each style on this camera (smoke data is in the core's
         // internal frame).
         let mut coverage = [0.0_f32; 2];
+        // The farthest point of any volumetric smoke on screen, and the
+        // angle a pixel spans.
+        let mut far = None;
+        let mut pixel_angle = 0.0;
         if let Some(size) = camera.physical_viewport_size() {
             let clip_from_view = camera.clip_from_view();
             let size = size.max(UVec2::ONE).as_vec2();
@@ -478,6 +546,18 @@ pub(crate) fn update_smoke_quality(
                 if let Some((lo, hi)) = screen_rect(clip_from_internal, eye, near, size, boxes) {
                     let area = (hi - lo).x * (hi - lo).y;
                     coverage[style] = area / (size.x * size.y);
+                }
+            }
+            pixel_angle = 2.0 / (clip_from_view.y_axis.y * size.y);
+            for s in frame.slots.iter().filter(|s| s.facet.is_none()) {
+                if screen_rect(clip_from_internal, eye, near, size, [(s.drawn_min, s.drawn_max)]).is_some() {
+                    // The box's corner farthest from the eye.
+                    let corner = Vec3::select(
+                        (eye - s.drawn_min).abs().cmpgt((eye - s.drawn_max).abs()),
+                        s.drawn_min,
+                        s.drawn_max,
+                    );
+                    far = Some(far.unwrap_or(0.0_f32).max(corner.distance(eye)));
                 }
             }
         }
@@ -531,6 +611,14 @@ pub(crate) fn update_smoke_quality(
                 quality.predicted_ms = quality.controller.predict(coverage, quality.tier);
             }
         }
+
+        let vol_q = settings.volumetric_quality(quality.tier);
+        quality.volumetric_resolution = if vol_q.resolution_by_distance {
+            let texel = 1.0 / (NOISE_SIZE as f32 * frame.settings.noise_frequency * FINE_NOISE_SCALE);
+            march_resolution(vol_q.resolution, quality.volumetric_resolution, far, texel, pixel_angle)
+        } else {
+            vol_q.resolution
+        };
     }
 }
 
@@ -582,6 +670,43 @@ mod tests {
         {
             assert!(w[0] <= w[1]);
         }
+        // The constants are the steps.
+        for (t, camera) in [
+            SmokeCamera::MINIMUM,
+            SmokeCamera::LOWER,
+            SmokeCamera::LOW,
+            SmokeCamera::MEDIUM,
+            SmokeCamera::HIGH,
+            SmokeCamera::ULTRA,
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert_eq!(tier_from_quality(camera.quality), t, "{}", TIER_NAMES[t]);
+        }
+    }
+
+    #[test]
+    fn march_coarser_close_up() {
+        use SmokeResolution::*;
+        // The finest noise texel is 2.6 cm; a pixel spans 0.77 mrad (46° over
+        // 1080 rows). Each resolution's limit: ⅔ at 22.5 m, ½ at 16.9 m, ¼ at
+        // 8.4 m.
+        let pick = |step, previous, far| march_resolution(step, previous, Some(far), 0.026, 0.00077);
+        assert_eq!(march_resolution(Full, Quarter, None, 0.026, 0.00077), Full);
+        assert_eq!(pick(Full, Full, 30.0), Full);
+        assert_eq!(pick(Full, Full, 15.0), TwoThirds);
+        assert_eq!(pick(Full, Full, 6.0), Quarter);
+        // Coarser only within 0.8 of a limit, finer again only past it.
+        assert_eq!(pick(Full, Full, 20.0), Full);
+        assert_eq!(pick(Full, TwoThirds, 20.0), TwoThirds);
+        assert_eq!(pick(Full, Half, 8.0), Half);
+        assert_eq!(pick(Full, Quarter, 8.0), Quarter);
+        assert_eq!(pick(Full, Quarter, 9.0), Half);
+        assert_eq!(pick(Full, Quarter, 23.0), Full);
+        // Never finer than the step.
+        assert_eq!(pick(Half, Full, 30.0), Half);
+        assert_eq!(pick(Quarter, Full, 30.0), Quarter);
     }
 
     #[test]
