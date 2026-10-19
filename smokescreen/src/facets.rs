@@ -154,6 +154,7 @@ pub struct FacetSettings {
 
 /// What counts as cloud for the faceted style's rule.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum FacetRule {
     /// The drawn surface, exactly. Costs about ten times a volumetric check.
     #[default]
@@ -164,6 +165,14 @@ pub enum FacetRule {
     /// a line the picture leaves clear; thin edges and corners count as
     /// see-through.
     Core,
+    /// Between the two: each puff's hard polyhedron, kept clear of walls,
+    /// minus a generous bound on every hole ([`crate::ChordField`]). Exact
+    /// chords, with no tracing, at about the core rule's cost. Everything it
+    /// counts lies inside the drawn surface, so it never blocks a line the
+    /// picture leaves clear. Along a line through a grown cloud it counts
+    /// about two thirds of what the exact rule counts (the core rule about
+    /// three fifths); most of the rest is the blend between puffs.
+    Chords,
 }
 
 impl FacetSettings {

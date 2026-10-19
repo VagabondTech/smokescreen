@@ -72,6 +72,32 @@ are not in lockstep.
   through a faceted cloud with more than 32 holes. Checks cost the same:
   on an Apple M4 every figure of the bench is within its run-to-run noise
   of before.
+- `FacetRule::Chords`, a faceted rule between `Core` and `Exact`: the
+  length of a line inside each puff's hard polyhedron, clipped to the ball
+  of its `Puff::room` (inside the fill's space, so clear of walls), minus a
+  capsule around each hole. It is the lower bound the exact rule's
+  `blocks_sight` already used, as a rule of its own (`ChordField`,
+  `CloudView::chord_field`). Like `Core` it never blocks a line the picture
+  leaves clear, and its chords are exact, with no tracing; it also counts
+  each puff's corners and edges, which `Core`'s spheres leave out. Each
+  puff's chord is worked out once per line, and what it adds to the length
+  already counted counts at once, so a line that is blocked is found early.
+  On an Apple M4, 250 sight checks through 4 of 32 clouds take 0.042 ms
+  grown, 0.131 ms halfway through the fade and 0.075 ms late in it,
+  against `Core`'s 0.044, 0.130 and 0.060 and the exact rule's 0.046, 0.73
+  and 0.36 (medians of 11 alternated runs). It counts more than `Core`,
+  though not much more: along the demo's views it counts 66–70 % of the
+  exact rule's amount in a grown cloud and 48–64 % halfway through the
+  fade, against `Core`'s 59–64 % and 47–58 %; at the 0.8 m threshold it
+  blocks 78 % of the close view's pixels that the exact rule blocks in a
+  grown cloud, against `Core`'s 73 %. Most of the rest is the blend between
+  puffs, which only the exact rule counts. `FacetRule` is now
+  `#[non_exhaustive]`: a `match` on it needs a `_` arm. The new variant
+  breaks exhaustive matches anyway, and later ones won't. The determinism
+  hashes are unchanged; the chord rule's results have a hash of their own
+  (`EXPECTED_CHORDS`). The demo's `SMOKE_DEMO_FACET_RULE=core` or `chords`
+  sets the rule its `agreement` script compares with the picture, and
+  `tools/agreement.py` names it.
 - Volumetric checks skip the samples that read nothing. In place of the
   flags that marked the cells of eight voxels next to a wall, each cloud
   keeps a byte per cell: 0 next to a wall, else the smallest fill-distance

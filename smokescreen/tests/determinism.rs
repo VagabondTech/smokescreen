@@ -2,9 +2,9 @@
 //! three styles, a smoke wall and a filled box among them), run 10,000 seeded
 //! segment queries over their lifetimes (with bullets and explosions along
 //! the way) and hash every result; in metres, in Z-up inches, and once more
-//! with the faceted core rule and volumetric samples half a voxel apart. The
-//! hash must be the same on every platform the game ships on: run this in CI
-//! on each.
+//! with the faceted core rule and volumetric samples half a voxel apart; and
+//! apart from those, with the faceted chord rule. The hashes must be the
+//! same on every platform the game ships on: run this in CI on each.
 
 mod common;
 
@@ -121,6 +121,23 @@ fn determinism_hash() {
     println!("determinism hash: {:#018x}", hash.0);
     if EXPECTED != 0 {
         assert_eq!(hash.0, EXPECTED, "results differ from the recorded platform");
+    }
+}
+
+/// Recorded on aarch64-apple-darwin, like `EXPECTED`. The faceted chord
+/// rule's runs have a hash of their own, so that adding the rule left
+/// `EXPECTED` as it was.
+const EXPECTED_CHORDS: u64 = 0x1834_799b_ac21_c89d;
+
+#[test]
+fn determinism_hash_chords() {
+    let mut hash = Fnv(0xcbf2_9ce4_8422_2325);
+    let n = run(Units::METRES_Y_UP, FacetRule::Chords, VolumeSteps::Voxel, &mut hash);
+    let m = run(common::z_up_inches(), FacetRule::Chords, VolumeSteps::Voxel, &mut hash);
+    assert_eq!((n, m), (10_000, 10_000));
+    println!("chord rule determinism hash: {:#018x}", hash.0);
+    if EXPECTED_CHORDS != 0 {
+        assert_eq!(hash.0, EXPECTED_CHORDS, "results differ from the recorded platform");
     }
 }
 

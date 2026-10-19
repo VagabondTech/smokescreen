@@ -35,6 +35,9 @@
 //!   never shows through what the rule blocks.
 //! - `SMOKE_DEMO_VOLUME_STEPS=half` has the volumetric rule sample a line
 //!   every half voxel instead of every voxel (`Tuning::volume_steps`).
+//! - `SMOKE_DEMO_FACET_RULE=core` or `chords` sets the faceted smoke's rule
+//!   (`Tuning::facet_rule`, `exact` by default), which the `agreement`
+//!   script compares with the picture.
 //! - `SMOKE_DEMO_CLIENT_CLOCK=<seconds>` starts the app's clock that far
 //!   ahead of the smoke's ticks, as on a client whose clock has run longer
 //!   than the match: the demo counts the ticks itself, from the virtual time
@@ -174,6 +177,11 @@ fn main() {
     if setting("volume_steps").as_deref() == Some("half") {
         smoke_plugin.config.tuning.volume_steps = VolumeSteps::HalfVoxel;
     }
+    smoke_plugin.config.tuning.facet_rule = match setting("facet_rule").as_deref() {
+        Some("core") => FacetRule::Core,
+        Some("chords") => FacetRule::Chords,
+        _ => FacetRule::Exact,
+    };
     app.add_plugins((smoke_plugin, FrameTimeDiagnosticsPlugin::default()))
         .insert_resource(smoke_settings)
         .insert_resource(DemoBudget(budget_ms))
@@ -2438,10 +2446,11 @@ fn agreement_run(
                     .filter_map(|c| c.age(clock.drawn(), rate))
                     .fold(0.0, f32::max);
                 let meta = format!(
-                    "style {:?}\nthreshold {}\nvolume_steps {:?}\nsigma {}\nage {age:.3}\nerosion {}\ndetail_erosion {}\ntier {}\nnoise_within_rule {:?}\n",
+                    "style {:?}\nthreshold {}\nvolume_steps {:?}\nfacet_rule {:?}\nsigma {}\nage {age:.3}\nerosion {}\ndetail_erosion {}\ntier {}\nnoise_within_rule {:?}\n",
                     settings.style,
                     config.tuning.sight_threshold,
                     config.tuning.volume_steps,
+                    config.tuning.facet_rule,
                     settings.extinction * smoke.density,
                     settings.erosion,
                     settings.detail_erosion,

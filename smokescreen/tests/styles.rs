@@ -221,6 +221,111 @@ fn core_rule_counts_every_hole() {
     );
 }
 
+/// Faceted clouds in the test level, with bullets and a blast.
+fn faceted_level(rule: FacetRule, level: &BoxObstacles) -> Smokes<&BoxObstacles> {
+    let mut cfg = config();
+    cfg.tuning.facet_rule = rule;
+    let mut smokes = Smokes::new(cfg, level);
+    for (origin, seed) in common::pops().into_iter().take(4) {
+        smokes.pop(CloudSpec::new(origin, 0, seed, Style::Faceted));
+    }
+    let shots = segments(77, 6, Vec3::new(-12.0, 0.5, -6.0), Vec3::new(14.0, 2.5, 12.0));
+    for (i, (a, b)) in shots.iter().enumerate() {
+        smokes.bullet(*a, *b, 500 + i as u64 * 40);
+    }
+    smokes.explosion(Vec3::new(0.0, 1.0, 4.0), None, 700);
+    smokes
+}
+
+/// The chord rule counts at least what the core rule counts and at most
+/// what the drawn surface holds, and blocks accordingly: it blocks every
+/// line the core rule blocks, more lines besides, and none that the exact
+/// rule sees through (bar lines the exact rule's trace puts within a few
+/// millimetres of the threshold).
+#[test]
+fn chord_rule_lies_between_core_and_exact() {
+    let level = common::level();
+    let mut core = faceted_level(FacetRule::Core, &level);
+    let mut chords = faceted_level(FacetRule::Chords, &level);
+    let mut exact = faceted_level(FacetRule::Exact, &level);
+    let threshold = exact.config().tuning.sight_threshold;
+    let (mut by_core, mut by_chords) = (0, 0);
+    for tick in [300, 640, 760, 1200, 2000, 2100, 2200] {
+        for (a, b) in segments(tick, 150, Vec3::new(-12.0, 0.0, -6.0), Vec3::new(14.0, 4.0, 12.0)) {
+            let c = core.occlusion(a, b, tick);
+            let h = chords.occlusion(a, b, tick);
+            let e = exact.occlusion(a, b, tick);
+            assert!(c <= h + 1e-4, "tick {tick}: core {c} > chords {h} on {a} .. {b}");
+            assert!(h <= e + 0.01, "tick {tick}: chords {h} > exact {e} on {a} .. {b}");
+            let (cb, hb) = (core.blocks_sight(a, b, tick), chords.blocks_sight(a, b, tick));
+            assert!(!cb || hb, "tick {tick}: core blocks, chords don't, on {a} .. {b}");
+            assert!(
+                !hb || exact.blocks_sight(a, b, tick) || e > threshold - 0.02,
+                "tick {tick}: chords block ({h}), exact doesn't ({e}), on {a} .. {b}"
+            );
+            by_core += cb as u32;
+            by_chords += hb as u32;
+        }
+    }
+    assert!(by_chords > by_core, "chords block {by_chords} lines, core {by_core}");
+}
+
+/// The chord rule's amount is the length inside what it counts: compare
+/// with sampling its own `density_at`, through walls, holes and the fade.
+#[test]
+fn chord_amount_is_the_chord_length() {
+    let level = common::level();
+    let mut smokes = faceted_level(FacetRule::Chords, &level);
+    for tick in [140, 640, 760, 2100] {
+        let view = smokes.view(tick);
+        for (a, b) in segments(tick + 5, 60, Vec3::new(-12.0, 0.0, -6.0), Vec3::new(14.0, 4.0, 12.0)) {
+            let exact = view.occlusion(a, b);
+            // Every cloud adds its own amount, so no clamping where they
+            // overlap.
+            let n = (a.distance(b) / 0.004).ceil() as usize;
+            let dt = a.distance(b) / n as f32;
+            let sampled: f32 = (0..n)
+                .map(|i| view.density_at(a.lerp(b, (i as f32 + 0.5) / n as f32)) * dt)
+                .sum();
+            assert!(
+                (exact - sampled).abs() < 0.02 + exact * 0.002,
+                "tick {tick}: {exact} vs sampled {sampled} on {a} .. {b}"
+            );
+        }
+    }
+}
+
+/// Everything the chord rule counts is inside the drawn surface (the exact
+/// rule's distance field), by walls, in holes and through the fade.
+#[test]
+fn chord_rule_counts_only_what_is_drawn() {
+    let level = common::level();
+    let mut smokes = faceted_level(FacetRule::Chords, &level);
+    let mut rng = common::Rng(31);
+    let mut counted = 0;
+    for tick in [100, 200, 640, 760, 1950, 2100, 2250] {
+        let view = smokes.view(tick);
+        for cloud in view.clouds() {
+            let (Some(chords), Some(drawn)) = (cloud.chord_field(), cloud.facet_field()) else {
+                continue;
+            };
+            let (lo, hi) = cloud.state.bounds;
+            for _ in 0..4000 {
+                let p = rng.point(lo, hi);
+                if chords.inside(p) {
+                    let d = drawn.sdf(p);
+                    assert!(
+                        d < 1e-4,
+                        "tick {tick}: {p} is counted, but {d} outside the drawn surface"
+                    );
+                    counted += 1;
+                }
+            }
+        }
+    }
+    assert!(counted > 2000, "only {counted} points counted");
+}
+
 /// A line source makes a wall of smoke along it; a box source fills a box.
 #[test]
 fn line_and_box_sources() {
@@ -332,12 +437,12 @@ fn pop_order_does_not_matter() {
     }
 }
 
-/// Crystal and core checks are cheaper than exact faceted ones (they visit
-/// far fewer puffs), and the exact rule's `blocks_sight` is cheaper still
+/// Crystal, core and chord checks are cheaper than exact faceted ones (they
+/// visit far fewer puffs), and the exact rule's `blocks_sight` is cheaper still
 /// than its amounts, since chord bounds settle most lines without tracing
 /// them; a rough guard against regressions, not a benchmark.
 #[test]
-fn crystal_and_core_checks_are_cheap() {
+fn crystal_core_and_chord_checks_are_cheap() {
     use std::time::Instant;
     // Best of five: 200 segments through 8 grown clouds, counting the lines
     // blocked by `blocks_sight` or (`amounts`) by `occlusion`.
@@ -371,9 +476,11 @@ fn crystal_and_core_checks_are_cheap() {
     };
     let exact = time(Style::Faceted, FacetRule::Exact, true);
     let core = time(Style::Faceted, FacetRule::Core, true);
+    let chords = time(Style::Faceted, FacetRule::Chords, true);
     let crystal = time(Style::Crystal, FacetRule::Exact, true);
     let bounded = time(Style::Faceted, FacetRule::Exact, false);
     assert!(core < exact * 0.6, "core {core} vs exact {exact}");
+    assert!(chords < exact * 0.6, "chords {chords} vs exact {exact}");
     assert!(crystal < exact * 0.6, "crystal {crystal} vs exact {exact}");
     assert!(
         bounded < exact * 0.5,

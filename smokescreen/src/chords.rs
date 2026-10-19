@@ -1,10 +1,14 @@
 //! Exact amounts of cloud along a segment for clouds made of convex pieces:
-//! the crystal style (unblended polyhedra) and the faceted style's core rule
-//! (each puff's inscribed sphere).
+//! the crystal style (unblended polyhedra) and the faceted style's chord and
+//! core rules (each puff's polyhedron clipped to its room, or its inscribed
+//! sphere).
 //!
-//! Both walk the puff bins along the segment and, in each bin cell, add up
-//! the length of the union of the pieces' intervals inside that cell. Cells
-//! split the segment into disjoint parts, so nothing is counted twice.
+//! All of them walk the puff bins along the segment. The crystal and core
+//! rules add up, in each bin cell, the length of the union of the pieces'
+//! intervals inside that cell: cells split the segment into disjoint parts,
+//! so nothing is counted twice. The chord rule works out each puff's
+//! interval once, the first time a cell lists the puff, and adds what it
+//! adds to the union counted so far.
 
 use glam::{IVec3, Vec3};
 
@@ -15,8 +19,8 @@ use crate::math::{safe_recip, slab};
 /// Intervals one bin cell collects before merging them.
 const CELL_INTERVALS: usize = 64;
 
-/// Words of the puffs-seen mask of [`ChordBounds`] (puffs past it are
-/// tested again in every cell, which only costs time).
+/// Words of the puffs-seen masks of [`ChordBounds`] and [`ChordField`]
+/// (puffs past it are tested again in every cell, which only costs time).
 const SEEN_WORDS: usize = 32;
 
 /// A few intervals along a ray, merged on demand, minus where the ray is
@@ -144,6 +148,75 @@ impl<'h> Intervals<'h> {
         self.merge();
         self.banked + self.merged_length()
     }
+}
+
+/// What a walk along a ray has counted so far: sorted, disjoint intervals.
+/// Never allocates.
+struct Counted {
+    buf: [(f32, f32); CELL_INTERVALS],
+    n: usize,
+}
+
+impl Counted {
+    fn new() -> Self {
+        Self {
+            buf: [(0.0, 0.0); CELL_INTERVALS],
+            n: 0,
+        }
+    }
+
+    /// Count `lo..hi` too: returns how much of it is new, outside what was
+    /// counted and outside `holes` (sorted, disjoint). If it would need more
+    /// intervals than fit, it is left out and this returns 0: the walk then
+    /// counts less, never more.
+    fn add(&mut self, lo: f32, hi: f32, holes: &[(f32, f32)]) -> f32 {
+        if hi <= lo {
+            return 0.0;
+        }
+        // The intervals j..k overlap or touch lo..hi.
+        let j = self.buf[..self.n].partition_point(|iv| iv.1 < lo);
+        let k = self.buf[..self.n].partition_point(|iv| iv.0 <= hi);
+        if j == k {
+            if self.n == CELL_INTERVALS {
+                return 0.0;
+            }
+            self.buf.copy_within(j..self.n, j + 1);
+            self.buf[j] = (lo, hi);
+            self.n += 1;
+            return outside_holes(lo, hi, holes);
+        }
+        let mut new = 0.0;
+        let mut at = lo;
+        for &(a, b) in &self.buf[j..k] {
+            if a > at {
+                new += outside_holes(at, a, holes);
+            }
+            at = at.max(b);
+        }
+        if hi > at {
+            new += outside_holes(at, hi, holes);
+        }
+        self.buf[j] = (lo.min(self.buf[j].0), hi.max(self.buf[k - 1].1));
+        self.buf.copy_within(k..self.n, j + 1);
+        self.n -= k - j - 1;
+        new
+    }
+}
+
+/// Length of `lo..hi` outside `holes` (sorted, disjoint).
+#[inline]
+fn outside_holes(lo: f32, hi: f32, holes: &[(f32, f32)]) -> f32 {
+    let mut len = hi - lo;
+    for &(h0, h1) in holes {
+        if h0 >= hi {
+            break;
+        }
+        let overlap = h1.min(hi) - h0.max(lo);
+        if overlap > 0.0 {
+            len -= overlap;
+        }
+    }
+    len.max(0.0)
 }
 
 /// Walk the bin cells along `ro + rd·t`, `t0 ≤ t ≤ t1`, in order, calling
@@ -427,6 +500,83 @@ impl CoreField<'_> {
     }
 }
 
+/// The faceted style's chord rule: each puff's hard polyhedron, clipped to
+/// the ball of its [`Puff::room`] about its centre (inside the fill's
+/// space, so clear of walls), minus a generous bound on every hole. The
+/// blended surface contains all of it (the smooth union lies at or below
+/// the plain minimum of the puffs), so it never blocks a line the picture
+/// leaves clear; it leaves out only the blend between puffs, and counts the
+/// corners and edges that the core rule's spheres leave out. Internal
+/// frame.
+#[derive(Clone, Copy, Debug)]
+pub struct ChordField<'a> {
+    pub bins: &'a Bins,
+    pub live: &'a [LivePuff],
+    /// The puffs `live` was made from, in the same order (for their room).
+    pub puffs: &'a [Puff],
+    pub holes: &'a [HoleShape],
+}
+
+impl ChordField<'_> {
+    /// Where the ray `ro + rd·t` (`rd` a unit vector) is inside puff `i`'s
+    /// polyhedron and its room.
+    #[inline(always)]
+    fn chord(&self, i: usize, ro: Vec3, rd: Vec3) -> Option<(f32, f32)> {
+        let p = &self.live[i];
+        let (lo, hi) = polyhedron_interval(p, ro, rd)?;
+        let (rlo, rhi) = sphere_interval(p.center, self.puffs[i].room, ro, rd)?;
+        Some((lo.max(rlo), hi.min(rhi)))
+    }
+
+    /// Is `p` inside any puff's polyhedron and its room, and outside every
+    /// hole?
+    pub fn inside(&self, p: Vec3) -> bool {
+        let Some(c) = self.bins.cell_of(p) else {
+            return false;
+        };
+        let counted = self.bins.list(c).iter().any(|&i| {
+            let room = self.puffs[i as usize].room;
+            let puff = &self.live[i as usize];
+            p.distance_squared(puff.center) <= room * room && inside_polyhedron(puff, p)
+        });
+        counted
+            && !self
+                .holes
+                .iter()
+                .any(|h| hole_bound(h).is_some_and(|r| crate::math::distance_to_segment(p, h.a, h.b) <= r))
+    }
+
+    /// Add the length of `ro + rd·t`, `t0 ≤ t ≤ t1`, inside the cloud to
+    /// `acc`. Stops (and returns `true`) as soon as `stop(*acc)` holds.
+    pub fn amount(&self, ro: Vec3, rd: Vec3, t0: f32, t1: f32, acc: &mut f32, stop: &dyn Fn(f32) -> bool) -> bool {
+        let mut spans = [(0.0_f32, 0.0_f32); HOLE_BUFFER];
+        let holes = hole_spans(self.holes, ro, rd, &mut spans);
+        // Each puff's chord is one interval along the whole ray (the
+        // polyhedron and the ball are convex), found the first time a cell
+        // lists the puff. What it adds to what is counted, outside the
+        // holes, counts at once: every addition is at least 0, so stopping
+        // early can't change the answer.
+        let mut counted = Counted::new();
+        let mut seen = [0u64; SEEN_WORDS];
+        walk_bins(self.bins, ro, rd, t0, t1, |list, _enter, _exit| {
+            let before = *acc;
+            for &i in list {
+                let (word, bit) = ((i / 64) as usize, 1u64 << (i % 64));
+                if let Some(w) = seen.get_mut(word) {
+                    if *w & bit != 0 {
+                        continue;
+                    }
+                    *w |= bit;
+                }
+                if let Some((lo, hi)) = self.chord(i as usize, ro, rd) {
+                    *acc += counted.add(lo.max(t0), hi.min(t1), holes);
+                }
+            }
+            *acc > before && stop(*acc)
+        })
+    }
+}
+
 /// Bounds on the faceted style's exact rule ([`crate::FacetField`]) from
 /// chords alone: the blended cloud contains every puff's polyhedron (the
 /// smooth union lies at or below the plain minimum), clipped to the fill's
@@ -698,6 +848,146 @@ mod tests {
         // Along the axis: from cap to cap.
         let along = capsule_interval(a, b, 0.3, a - (b - a).normalize() * 2.0, (b - a).normalize()).unwrap();
         assert!((along.1 - along.0 - ((b - a).length() + 0.6)).abs() < 1e-4, "{along:?}");
+    }
+
+    #[test]
+    fn counted_adds_only_what_is_new() {
+        let holes = [(0.5, 1.0), (3.2, 5.0)];
+        let mut c = Counted::new();
+        let adds = [
+            (0.0, 1.0),
+            (0.5, 2.0),
+            (3.0, 4.0),
+            (1.5, 3.5),
+            (6.0, 7.0),
+            (6.5, 6.6),
+            (7.0, 7.5),
+        ];
+        let new: Vec<f32> = adds.iter().map(|&(lo, hi)| c.add(lo, hi, &holes)).collect();
+        // 0..1 less its hole, 1..2, 3..3.2, 2..3, 6..7, nothing, 7..7.5.
+        let expected = [0.5, 1.0, 0.2, 1.0, 1.0, 0.0, 0.5];
+        for (got, want) in new.iter().zip(expected) {
+            assert!((got - want).abs() < 1e-6, "{new:?}");
+        }
+        assert_eq!(&c.buf[..c.n], &[(0.0, 4.0), (6.0, 7.5)]);
+        // Full of separate intervals: a new one is left out, never counted
+        // twice, and what overlaps what is there still counts.
+        let mut c = Counted::new();
+        for i in 0..CELL_INTERVALS {
+            assert_eq!(c.add(i as f32, i as f32 + 0.5, &[]), 0.5);
+        }
+        assert_eq!(c.add(100.0, 101.0, &[]), 0.0);
+        assert_eq!(c.add(100.0, 101.0, &[]), 0.0);
+        assert_eq!(c.add(0.25, 1.25, &[]), 0.5);
+        assert_eq!(c.n, CELL_INTERVALS - 1);
+    }
+
+    /// A small faceted cloud by hand: puffs of every shape on a jittered
+    /// grid, turned every which way, some with little room (as by a wall),
+    /// and a tunnel and a blast through it.
+    fn hand_cloud() -> (Vec<Puff>, Vec<LivePuff>, Bins, Vec<HoleShape>) {
+        let shapes = [
+            Polyhedron::Cube,
+            Polyhedron::Octahedron,
+            Polyhedron::Dodecahedron,
+            Polyhedron::Icosahedron,
+        ];
+        let mut puffs = Vec::new();
+        for i in 0..64u32 {
+            let (s, c) = crate::math::sin_cos(i as f32 * 2.399_963);
+            let grid = Vec3::new((i % 4) as f32, ((i / 4) % 4) as f32, (i / 16) as f32) * 0.9;
+            let radius = 0.45 + 0.15 * s.abs();
+            puffs.push(Puff {
+                center: grid + Vec3::new(0.2 * s, 0.15 * c, 0.1 * s * c),
+                radius,
+                room: if i % 5 == 0 { radius * 0.9 } else { 3.0 },
+                arrival: 0.0,
+                shape: shapes[i as usize % 4],
+                axis: Vec3::new(s, c, 0.5).normalize(),
+                spin: 0.0,
+                phase: i as f32,
+            });
+        }
+        let live = puffs
+            .iter()
+            .map(|p| LivePuff {
+                center: p.center,
+                radius: p.radius,
+                to_local: crate::math::rotation(p.axis, p.phase).transpose(),
+                shape: p.shape,
+                ratio: p.shape.corner_ratio(),
+                core: p.radius.min(p.room),
+            })
+            .collect();
+        let bins = Bins::build(&puffs, 0.3, 0.6);
+        let holes = vec![
+            HoleShape {
+                a: Vec3::new(-1.0, 1.2, 1.0),
+                b: Vec3::new(4.0, 1.5, 1.6),
+                radius: 0.38,
+                strength: 1.0,
+            },
+            HoleShape {
+                a: Vec3::new(2.0, 2.0, 2.0),
+                b: Vec3::new(2.0, 2.0, 2.0),
+                radius: 0.9,
+                strength: 0.8,
+            },
+        ];
+        (puffs, live, bins, holes)
+    }
+
+    /// The chord rule counts what clipping every listed puff's chord to
+    /// every cell counts (as the crystal rule does), to rounding; and
+    /// stopping early gives the answer the whole amount gives.
+    #[test]
+    fn chord_amounts_match_a_cell_by_cell_count() {
+        let (puffs, live, bins, holes) = hand_cloud();
+        let field = ChordField {
+            bins: &bins,
+            live: &live,
+            puffs: &puffs,
+            holes: &holes,
+        };
+        let per_cell = |ro: Vec3, rd: Vec3, t1: f32| {
+            let mut spans = [(0.0, 0.0); HOLE_BUFFER];
+            let mut iv = Intervals::new(hole_spans(field.holes, ro, rd, &mut spans));
+            let mut acc = 0.0;
+            walk_bins(field.bins, ro, rd, 0.0, t1, |list, enter, exit| {
+                iv.clear();
+                for &i in list {
+                    if let Some((lo, hi)) = field.chord(i as usize, ro, rd) {
+                        iv.push(lo.max(enter), hi.min(exit));
+                    }
+                }
+                acc += iv.covered();
+                false
+            });
+            acc
+        };
+        let mut through = 0;
+        for k in 0..400 {
+            let (s, c) = crate::math::sin_cos(k as f32 * 0.37);
+            let (s2, c2) = crate::math::sin_cos(k as f32 * 1.13);
+            let a = Vec3::new(-1.5 + s, 1.3 + c, -1.0 + s2);
+            let b = Vec3::new(4.2 + c2, 1.4 - s * c, 3.8 + s2 * c);
+            let len = a.distance(b);
+            let rd = (b - a) / len;
+            let mut whole = 0.0;
+            field.amount(a, rd, 0.0, len, &mut whole, &|_| false);
+            let reference = per_cell(a, rd, len);
+            assert!(
+                (whole - reference).abs() <= 1e-5 * (1.0 + reference),
+                "{whole} vs {reference}"
+            );
+            through += (whole > 0.0) as u32;
+            for threshold in [0.1, 0.5, 1.0, 2.0] {
+                let mut acc = 0.0;
+                let stopped = field.amount(a, rd, 0.0, len, &mut acc, &|acc| acc >= threshold);
+                assert_eq!(stopped, whole >= threshold, "{whole} at {threshold}");
+            }
+        }
+        assert!(through > 300, "only {through} lines through the cloud");
     }
 
     #[test]

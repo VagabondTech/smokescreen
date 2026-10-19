@@ -78,7 +78,7 @@ pub mod units;
 pub mod volume;
 mod world;
 
-pub use chords::{CoreField, CrystalField};
+pub use chords::{ChordField, CoreField, CrystalField};
 pub use facets::{FacetField, FacetLimits, FacetRule, FacetSettings, LivePuff, Polyhedron, Puff, ShapeMix};
 pub use fill::{CloudShape, Facets};
 pub use grid::Grid;

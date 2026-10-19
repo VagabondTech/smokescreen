@@ -243,6 +243,8 @@ def main(src, chord_rule=None):
     else:
         if "tier" in meta:
             print(f"dial step {meta['tier']}")
+        if meta.get("style") == "Faceted" and "facet_rule" in meta:
+            print(f"facet rule {meta['facet_rule']}")
         hard(src, chord_rule)
 
 

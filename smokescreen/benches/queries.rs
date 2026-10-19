@@ -133,6 +133,7 @@ fn main() {
         ),
         ("faceted, exact", Style::Faceted, FacetRule::Exact, voxel, 0.8),
         ("faceted, core", Style::Faceted, FacetRule::Core, voxel, 0.8),
+        ("faceted, chords", Style::Faceted, FacetRule::Chords, voxel, 0.8),
         ("crystal, 0.8 m", Style::Crystal, FacetRule::Exact, voxel, 0.8),
         ("crystal, touch", Style::Crystal, FacetRule::Exact, voxel, 0.0),
     ];
