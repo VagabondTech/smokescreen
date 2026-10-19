@@ -1495,7 +1495,12 @@ fn prepare_smoke_views(
             };
 
             // Volumetric.
-            let vol_divisor = vol_q.resolution.divisor();
+            // The step's resolution, or coarser close up (picked with the
+            // tier: `quality::march_resolution`).
+            let vol_divisor = quality
+                .map_or(vol_q.resolution, |q| q.volumetric_resolution)
+                .divisor()
+                .max(vol_q.resolution.divisor());
             let smoke_size = (size.as_vec2() / vol_divisor).ceil().as_uvec2().max(UVec2::ONE);
             // March a one-texel margin around a composite area so the bilinear
             // footprint at the edges is always freshly written.

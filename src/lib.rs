@@ -529,8 +529,9 @@ pub struct SmokeCamera {
 
 /// Fraction of the camera resolution (per axis) the volumetric smoke is
 /// raymarched at.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum SmokeResolution {
+    #[default]
     Full,
     TwoThirds,
     Half,
@@ -550,8 +551,11 @@ impl SmokeResolution {
 }
 
 impl SmokeCamera {
-    pub const LOW: Self = Self::with_quality(0.2);
-    pub const MEDIUM: Self = Self::with_quality(0.4);
+    /// The dial's six steps, cheapest first ([`quality::TIER_NAMES`]).
+    pub const MINIMUM: Self = Self::with_quality(0.0);
+    pub const LOWER: Self = Self::with_quality(0.2);
+    pub const LOW: Self = Self::with_quality(0.4);
+    pub const MEDIUM: Self = Self::with_quality(0.6);
     pub const HIGH: Self = Self::with_quality(0.8);
     pub const ULTRA: Self = Self::with_quality(1.0);
 
