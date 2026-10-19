@@ -179,6 +179,11 @@ cargo run --example presets                 # every preset and look; also minima
   so it works with MSAA; the overlay pipelines are specialised on the sample
   count. Bevy's render internals change every release: expect this file to
   need work on each Bevy upgrade.
+- `gather_point_lights` reads `ViewVisibility`, which Bevy clears in
+  `VisibilitySystems::VisibilityPropagate` and sets again in
+  `CheckVisibility`: keep it ordered after `CheckVisibility`. Read before
+  that, every light reads as hidden and no flash lights the smoke (the
+  plugin test `point_lights_that_reach_the_view_light_the_smoke` fails).
 - Keep `MAX_SLOTS`, `MAX_HOLES`, `MAX_LIGHTS` and the `Gpu*` struct layouts
   in `render.rs` in step with `smoke_common.wesl`.
 - Atlases per slot: source (distance, sun, sky, region), open mask (R8),

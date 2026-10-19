@@ -192,6 +192,32 @@ are not in lockstep.
   registers rather than of arithmetic: taking a third of the sample loop's
   instructions out (folding constants per smoke, advancing coordinates
   along the ray) made it 6–7 % slower, so that isn't done.
+- Point lights light volumetric and faceted smoke. They never did: the
+  plugin read each `PointLight`'s `ViewVisibility` while Bevy had it
+  cleared (after `VisibilitySystems::VisibilityPropagate` resets it and
+  before `CheckVisibility` sets it again), so muzzle flashes and
+  explosions lit the level around a smoke but not the smoke. The lights
+  are now read after `CheckVisibility`, which marks a point light visible
+  where its range reaches into a camera's view: of the lights whose range
+  reaches a smoke, the brightest eight light it, and a light that can't
+  reach anything on screen takes none of the eight places. Crystal smoke,
+  which Bevy lights itself, was never affected. The picture changes only
+  where a light is near smoke, and most while a cloud is thin: the march
+  dims a light by the smoke halfway to it, so little of a light inside a
+  grown cloud reaches its surface. Volumetric smoke pays for every sample
+  within a light's range: on an Apple M4 at 1920×1080, close up at the
+  best step (medians of four to seven alternated runs), a grown cloud with
+  one muzzle flash in it takes 4.17 instead of 3.67 ms (+14 %), and with
+  eight 7.83 ms (2.1×); halfway through the fade, 2.93 instead of 2.83 ms
+  with one (+4 %) and 3.56 instead of 2.46 with eight (+45 %). With one
+  flash in a grown cloud, `NoiseWithinRule::Capped` costs 23 % more and
+  `Filled` 19 % more. At mid-range one flash costs 16 % more at the best
+  step; at the two cheapest steps its cost is within the noise. Faceted
+  smoke, lit once per pixel at its surface, costs about the same with
+  eight lights as with none. Without a light near smoke the pixels and the
+  cost are as before. `SmokeSystems::PrepareRender` now ends after Bevy's
+  `CheckVisibility`. The demo's `SMOKE_DEMO_SWEEP_LIGHTS=<n>` puts n
+  steady muzzle flashes in the tier sweep's smoke.
 - Volumetric smoke's noise moves on the simulation's clock instead of each
   machine's own. It scrolled with Bevy's `Time`, so two players drawing
   the same tick saw different holes in the same smoke whenever their apps

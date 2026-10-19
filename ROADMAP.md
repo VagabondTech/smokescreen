@@ -141,7 +141,8 @@ The README's tables come from `cargo bench -p smokescreen`. The weak spots:
   away. Next: march close smoke at a coarser resolution (the finest noise
   texel spans many pixels close up), a cheaper composite, and point
   lights baked per voxel (each light in range costs every sample with
-  smoke). Tried on the M4 and dropped: a third fewer instructions in the
+  smoke: close up at the best step, one muzzle flash in a grown cloud
+  costs 14 % more, eight 2.1 times as much). Tried on the M4 and dropped: a third fewer instructions in the
   sample loop (6–7 % slower), and the lighting read once per four samples
   (no faster on a grown cloud, and up to 87 levels of change at the
   cheapest steps).
