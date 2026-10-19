@@ -142,10 +142,10 @@ The README's tables come from `cargo bench -p smokescreen`. The weak spots:
   texel spans many pixels close up), a cheaper composite, and point
   lights baked per voxel (each light in range costs every sample with
   smoke: close up at the best step, one muzzle flash in a grown cloud
-  costs 14 % more, eight 2.1 times as much). Tried on the M4 and dropped: a third fewer instructions in the
-  sample loop (6–7 % slower), and the lighting read once per four samples
-  (no faster on a grown cloud, and up to 87 levels of change at the
-  cheapest steps).
+  costs 14 % more, eight 2.1 times as much). Tried on the M4 and dropped:
+  a third fewer instructions in the sample loop (6–7 % slower), and the
+  lighting read once per four samples (no faster on a grown cloud, and up
+  to 87 levels of change at the cheapest steps).
 
 - **Thin clouds.** Halfway through the fade, volumetric checks cost 2.7×
   what they cost when grown (0.098 against 0.036 ms per 250 on an Apple
