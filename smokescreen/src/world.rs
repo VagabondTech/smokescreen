@@ -1417,11 +1417,6 @@ impl<'a> View<'a> {
                     // the trace is cheap then anyway.
                     return Some(Verdict::Trace);
                 }
-                Some(_) if cloud.spec.style == Style::Faceted && state.holes.len() > HOLE_BUFFER => {
-                    // More holes than the bounds keep on the stack: they
-                    // would leave some out, so the trace decides.
-                    return Some(Verdict::Trace);
-                }
                 Some(f) if cloud.spec.style == Style::Faceted => {
                     // Over the whole box, like the trace: a grown polyhedron
                     // can reach a little past what the puffs occupy.

@@ -143,6 +143,84 @@ fn core_rule_is_conservative() {
     assert!(blocked > 50, "the core rule should still block plenty: {blocked}");
 }
 
+/// The core rule counts every hole, however many a cloud has: the newest
+/// past the 32nd too (a cloud lists its holes oldest first), and more
+/// separate stretches of hole along one line than a check keeps on the
+/// stack, which it then joins, counting less cloud, never more. The exact
+/// rule's chord bounds count them all as well.
+#[test]
+fn core_rule_counts_every_hole() {
+    let world = |rule: FacetRule| {
+        let mut cfg = config();
+        cfg.tuning.facet_rule = rule;
+        cfg.tuning.max_holes_per_cloud = 64;
+        let mut smokes = Smokes::new(cfg, FlatGround::default());
+        smokes.pop(CloudSpec::new(Vec3::ZERO, 0, 7, Style::Faceted));
+        smokes
+    };
+    let (mut core, mut exact) = (world(FacetRule::Core), world(FacetRule::Exact));
+    // 32 shots straight down, clear of the lines below, then one along
+    // each line: the 33rd to 40th holes.
+    let shot = 5 * 128;
+    let lines: Vec<(Vec3, Vec3)> = (0..8)
+        .map(|j| {
+            let z = -1.75 + j as f32 * 0.5;
+            (Vec3::new(-9.0, 1.0, z), Vec3::new(9.0, 1.0, z))
+        })
+        .collect();
+    for smokes in [&mut core, &mut exact] {
+        for i in 0..32 {
+            let x = -4.0 + i as f32 * 0.25;
+            smokes.bullet(Vec3::new(x, 9.0, 3.5), Vec3::new(x, -1.0, 3.5), shot + i);
+        }
+        for (j, (a, b)) in lines.iter().enumerate() {
+            smokes.bullet(*a - Vec3::X, *b + Vec3::X, shot + 32 + j as u64);
+        }
+    }
+    let tick = shot + 44;
+    assert_eq!(core.view(tick).clouds().next().map(|c| c.state.holes.len()), Some(40));
+    for (j, (a, b)) in lines.iter().enumerate() {
+        assert!(
+            core.blocks_sight(*a, *b, shot + 31),
+            "line {j} should be blocked before its shot"
+        );
+        let amount = core.occlusion(*a, *b, tick);
+        assert!(amount < 1e-3, "line {j}, along hole {}: {amount}", 33 + j);
+        assert!(!core.blocks_sight(*a, *b, tick));
+    }
+    // With all of them, the core rule never counts more than the exact
+    // one, and the exact rule's `blocks_sight` says what its `occlusion`
+    // implies.
+    let threshold = exact.config().tuning.sight_threshold;
+    for (a, b) in segments(41, 300, Vec3::new(-8.0, 0.0, -6.0), Vec3::new(8.0, 3.5, 6.0)) {
+        let (c, e) = (core.occlusion(a, b, tick), exact.occlusion(a, b, tick));
+        assert!(c <= e + 0.01, "core {c} > exact {e} on {a} .. {b}");
+        assert!(!core.blocks_sight(a, b, tick) || exact.blocks_sight(a, b, tick));
+        assert_eq!(
+            exact.blocks_sight(a, b, tick),
+            e > 0.0 && e >= threshold,
+            "{a} .. {b}: {e}"
+        );
+    }
+
+    // Forty small blasts along one line: more separate stretches of hole
+    // than fit, so the nearest are joined. Never more cloud than sampling
+    // the rule's own `density_at` finds.
+    let mut smokes = world(FacetRule::Core);
+    for i in 0..40 {
+        smokes.explosion(Vec3::new(-4.0 + i as f32 * 0.2, 1.2, 0.0), Some(0.08), shot);
+    }
+    let view = smokes.view(shot + 20);
+    assert_eq!(view.clouds().next().map(|c| c.state.holes.len()), Some(40));
+    let (a, b) = (Vec3::new(-6.0, 1.2, 0.0), Vec3::new(6.0, 1.2, 0.0));
+    let amount = view.occlusion(a, b);
+    let sampled = sampled_amount(&view, a, b, 0.0005);
+    assert!(
+        amount <= sampled + 0.01 && amount > sampled - 0.8,
+        "{amount} vs sampled {sampled}"
+    );
+}
+
 /// A line source makes a wall of smoke along it; a box source fills a box.
 #[test]
 fn line_and_box_sources() {
