@@ -89,11 +89,11 @@ A smoke that is fully grown and untouched (no holes, not fading, sun not moving)
 
 ## 5. Composite (full resolution, scissored)
 
-For each pixel, the composite reads the 2×2 smoke texels. If all four are clear it discards before touching depth, which is most pixels.
+For each pixel, the composite reads the 2×2 smoke texels. If all four are clear it discards before touching depth, which is most pixels. At the best dial step, which marches every pixel, a pixel's own texel was marched against its own depth, so the composite takes that texel alone and reads no depth.
 
 Otherwise it weights them by bilinear position and by depth similarity to the full-resolution depth, so smoke doesn't bleed across the silhouette of a crate in front of it. The fixed-function blender applies `scene × transmittance + light`, so the scene is never copied.
 
-This runs after the opaque (and transmissive) pass and before the transparent pass, drawing into the multisampled texture when MSAA is on. Glass and particles in front of a smoke therefore draw over it, and TAA, bloom and tonemapping treat the smoke like the rest of the image. A first-person weapon is opaque, so it needs its own camera (see `examples/viewmodel.rs`).
+This runs after the opaque (and transmissive) pass and before the transparent pass. With MSAA, it draws into the multisampled texture when the camera has something transparent to draw, so that Bevy's transparent pass continues from it. Otherwise, when Bevy will skip that pass, it draws straight into the resolved image. A pass over the multisampled texture loads, stores and resolves all of it, whatever the smoke's size: about 0.2 ms a frame at 1080p on an Apple M4, which was most of the composite's cost at mid-range and far away. The blend is linear, so either way the picture is the same to within rounding. The faceted look's full-resolution passes draw onto the scene the same way. Glass and particles in front of a smoke draw over it, and TAA, bloom and tonemapping treat the smoke like the rest of the image. A first-person weapon is opaque, so it needs its own camera (see `examples/viewmodel.rs`).
 
 ## The faceted style
 
@@ -168,15 +168,15 @@ To pin individual knobs instead, set `SmokeCamera::facets` or `SmokeCamera::volu
 
 | Step (`quality`) | Faceted | Cost¹ | Volumetric | Cost² |
 |---|---|---|---|---|
-| ultra (1.0) | full resolution, traced shadows and occlusion | 31.2 ms | full resolution, 128 steps of 0.07 m | 0.97 ms |
-| high (0.8) | coarse 2×2, traced shadows and occlusion | 15.0 ms (0.48) | ⅔ resolution, 96 steps | 0.66 ms (0.68) |
-| medium (0.6) | coarse 2×2, baked shadows, traced occlusion | 11.1 ms (0.36) | ½ resolution, 72 steps | 0.55 ms (0.57) |
-| low (0.4) | coarse 2×2, baked lighting | 10.2 ms (0.33) | ½ resolution, 48 steps | 0.53 ms (0.55) |
-| lower (0.2) | coarse 4×4, baked lighting | 8.0 ms (0.26) | ¼ resolution, 40 steps | 0.43 ms (0.44) |
-| minimum (0.0) | coarse 4×4, baked lighting, looser hit tolerance | 7.9 ms (0.25) | ¼ resolution, 28 steps | 0.48 ms (0.49) |
+| ultra (1.0) | full resolution, traced shadows and occlusion | 29.7 ms | full resolution, 128 steps of 0.07 m | 0.59 ms |
+| high (0.8) | coarse 2×2, traced shadows and occlusion | 14.6 ms (0.49) | ⅔ resolution, 96 steps | 0.39 ms (0.66) |
+| medium (0.6) | coarse 2×2, baked shadows, traced occlusion | 10.7 ms (0.36) | ½ resolution, 72 steps | 0.28 ms (0.47) |
+| low (0.4) | coarse 2×2, baked lighting | 9.8 ms (0.33) | ½ resolution, 48 steps | 0.27 ms (0.46) |
+| lower (0.2) | coarse 4×4, baked lighting | 7.8 ms (0.26) | ¼ resolution, 40 steps | 0.19 ms (0.32) |
+| minimum (0.0) | coarse 4×4, baked lighting, looser hit tolerance | 7.5 ms (0.25) | ¼ resolution, 28 steps | 0.19 ms (0.32) |
 
-¹ With the smoke covering two-thirds of the screen; in brackets, relative to ultra. At mid-range the reduced resolutions don't apply (see above) and the steps cost 7.3 / 5.2 / 4.0 / 3.5 / 3.4 / 3.4 ms (1.0 / 0.71 / 0.54 / 0.49 / 0.47 / 0.46).
-² With the smoke at mid-range, where the two cheapest steps differ by less than the noise. Close up, covering two-thirds of the screen, the steps cost 3.7 / 1.9 / 1.5 / 1.3 / 1.0 / 1.1 ms (1.0 / 0.53 / 0.40 / 0.35 / 0.28 / 0.29).
+¹ With the smoke covering two-thirds of the screen; in brackets, relative to ultra. At mid-range the reduced resolutions don't apply (see above) and the steps cost 6.6 / 4.7 / 3.5 / 3.4 / 3.3 / 3.1 ms (1.0 / 0.71 / 0.53 / 0.51 / 0.49 / 0.47).
+² With the smoke at mid-range, where the two cheapest steps cost the same. Close up, covering two-thirds of the screen, the steps cost 3.2 / 1.8 / 1.2 / 1.1 / 0.88 / 0.85 ms (1.0 / 0.55 / 0.38 / 0.35 / 0.28 / 0.27).
 
 What the smoke adds to a 1920×1080 frame with MSAA on an Apple M4, from the demo's tier sweep (`SMOKE_DEMO_SCRIPT=tiers`), the median of five runs (six for volumetric smoke). Metal's GPU timestamp queries lose the device, so there the sweep times whole frames instead, each waiting for the GPU, and subtracts the same view without smoke; that counts the CPU's share of drawing the smoke too. On the software rasteriser, the faceted steps cost 1.00 / 0.52 / 0.42 / 0.36 / 0.29 / 0.27 of ultra close up, and the volumetric ones 1.00 / 0.51 / 0.44 / 0.29 / 0.19 / 0.16 at mid-range. Run the same sweep on your target hardware. The budget controller only uses ratios like these to guess what a step change will save; it learns the absolute cost from your GPU.
 

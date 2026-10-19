@@ -218,6 +218,30 @@ are not in lockstep.
   cost are as before. `SmokeSystems::PrepareRender` now ends after Bevy's
   `CheckVisibility`. The demo's `SMOKE_DEMO_SWEEP_LIGHTS=<n>` puts n
   steady muzzle flashes in the tier sweep's smoke.
+- Volumetric smoke costs less to draw at every distance and dial step,
+  and faceted smoke a little less, with the same picture to within one
+  level out of 255. With MSAA, the smoke's passes that draw onto the scene
+  used the multisampled colour target, and a pass over it loads, stores
+  and resolves all of it, whatever the smoke's size: about 0.2 ms a frame
+  at 1080p on an Apple M4. When a camera has nothing transparent to draw
+  after the smoke (Bevy then skips its transparent pass), they now draw
+  straight into the resolved image; otherwise they draw as before, so
+  that the transparent pass can continue from the multisampled target. At
+  the best dial step, which marches every pixel, the volumetric composite
+  also takes each pixel's own smoke texel instead of weighing four, and
+  reads no depth. On an Apple M4 at 1920×1080 with MSAA (medians of five
+  to seven alternated runs), a grown cloud close up takes 3.19 instead of
+  3.66 ms at the best step (−13 %) and 0.85 instead of 1.04 at the
+  cheapest (−18 %); at mid-range 0.59 instead of 0.94 (−38 %) and 0.19
+  instead of 0.44 (−58 %); far away 0.21 instead of 0.46 (−55 %) and 0.07
+  instead of 0.26 (−74 %). Halfway through the fade the best step close up
+  takes 2.10 instead of 2.58 ms (−18 %). With `NoiseWithinRule::Capped`
+  the best step close up takes 2.61 instead of 3.20 ms (−18 %), and with
+  `Filled` 3.33 instead of 3.88 (−14 %). Faceted smoke takes 29.7 instead
+  of 31.2 ms close up at the best step (−5 %) and 6.6 instead of 7.2 at
+  mid-range (−8 %). Without MSAA only the best step gains (−8 % close up),
+  and while something transparent is on screen its −10 % is all that's
+  left.
 - Volumetric smoke's noise moves on the simulation's clock instead of each
   machine's own. It scrolled with Bevy's `Time`, so two players drawing
   the same tick saw different holes in the same smoke whenever their apps
