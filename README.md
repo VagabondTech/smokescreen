@@ -233,6 +233,8 @@ Halfway through the fade the clouds are thin, so many lines never reach the thre
 
 These come from the demo's tier sweep (`SMOKE_DEMO_SCRIPT=tiers`): frame time with the smoke minus the same view without, every frame waiting for the GPU, the median of five runs (six for volumetric smoke). (Metal's GPU timestamp queries lose the device, so the sweep times whole frames on macOS; with GPU timestamps, on Vulkan or DX12, it and the demo's HUD report each pass's GPU time.) The dial is per camera (`SmokeCamera::quality`, or `SmokeCamera::budget(ms)` to fit a GPU time budget); [docs/design.md](https://github.com/VagabondTech/smokescreen/blob/main/docs/design.md#the-performance-dial) has every step. Crystal smoke is ordinary geometry, with no dial.
 
+Point lights near volumetric smoke cost extra, as every sample within a light's range adds its light: close up at the best step, one muzzle flash inside a grown cloud costs 14 % more, and eight cost 2.1 times as much. Faceted smoke, lit once per pixel, costs about the same with eight lights as with none.
+
 ## Tuning
 
 ### The rules (`Tuning`, the same on every machine)
@@ -299,7 +301,7 @@ From a clone of the repository, run one with `cargo run --release --example pres
 ## Limitations
 
 - A first-person weapon needs its own camera to stay visible inside smoke (see `viewmodel`); transparent objects need nothing.
-- Volumetric and faceted smoke are lit by one directional light and up to eight point lights (unshadowed); spot lights don't light them yet. Crystal smoke takes any Bevy light.
+- Volumetric and faceted smoke are lit by one directional light and up to eight point lights at a time (unshadowed; the brightest of those whose range reaches both a smoke and a camera's view); spot lights don't light them yet. Crystal smoke takes any Bevy light.
 - Orthographic cameras aren't supported.
 - Clouds don't drift with wind, and doors closing on a smoke don't re-shape it.
 - Smoke fills right up to walls and floors at least a voxel thick (0.3 m by default), wherever they sit on the voxel grid. Against thinner walls it stops at the middle of the first voxel they reach into, so up to about half a voxel can stay clear in front of them, and as much can show past them; picture and rule agree. Level meshes (`SmokeObstacle`) need triangles facing outwards for this, as Bevy's shapes do; against a mesh facing inwards, or a wall made of a single vertical sheet, smoke stops up to half a voxel short. A single sheet facing up (a `Plane3d`, say) counts as ground, solid underneath, so up to a voxel of smoke can show beneath a raised floor made of one: use a box for floors with open air below.

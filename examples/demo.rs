@@ -56,10 +56,12 @@
 //!   check; without GPU timings it times whole frames, each waiting for the
 //!   GPU, against the same view without smoke; `SMOKE_DEMO_SWEEP_AGE=<seconds>`
 //!   freezes the smoke that long after its pop instead of once it is grown,
-//!   to measure a cloud that is blooming or fading), `budget` (budget mode while
-//!   a smoke comes close and goes away again), `agreement` (faceted or
-//!   crystal silhouette masks, or how much of the scene shows through
-//!   volumetric smoke, next to the CPU query for every pixel; compare with
+//!   to measure a cloud that is blooming or fading, and
+//!   `SMOKE_DEMO_SWEEP_LIGHTS=<n>` puts n steady point lights in it, each a
+//!   muzzle flash at its brightest, to measure what flashes cost), `budget`
+//!   (budget mode while a smoke comes close and goes away again), `agreement`
+//!   (faceted or crystal silhouette masks, or how much of the scene shows
+//!   through volumetric smoke, next to the CPU query for every pixel; compare with
 //!   `tools/agreement.py`; `SMOKE_DEMO_SWEEP_AGE` sets the smoke's age here
 //!   too, and `SMOKE_DEMO_TIER=<0-5>` the dial step, the top one by
 //!   default) or `video` (every frame of short captioned
@@ -1986,6 +1988,8 @@ struct Sweep {
     /// Seconds after the pop at which to freeze the smoke
     /// (`SMOKE_DEMO_SWEEP_AGE`); by default once it is grown.
     freeze_age: Option<f32>,
+    /// Steady point lights in the smoke (`SMOKE_DEMO_SWEEP_LIGHTS`).
+    lights: usize,
 }
 
 impl Sweep {
@@ -2004,7 +2008,27 @@ impl Sweep {
                 CAMERA_PASSES.join(",")
             ),
             freeze_age: setting("sweep_age").and_then(|s| s.parse().ok()),
+            lights: setting("sweep_lights").and_then(|s| s.parse().ok()).unwrap_or(0),
         }
+    }
+}
+
+/// The sweep's steady point lights: each a muzzle flash at its brightest
+/// (`shoot`), on a ring around the middle of the smoke.
+fn spawn_sweep_lights(commands: &mut Commands, n: usize) {
+    for i in 0..n {
+        let angle = i as f32 / n as f32 * std::f32::consts::TAU;
+        let height = if i % 2 == 0 { 0.7 } else { 1.3 };
+        commands.spawn((
+            PointLight {
+                intensity: 60_000.0,
+                range: 6.0,
+                color: Color::srgb(1.0, 0.75, 0.4),
+                shadow_maps_enabled: false,
+                ..default()
+            },
+            Transform::from_xyz(1.2 * angle.cos(), height, 4.6 + 1.2 * angle.sin()),
+        ));
     }
 }
 
@@ -2081,6 +2105,9 @@ fn tier_sweep(
     const FRAMES: usize = 60;
     match sweep.stage {
         0 => {
+            if sweep.stage_frame == 1 {
+                spawn_sweep_lights(&mut commands, sweep.lights);
+            }
             if sweep.stage_frame > 40 {
                 advance(sweep);
             }
