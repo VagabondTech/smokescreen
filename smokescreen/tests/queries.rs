@@ -312,7 +312,7 @@ fn units_and_up_axis() {
 #[test]
 fn queries_do_not_allocate() {
     let level = common::level();
-    for rule in [FacetRule::Exact, FacetRule::Core] {
+    for rule in [FacetRule::Exact, FacetRule::Core, FacetRule::Chords] {
         let mut cfg = config();
         cfg.tuning.facet_rule = rule;
         let mut smokes = Smokes::new(cfg, &level);
@@ -382,13 +382,14 @@ fn insert_matches_pop() {
 /// where faceted clouds under the exact rule are settled from chord bounds
 /// rather than traced: random segments, long and short, through clouds of
 /// every style over their whole lives, with bullets and explosions, under
-/// both facet rules, with volumetric samples a voxel and half a voxel apart,
+/// every facet rule, with volumetric samples a voxel and half a voxel apart,
 /// and with any contact blocking.
 fn blocks_sight_agrees_with_occlusion(per_tick: usize) {
     let level = common::level();
     for (rule, steps, threshold) in [
         (FacetRule::Exact, VolumeSteps::Voxel, 0.8),
         (FacetRule::Core, VolumeSteps::HalfVoxel, 0.8),
+        (FacetRule::Chords, VolumeSteps::Voxel, 0.8),
         (FacetRule::Exact, VolumeSteps::Voxel, 0.0),
     ] {
         let mut cfg = config();

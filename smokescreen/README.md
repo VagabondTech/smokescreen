@@ -94,13 +94,14 @@ Positions, lengths, volumes and results are in your units;
 On an Apple M4: a volumetric fill is about 0.55 ms of work and a faceted or
 crystal one about 1.1 ms, spread over ticks. 250 sight checks through 4 of
 32 grown clouds take 0.03 ms (crystal, blocking on any contact) or 0.04 ms
-(faceted, with either `FacetRule`, and volumetric). Halfway through a
-cloud's fade they cost more: up to 3× as much, and 0.7 ms with the exact
-faceted rule, which then traces more of the lines. A 2-core 2.1 GHz cloud VM
-takes 2.5 to 3.5 times as long. The main README has the full tables, and
-`cargo bench -p smokescreen` measures it on your machine. On x86-64,
-`-C target-cpu=x86-64-v2` or newer turns rounding into single instructions
-instead of library calls; results are the same on every CPU target.
+(faceted, with any `FacetRule`, and volumetric). Halfway through a cloud's
+fade they cost more: up to 3× as much, and 0.7 ms with the exact faceted
+rule, which then traces more of the lines (0.13 ms with
+`FacetRule::Chords`). A 2-core 2.1 GHz cloud VM takes 2.5 to 3.5 times as
+long. The main README has the full tables, and `cargo bench -p smokescreen`
+measures it on your machine. On x86-64, `-C target-cpu=x86-64-v2` or newer
+turns rounding into single instructions instead of library calls; results
+are the same on every CPU target.
 
 ## Licence
 

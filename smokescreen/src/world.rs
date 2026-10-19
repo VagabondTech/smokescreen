@@ -5,7 +5,7 @@ use std::sync::Arc;
 use glam::{UVec3, Vec3};
 
 use crate::{
-    chords::{ChordBounds, CoreField, CrystalField},
+    chords::{ChordBounds, ChordField, CoreField, CrystalField},
     facets::{FacetField, FacetRule, FacetSettings, LivePuff},
     fill::{CloudShape, FillJob, FillSpec, Source, Work},
     grid::sample_cells,
@@ -1275,6 +1275,22 @@ impl<'a> CloudView<'a> {
         })
     }
 
+    /// The faceted cloud's hard polyhedra (see [`FacetRule::Chords`]), if it
+    /// is faceted.
+    pub fn chord_field(&self) -> Option<ChordField<'a>> {
+        let f = self
+            .shape
+            .facets
+            .as_ref()
+            .filter(|_| self.spec.style == Style::Faceted)?;
+        Some(ChordField {
+            bins: &f.bins,
+            live: &self.state.live,
+            puffs: &f.puffs,
+            holes: &self.state.holes,
+        })
+    }
+
     /// The crystal cloud's puffs, if it is crystal.
     pub fn crystal_field(&self) -> Option<CrystalField<'a>> {
         let f = self
@@ -1472,6 +1488,7 @@ impl<'a> View<'a> {
     pub fn density_at(&self, p: Vec3) -> f32 {
         let p = self.config.units.to_internal(p);
         let core_rule = self.config.tuning.facet_rule == FacetRule::Core;
+        let chord_rule = self.config.tuning.facet_rule == FacetRule::Chords;
         let mut sum = 0.0;
         let candidates = self.broad.candidates(p - BROAD_PAD, p + BROAD_PAD);
         visit_candidates(self.states, candidates, |state| {
@@ -1492,6 +1509,8 @@ impl<'a> View<'a> {
             sum += if let Some(c) = cloud.crystal_field() {
                 inside(c.inside(p))
             } else if let (true, Some(c)) = (core_rule, cloud.core_field()) {
+                inside(c.inside(p))
+            } else if let (true, Some(c)) = (chord_rule, cloud.chord_field()) {
                 inside(c.inside(p))
             } else if let Some(f) = cloud.facet_field() {
                 inside(f.sdf(p) < 0.0)
@@ -1549,6 +1568,16 @@ impl<'a> View<'a> {
                     CoreField {
                         bins: &f.bins,
                         live: &state.live,
+                        holes,
+                    }
+                    .amount(a, rd, u0, u1, acc, stop)
+                }
+                Some(f) if facet_rule == FacetRule::Chords => {
+                    let holes = holes_near(&state.holes, a, inv, u0, u1, |h| h.radius * 0.2, &mut buf);
+                    ChordField {
+                        bins: &f.bins,
+                        live: &state.live,
+                        puffs: &f.puffs,
                         holes,
                     }
                     .amount(a, rd, u0, u1, acc, stop)

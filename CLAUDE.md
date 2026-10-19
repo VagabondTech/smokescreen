@@ -22,7 +22,7 @@ The three looks (`Style` in the core, `SmokeStyle` in Bevy):
 | Style | Drawn by | Rule (`occlusion`) |
 |---|---|---|
 | Volumetric | raymarch of a baked 3D texture (`src/render.rs`, `src/shaders/smoke_{bake,march,composite}.wesl`) | density integrated along the segment, a sample every voxel (`Tuning::volume_steps`), each voxel's density interpolated as the GPU's sampler does (`DensityTable`) |
-| Faceted | sphere tracing of blended polyhedra (`src/shaders/smoke_facet*.wesl`) | chord through the blended SDF (`FacetRule::Exact`; `blocks_sight` decides most lines from exact chord bounds and traces those within 2 cm of the threshold: about half a volumetric check grown, twice one mid-fade) or through each puff's inscribed sphere (`FacetRule::Core`, cheap, conservative) |
+| Faceted | sphere tracing of blended polyhedra (`src/shaders/smoke_facet*.wesl`) | chord through the blended SDF (`FacetRule::Exact`; `blocks_sight` decides most lines from exact chord bounds and traces those within 2 cm of the threshold: about half a volumetric check grown, twice one mid-fade), through each puff's polyhedron clipped to the ball of its room (`FacetRule::Chords`, exact chords, about as cheap as `Core`, conservative) or through each puff's inscribed sphere (`FacetRule::Core`, cheap, conservative) |
 | Crystal | ordinary meshes, one entity per puff (`src/crystal.rs`) | exact chord through the union of convex polyhedra (`smokescreen/src/chords.rs`); with `sight_threshold = 0` the picture and the rule agree exactly |
 
 ## Commands
@@ -153,7 +153,7 @@ cargo run --example presets                 # every preset and look; also minima
 | `smokescreen/src/grid.rs` | The fill grid, bricks and front bounds for skipping, sample cells (walls, and samples that read nothing), chamfer distance transforms |
 | `smokescreen/src/volume.rs` | Volumetric rule: density integral, skipping empty bricks, inactive parts and samples that read nothing |
 | `smokescreen/src/facets.rs` | Polyhedra, puffs, bins, the blended faceted SDF and its exact integrator |
-| `smokescreen/src/chords.rs` | Crystal and faceted-core rules: exact chords through convex pieces; `ChordBounds`, the exact faceted rule's bounds for `blocks_sight` |
+| `smokescreen/src/chords.rs` | Crystal, faceted-chord and faceted-core rules: exact chords through convex pieces; `ChordBounds`, the exact faceted rule's bounds for `blocks_sight`; `hole_spans`, the holes along a line |
 | `smokescreen/src/holes.rs`, `timeline.rs` | Hole events and shapes; a cloud's life, the density model and `DensityTable` |
 | `smokescreen/src/level.rs` | `Level` trait, `FlatGround`, `BoxObstacles`, `VoxelObstacles` (from boxes, a closure or triangles, with winding numbers for which side of a mesh is solid; to and from bytes) |
 | `smokescreen/src/light.rs` | Sun and sky visibility per voxel, for renderers |

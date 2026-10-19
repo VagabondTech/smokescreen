@@ -13,8 +13,8 @@ both).
   and aarch64, holes as tick-stamped events.
 - **Three looks:** volumetric, faceted, and crystal (unblended polyhedra
   drawn as plain meshes; holes shrink whole puffs).
-- **Rules:** volumetric density integral; faceted exact or core
-  (`FacetRule`); crystal exact. With `sight_threshold = 0` the crystal
+- **Rules:** volumetric density integral; faceted exact, chords or core
+  (`FacetRule`; chords in 0.2); crystal exact. With `sight_threshold = 0` the crystal
   picture and rule agree pixel for pixel (beyond one-pixel silhouette
   edges, on the demo's agreement run). The volumetric rule works out
   density in the picture's order (per voxel, then interpolated), so
@@ -80,12 +80,6 @@ both).
 
 ## Rules and looks
 
-- **A faceted rule between Core and Exact.** The lower bound `blocks_sight`
-  uses for faceted clouds (the hard polyhedra clipped to the fill's space,
-  minus a capsule around each hole) is itself a rule: exact, as cheap as
-  the crystal rule, and conservative like `FacetRule::Core` while counting
-  about twice as much of each puff. A new `FacetRule` variant breaks the
-  API, so it waits for 0.2.
 - **Walls thinner than a voxel.** Smoke stops at the middle of the first
   voxel such a wall reaches into, so up to 12 cm can stay clear in front of
   it and as much can show past it (15 cm with meshes). Padding can't help
@@ -107,7 +101,8 @@ both).
 - **Faceted thin edges.** With the 0.8 m rule the faceted picture draws
   thin edges as solid smoke that the rule sees through (bots see a little
   more than players). Options: draw chords under the threshold see-through,
-  or recommend `FacetRule::Core` plus a lower threshold. Crystal has the
+  or recommend `FacetRule::Chords` plus a lower threshold (it leaves out
+  the blend between puffs, most of what it doesn't count). Crystal has the
   same trade-off unless its threshold is 0.
 - **`NoiseWithinRule::Filled`.** Its cost (about 12 % more than the default
   close up at the best step) could come down by adding up the baked light
