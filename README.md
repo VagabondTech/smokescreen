@@ -234,7 +234,7 @@ Halfway through the fade the clouds are thin, so many lines never reach the thre
 
 These come from the demo's tier sweep (`SMOKE_DEMO_SCRIPT=tiers`): frame time with the smoke minus the same view without, every frame waiting for the GPU, the median of four to eight alternated runs. With MSAA they hold while nothing transparent is on screen: the smoke then draws straight into the resolved image. While something transparent is drawn, the smoke draws into the multisampled target for Bevy's transparent pass to continue from, which adds about 0.2 ms a frame, at any distance. (Metal's GPU timestamp queries lose the device, so the sweep times whole frames on macOS; with GPU timestamps, on Vulkan or DX12, it and the demo's HUD report each pass's GPU time.) The dial is per camera (`SmokeCamera::quality`, or `SmokeCamera::budget(ms)` to fit a GPU time budget); [docs/design.md](https://github.com/VagabondTech/smokescreen/blob/main/docs/design.md#the-performance-dial) has every step. Crystal smoke is ordinary geometry, with no dial.
 
-Point lights near volumetric smoke cost extra, as every sample within a light's range adds its light: close up at the best step, one muzzle flash inside a grown cloud costs 14 % more, and eight cost 2.1 times as much. Faceted smoke, lit once per pixel, costs about the same with eight lights as with none.
+Point lights near volumetric smoke cost extra, as every sample within a light's range adds its light: close up at the best step, one muzzle flash inside a grown cloud costs about 15 % more (1.67 against 1.44 ms), and eight cost 1.8 times as much (2.65 ms). Faceted smoke, lit once per pixel, costs about the same with eight lights as with none.
 
 ## Tuning
 
