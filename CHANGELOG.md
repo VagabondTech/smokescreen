@@ -133,8 +133,30 @@ are not in lockstep.
   a level with walls, bullets and explosions, `blocks_sight` is 8–11 %
   faster through the fade. Results are unchanged: the determinism hashes
   are the same. The cells take no more memory than the flags, and about
-  6 µs per cloud to build when its fill finishes, where the flags took
-  15–20 µs.
+  6 µs per cloud to build, where the flags took 15–20 µs.
+- `Grid::sample_cells`: the byte per cell above is part of each
+  volumetric cloud's grid, and the fill builds it within its budget, as a
+  stage of its own after the bricks. In 0.1 the flags it replaces were
+  kept apart from the grid and built outside the budget on the tick the
+  fill finished. `Grid::build_sample_cells` builds them for a grid put
+  together by hand; faceted and crystal grids have none.
+  `VolumeField::amount` and `VolumeField::density` read them too, so code
+  that integrates a cloud itself through `CloudView::volume_field` takes
+  the shortcut the world's checks take, with the same amounts to the bit:
+  on an Apple M4, 250 lines through 4 of 32 volumetric clouds, every
+  cloud's amount summed this way, take 0.29 instead of 0.47 ms once the
+  clouds are grown and 0.22 instead of 0.36 ms halfway through the fade
+  (−38 %; medians of 11 alternated runs). A grid without the cells gives
+  the same answers, more slowly. The new public field breaks code that
+  builds a `Grid` with a struct literal: add `sample_cells: Vec::new()`,
+  or call `build_sample_cells`. `Smokes::insert` uses a shape's grid as it
+  is, so a server that sends shapes should send the cells too, or have
+  its clients rebuild them (`fill_cloud` builds them). Results are
+  unchanged: the determinism hashes are the same, and fills match in
+  every other field. Sight checks cost the same. A volumetric fill all at
+  once takes 0.57 instead of 0.56 ms in a voxelised level, as `fill_cloud`
+  now builds the cells `Smokes::insert` built; spread over ticks at the
+  default budget it still takes 14 ticks.
 - Faceted and crystal fills are about a quarter faster. On an Apple M4, in
   a voxelised level, a faceted fill takes 1.14 instead of 1.51 ms all at
   once and a crystal one 1.07 instead of 1.46 ms; at the default budget

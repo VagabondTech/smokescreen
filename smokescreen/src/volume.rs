@@ -3,7 +3,7 @@
 use glam::Vec3;
 
 use crate::{
-    grid::{Grid, sample_open, sample_open_near},
+    grid::{Grid, sample_open_near},
     holes::{HoleShape, hole_attenuation},
     math::{safe_recip, slab},
     timeline::DensityTable,
@@ -51,29 +51,16 @@ impl VolumeField<'_> {
     /// only (see [`Grid::sample_distance`]), as a renderer's sampler does
     /// with densities baked per voxel.
     pub fn density(&self, p: Vec3) -> f32 {
-        let g = self.grid;
-        let d = sample_open(
-            &g.distance,
-            self.density.values(),
-            &g.occupancy,
-            g.min,
-            g.voxel_size,
-            g.dims,
-            p,
-        );
-        if d > 0.0 {
-            d * hole_attenuation(p, self.holes)
-        } else {
-            0.0
-        }
+        self.density_near(&self.grid.sample_cells, self.density.empty_from().max(2), p)
     }
 
-    /// [`Self::density`] with the grid's sample cells
-    /// ([`crate::grid::sample_cells`]): the same value, found faster away
-    /// from walls and where the sample reads nothing. Every byte from
-    /// `zero_from` (at least 2) on must have density 0.
-    #[inline]
-    pub(crate) fn density_near(&self, cells: &[u8], zero_from: u8, p: Vec3) -> f32 {
+    /// [`Self::density`] with the grid's sample cells `cells`
+    /// ([`Grid::sample_cells`]): the same value, found faster away from
+    /// walls and where the sample reads nothing. Every byte from
+    /// `zero_from` (at least 2) on must have density 0. Always inlined: as
+    /// a call of its own per sample, it would cost `amount` dearly.
+    #[inline(always)]
+    fn density_near(&self, cells: &[u8], zero_from: u8, p: Vec3) -> f32 {
         let g = self.grid;
         let d = sample_open_near(
             &g.distance,
@@ -96,26 +83,15 @@ impl VolumeField<'_> {
     /// Add the density integrated along `ro + rd·t`, `t0 ≤ t ≤ t1` (metres of
     /// full-density cloud) to `acc`, about [`Self::step`] at a time
     /// (midpoint rule). Stops (and returns `true`) as soon as `stop(*acc)`
-    /// holds.
+    /// holds. Skips what reads nothing: the parts of the line outside the
+    /// grid's front bounds, its empty bricks and, from the grid's sample
+    /// cells, the samples whose eight voxels all have density 0.
     pub fn amount(&self, ro: Vec3, rd: Vec3, t0: f32, t1: f32, acc: &mut f32, stop: &dyn Fn(f32) -> bool) -> bool {
-        self.amount_by(|p| self.density(p), ro, rd, t0, t1, acc, stop)
-    }
-
-    /// [`Self::amount`] with the grid's sample cells: the same result.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn amount_near(
-        &self,
-        cells: &[u8],
-        ro: Vec3,
-        rd: Vec3,
-        t0: f32,
-        t1: f32,
-        acc: &mut f32,
-        stop: &dyn Fn(f32) -> bool,
-    ) -> bool {
         // Every byte from `empty_from` on has density 0. The cells store
         // bytes 0 and 1 alike, so only cells from 2 on read nothing.
         let zero_from = self.density.empty_from().max(2);
+        // A slice, taken once: the samples don't reload it from the grid.
+        let cells = self.grid.sample_cells.as_slice();
         self.amount_by(|p| self.density_near(cells, zero_from, p), ro, rd, t0, t1, acc, stop)
     }
 
@@ -205,7 +181,8 @@ mod tests {
     /// A sample is the average of the densities of the open voxels around
     /// it, weighted as a trilinear filter weights them: the order a
     /// renderer's sampler works in with densities baked per voxel, not the
-    /// density of the averaged distance.
+    /// density of the averaged distance. With the grid's sample cells it is
+    /// the very same value.
     #[test]
     fn samples_average_the_voxels_densities() {
         let dims = UVec3::new(8, 8, 8);
@@ -231,7 +208,10 @@ mod tests {
             bounds_max: Vec3::ZERO,
             bricks: Vec::new(),
             front_bounds: Vec::new(),
+            sample_cells: Vec::new(),
         };
+        let mut celled = grid.clone();
+        celled.build_sample_cells();
         let corner = |n: u32| UVec3::new(n & 1, (n >> 1) & 1, n >> 2);
         for (growth, dissolve) in [(1.2, 0.0), (0.8, 0.0), (1.2, 0.5), (1.2, 0.9)] {
             let table = DensityTable::new(growth, dissolve);
@@ -241,6 +221,7 @@ mod tests {
                 holes: &[],
                 step: VolumeSteps::HalfVoxel.step(grid.voxel_size),
             };
+            let with_cells = VolumeField { grid: &celled, ..field };
             for k in 0..2000u32 {
                 let r = |s: u32| (hash_u32(k.wrapping_mul(7) ^ s) >> 8) as f32 / (1u32 << 24) as f32;
                 // Between voxel centres, away from the grid's edges.
@@ -261,6 +242,7 @@ mod tests {
                 let want = if weight > 0.0 { sum / weight } else { 0.0 };
                 let got = field.density(p);
                 assert!((got - want).abs() < 1e-5, "{got} against {want} at {p:?}");
+                assert_eq!(with_cells.density(p).to_bits(), got.to_bits(), "at {p:?}");
             }
         }
     }

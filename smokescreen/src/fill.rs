@@ -1,11 +1,12 @@
 //! The flood fill, run a little at a time.
 //!
 //! A fill is a Dijkstra expansion over a voxel grid around the grenade,
-//! followed (for faceted clouds) by a halo, two distance transforms, puff
-//! seeding and binning. A fill job runs those stages as a state machine that
-//! can stop after any unit of work and pick up where it left off. Stopping
-//! never changes what the next unit does, so the finished cloud is the same
-//! however the work was split across ticks.
+//! followed (for volumetric clouds) by the cells their samples read
+//! ([`Grid::sample_cells`]), or (for faceted clouds) by a halo, two
+//! distance transforms, puff seeding and binning. A fill job runs those
+//! stages as a state machine that can stop after any unit of work and pick
+//! up where it left off. Stopping never changes what the next unit does, so
+//! the finished cloud is the same however the work was split across ticks.
 
 use std::{cmp::Reverse, collections::BinaryHeap, sync::OnceLock};
 
@@ -113,6 +114,8 @@ pub(crate) mod cost {
     pub const BIN_PUFF: i64 = 80;
     /// Per filled voxel folded into the bricks (up to eight of them).
     pub const BRICK_VOXEL: i64 = 8;
+    /// The sample cells, per 64 voxels.
+    pub const CELLS_PER_64: i64 = 4;
     /// Padding: per filled voxel next to a wall, per clipped voxel found
     /// (asking about its neighbours), per clipped voxel checked for whether
     /// it is safe to pad, and per clipped voxel per pass of deciding.
@@ -362,6 +365,7 @@ enum Stage {
     PadSolve,
     PadFinish,
     Bricks,
+    Cells,
     HaloStart,
     Halo,
     RegionStart,
@@ -469,6 +473,8 @@ pub(crate) struct FillJob {
     /// How many filled (then padded) voxels the bricks stage has folded in.
     brick_cursor: usize,
     front: Vec<Option<(Vec3, Vec3)>>,
+    /// Volumetric fills: see [`Grid::sample_cells`].
+    sample_cells: Vec<u8>,
 }
 
 impl FillJob {
@@ -551,6 +557,7 @@ impl FillJob {
             bricks_done: Vec::new(),
             brick_cursor: 0,
             front: Vec::new(),
+            sample_cells: Vec::new(),
             spec,
         }
     }
@@ -666,6 +673,7 @@ impl FillJob {
                 Stage::PadSolve => self.pad_solve(work),
                 Stage::PadFinish => self.pad_finish(work),
                 Stage::Bricks => self.bricks(work),
+                Stage::Cells => self.cells(work),
                 Stage::HaloStart => self.halo_start(work),
                 Stage::Halo => self.halo(&probe, work),
                 Stage::RegionStart => self.region_start(work),
@@ -1268,9 +1276,20 @@ impl FillJob {
             self.stage = if self.spec.facets.is_some() {
                 Stage::HaloStart
             } else {
-                Stage::Done
+                Stage::Cells
             };
         }
+    }
+
+    /// The cells a volumetric cloud's samples read (see
+    /// [`Grid::sample_cells`]), from the finished distances and occupancy:
+    /// a few passes over the whole grid, in one piece.
+    fn cells(&mut self, work: &mut Work) {
+        if !work.begin(self.count as i64 / 64 * cost::CELLS_PER_64) {
+            return;
+        }
+        self.sample_cells = crate::grid::sample_cells(&self.distance, &self.occupancy, self.dims.as_uvec3());
+        self.stage = Stage::Done;
     }
 
     /// Keep expanding past the fill through free space, by a plain Euclidean
@@ -1665,12 +1684,17 @@ impl FillJob {
             bounds_max: self.bounds.1,
             bricks: self.bricks_done,
             front_bounds: self.front,
+            sample_cells: self.sample_cells,
         };
         if grid.bricks.is_empty() {
             grid.build_bricks();
         }
         if grid.front_bounds.is_empty() {
             grid.build_front_bounds();
+        }
+        if self.spec.facets.is_none() && grid.sample_cells.is_empty() {
+            // An empty cloud, which never reached the stage.
+            grid.build_sample_cells();
         }
         let facets = self.spec.facets.map(|_| Facets {
             bins: self.bins.unwrap_or_else(|| Bins::build(&[], self.settings.blend, 1.0)),
