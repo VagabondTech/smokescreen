@@ -85,6 +85,34 @@ fn nowhere_to_go_gives_an_empty_cloud() {
     );
 }
 
+/// Volumetric clouds carry the cells their samples read, as
+/// `Grid::build_sample_cells` builds them from the finished grid, an empty
+/// cloud's too; faceted and crystal clouds, whose rules never sample the
+/// distances that way, carry none.
+#[test]
+fn fills_build_the_sample_cells() {
+    let level = common::level();
+    for style in [Style::Volumetric, Style::Faceted, Style::Crystal] {
+        for (origin, seed) in common::pops() {
+            let grid = fill_cloud(&config(), &CloudSpec::new(origin, 0, seed, style), &level).grid;
+            if style == Style::Volumetric {
+                let mut rebuilt = grid.clone();
+                rebuilt.build_sample_cells();
+                assert_eq!(grid.sample_cells, rebuilt.sample_cells, "cloud at {origin:?}");
+                // Cells beside the ground or a wall, and cells that read
+                // nothing at any age.
+                assert!(grid.sample_cells.contains(&0) && grid.sample_cells.contains(&grid::EMPTY_VOXEL));
+            } else {
+                assert!(grid.sample_cells.is_empty(), "{style:?} cloud at {origin:?}");
+            }
+        }
+    }
+    let buried = BoxObstacles::new(vec![ObstacleBox::from_center_size(Vec3::ZERO, Vec3::splat(40.0))]);
+    let grid = fill(&buried, Vec3::ZERO, Style::Volumetric).grid;
+    assert!(grid.is_empty() && grid.sample_cells.len() == grid.len());
+    assert!(grid.sample_cells.iter().all(|&c| c == grid::EMPTY_VOXEL));
+}
+
 #[test]
 fn roofs_shade_sun_and_sky() {
     // Half the smoke under a 3 m roof covering z > 0.

@@ -361,19 +361,40 @@ fn views_are_shared_between_threads() {
     });
 }
 
+/// A cloud filled elsewhere and inserted answers exactly as one popped, in
+/// every style; so does a volumetric one whose grid comes without its
+/// sample cells, only more slowly.
 #[test]
 fn insert_matches_pop() {
     let level = common::level();
     let (origin, seed) = common::pops()[3];
-    let spec = CloudSpec::new(origin, 0, seed, Style::Faceted);
-    let shape = Arc::new(fill_cloud(&config(), &spec, &level));
-    let mut a = Smokes::new(config(), &level);
-    a.pop(spec);
-    let mut b = Smokes::new(config(), &level);
-    b.insert(spec, shape);
-    for tick in [20, 200, 900] {
-        let (p, q) = (origin - Vec3::new(6.0, -1.0, 2.0), origin + Vec3::new(6.0, 1.0, 1.0));
-        assert_eq!(a.occlusion(p, q, tick).to_bits(), b.occlusion(p, q, tick).to_bits());
+    for style in [Style::Volumetric, Style::Faceted, Style::Crystal] {
+        let spec = CloudSpec::new(origin, 0, seed, style);
+        let shape = fill_cloud(&config(), &spec, &level);
+        let mut bare = shape.clone();
+        bare.grid.sample_cells = Vec::new();
+        let mut a = Smokes::new(config(), &level);
+        a.pop(spec);
+        let mut b = Smokes::new(config(), &level);
+        b.insert(spec, Arc::new(shape));
+        let mut c = Smokes::new(config(), &level);
+        c.insert(spec, Arc::new(bare));
+        let mut rng = common::Rng(seed as u64);
+        // Inside the room the cloud fills.
+        let (lo, hi) = (origin - Vec3::new(6.0, 0.0, 2.5), origin + Vec3::new(5.0, 3.0, 5.0));
+        let mut through = 0;
+        // Growing, grown, and early, halfway and late in the fade.
+        for tick in [20, 200, 900, 1990, 2112, 2240] {
+            for _ in 0..40 {
+                let (p, q) = (rng.point(lo, hi), rng.point(lo, hi));
+                let want = a.occlusion(p, q, tick);
+                let (got, bare) = (b.occlusion(p, q, tick), c.occlusion(p, q, tick));
+                assert_eq!(got.to_bits(), want.to_bits(), "{style:?}, tick {tick}");
+                assert_eq!(bare.to_bits(), want.to_bits(), "{style:?} without cells, tick {tick}");
+                through += (want > 0.0) as u32;
+            }
+        }
+        assert!(through > 60, "{style:?}: {through} lines through cloud");
     }
 }
 

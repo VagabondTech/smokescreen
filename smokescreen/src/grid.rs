@@ -77,6 +77,16 @@ pub struct Grid {
     /// front hasn't reached yet or the fade has already eaten. Built by
     /// [`Grid::build_front_bounds`].
     pub front_bounds: Vec<Option<(Vec3, Vec3)>>,
+    /// Per voxel, for the cell of eight voxels starting at it (the ones a
+    /// trilinear sample between them reads): 0 if any of the eight is
+    /// solid, else the smallest of their distance bytes, at least 1. A
+    /// volumetric sample tells from this one byte the common case, away
+    /// from walls, and a sample that reads nothing: one whose eight voxels
+    /// the growth front hasn't reached yet or the fade has already eaten.
+    /// Volumetric clouds only; empty for faceted and crystal ones. Samples
+    /// give the same values without them, more slowly. Built by
+    /// [`Grid::build_sample_cells`].
+    pub sample_cells: Vec<u8>,
 }
 
 /// Edge length of a brick, in voxels.
@@ -138,10 +148,10 @@ pub(crate) fn sample_open(
 }
 
 /// [`sample_open`] of a density, with the grid's sample cells (see
-/// [`sample_cells`]): the same value, from one byte in the common cases,
-/// away from walls and where the sample reads nothing. Every byte from
-/// `zero_from` on must have the value 0; the cells store bytes 0 and 1
-/// alike, so `zero_from` must be at least 2.
+/// [`Grid::sample_cells`]; empty for none): the same value, from one byte
+/// in the common cases, away from walls and where the sample reads
+/// nothing. Every byte from `zero_from` on must have the value 0; the
+/// cells store bytes 0 and 1 alike, so `zero_from` must be at least 2.
 #[allow(clippy::too_many_arguments)]
 #[inline]
 pub(crate) fn sample_open_near(
@@ -172,12 +182,7 @@ pub(crate) fn sample_open_near(
     )
 }
 
-/// Per voxel, for the cell of eight voxels starting at it (the ones a
-/// trilinear sample between them reads): 0 if any of the eight is solid,
-/// else the smallest of their distance bytes, at least 1. Built once per
-/// cloud, so a sample can tell from one byte the common case, away from
-/// walls, and a sample that reads nothing: one whose eight voxels the
-/// growth front hasn't reached yet or the fade has already eaten.
+/// [`Grid::sample_cells`] of a distance channel and an occupancy channel.
 pub(crate) fn sample_cells(distance: &[u8], occ: &[u8], dims: UVec3) -> Vec<u8> {
     let n = distance.len();
     if n == 0 {
@@ -432,6 +437,11 @@ impl Grid {
             brick_layer(&self.distance, self.dims, bz, &mut bricks);
         }
         self.bricks = bricks;
+    }
+
+    /// Fill [`Self::sample_cells`] from the distance and occupancy channels.
+    pub fn build_sample_cells(&mut self) {
+        self.sample_cells = sample_cells(&self.distance, &self.occupancy, self.dims);
     }
 
     /// The brick a point falls in (clamped to the grid), with its bounds.

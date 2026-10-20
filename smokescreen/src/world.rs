@@ -8,7 +8,6 @@ use crate::{
     chords::{ChordBounds, ChordField, CoreField, CrystalField},
     facets::{FacetField, FacetRule, FacetSettings, LivePuff},
     fill::{CloudShape, FillJob, FillSpec, Source, Work},
-    grid::sample_cells,
     holes::{HOLE_BUFFER, HoleKind, HoleSettings, HoleShape, holes_near},
     level::Level,
     math::{boxes_overlap, clip_segment, distance_to_segment, hash_u32, safe_recip, slab},
@@ -261,26 +260,15 @@ struct Ready {
     /// Faceted: seconds after the pop when each puff pops in.
     arrival: Vec<f32>,
     bounds: (Vec3, Vec3),
-    /// Volumetric: per voxel, whether a solid voxel is among the corners
-    /// of the cell starting there, and the smallest distance byte among
-    /// them (see [`sample_cells`]).
-    cells: Vec<u8>,
 }
 
 impl Ready {
     fn new(shape: Arc<CloudShape>) -> Self {
         let bounds = shape.bounds();
-        let grid = &shape.grid;
-        let cells = if shape.facets.is_none() {
-            sample_cells(&grid.distance, &grid.occupancy, grid.dims)
-        } else {
-            Vec::new()
-        };
         Self {
             shape,
             arrival: Vec::new(),
             bounds,
-            cells,
         }
     }
 }
@@ -660,6 +648,13 @@ impl<L: Level> Smokes<L> {
     /// A cloud whose fill was computed elsewhere (by [`fill_cloud`], or
     /// received from a server). It must come from the same spec, level and
     /// tuning, or machines will disagree.
+    ///
+    /// Its grid is used as it is. One put together by hand (received field
+    /// by field, say) needs its bricks ([`crate::Grid::build_bricks`]), and
+    /// checks are faster with its front bounds and, if it is volumetric,
+    /// its sample cells ([`crate::Grid::build_front_bounds`],
+    /// [`crate::Grid::build_sample_cells`]); without those they give the
+    /// same answers. [`fill_cloud`] builds all three.
     pub fn insert(&mut self, spec: CloudSpec, shape: Arc<CloudShape>) -> CloudId {
         self.new_cloud(spec, Fill::Ready(Ready::new(shape)))
     }
@@ -1462,7 +1457,7 @@ impl<'a> View<'a> {
                         holes,
                         step: self.config.tuning.volume_steps.step(shape.grid.voxel_size),
                     }
-                    .amount_near(&ready.cells, a, rd, t0, t1, &mut part, &|p| stop(lower + p - margin))
+                    .amount(a, rd, t0, t1, &mut part, &|p| stop(lower + p - margin))
                 }
             };
             lower += part;
@@ -1604,7 +1599,7 @@ impl<'a> View<'a> {
                         holes,
                         step: self.config.tuning.volume_steps.step(shape.grid.voxel_size),
                     }
-                    .amount_near(&ready.cells, a, rd, t0, t1, acc, stop)
+                    .amount(a, rd, t0, t1, acc, stop)
                 }
             };
             stopped.then_some(())
