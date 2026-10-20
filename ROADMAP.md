@@ -157,15 +157,26 @@ The README's tables come from `cargo bench -p smokescreen`. The weak spots:
   coarser march takes the far side of the farthest smoke's box, which is
   cautious: inside a dense cloud rays end long before it, so close up a
   quarter would keep the noise too, but the march would have to measure
-  how far its rays get. Next: point lights baked per voxel (each light in
-  range costs every sample with smoke: close up at the best step, one
-  muzzle flash in a grown cloud costs 14 % more, eight 2.1 times as
-  much). Tried on the M4
-  and dropped: a third fewer instructions in the sample loop (6–7 %
-  slower), the lighting read once per four samples (no faster on a grown
-  cloud, and up to 87 levels of change at the cheapest steps), and the
-  composite reading the march's depths at its resolution instead of the
-  multisampled depth (no faster).
+  how far its rays get. Tried on the M4 and dropped: a third fewer
+  instructions in the sample loop (6–7 % slower), the lighting read once
+  per four samples (no faster on a grown cloud, and up to 87 levels of
+  change at the cheapest steps), and the composite reading the march's
+  depths at its resolution instead of the multisampled depth (no faster).
+
+- **Many point lights.** Each point light within range of a volumetric
+  smoke is worked out at every sample that holds smoke, with a density
+  read halfway to the light for its shadow. So flashes cost more the more
+  of them are lit at once: close up at the best step on an Apple M4, a
+  grown cloud costs 1.44 ms without flashes, 1.67 with one muzzle flash
+  and 2.65 with eight. Tried for 0.2 and left out: baking the lights into
+  a volume per smoke every frame, read once per sample. It saves about
+  1 ms with eight flashes but nothing with one, costs a little more far
+  away, and turns the glow around your own muzzle flash into a soft wash,
+  which 0.3 m voxels can't hold. Taking each light's shadow from the
+  sample's own density instead is cheaper, but leaves an HE flash unlit,
+  since it sits in the hole its blast clears. A game with big firefights
+  in smoke might want baking as an option, or for flashes away from the
+  camera only.
 
 - **Thin clouds.** Halfway through the fade, volumetric checks cost 2.7×
   what they cost when grown (0.098 against 0.036 ms per 250 on an Apple
