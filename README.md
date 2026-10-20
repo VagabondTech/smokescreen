@@ -219,8 +219,8 @@ The fill budget (`Config::fill_budget`, about 0.2 ms a tick on the VM, under 0.1
 | Faceted, `FacetRule::Exact` | 0.04 | 0.04 | 0.70 | 0.09 |
 | Faceted, `FacetRule::Core` | 0.04 | 0.04 | 0.12 | 0.08 |
 | Faceted, `FacetRule::Chords` | 0.04 | 0.04 | 0.13 | 0.08 |
-| Crystal, 0.8 m rule | 0.06 | 0.06 | 0.07 | 0.06 |
-| Crystal, any contact blocks | 0.03 | 0.03 | 0.04 | 0.05 |
+| Crystal, 0.8 m rule | 0.03 | 0.03 | 0.05 | 0.06 |
+| Crystal, any contact blocks | 0.02 | 0.02 | 0.04 | 0.05 |
 
 Halfway through the fade the clouds are thin, so many lines never reach the threshold and are integrated all the way through. The volumetric rule samples a line every voxel; with `Tuning::volume_steps` set to `HalfVoxel` it samples every half voxel, which counts a little more precisely and costs about 1.5 times as much. The exact faceted rule settles most lines from exact chord bounds (the puffs' hard polyhedra lie inside the cloud, and the polyhedra grown by the blend radius contain it) and traces only lines within 2 cm of the threshold, which are commoner in the fade. `FacetRule::Chords` counts only the inner of those bounds, each puff's hard polyhedron, and never traces, so halfway through the fade it costs what the core rule costs. The snapshot is the clouds' state at a tick (puff positions, holes), computed once per tick before the first check. For volumetric clouds it holds each cloud's density table too: the bench times the first snapshot in a new cache slot, which builds them all, while from tick to tick only clouds that are growing or fading build theirs again (about 0.15 µs each).
 

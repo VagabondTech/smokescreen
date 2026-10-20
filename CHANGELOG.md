@@ -72,6 +72,25 @@ are not in lockstep.
   through a faceted cloud with more than 32 holes. Checks cost the same:
   on an Apple M4 every figure of the bench is within its run-to-run noise
   of before.
+- **results** The crystal rule works out each puff's chord once per line.
+  It worked out the chord again in every bin cell that listed the puff,
+  three times over on average, and added up the cells' unions; now, as
+  with `FacetRule::Chords`, each chord is found the first time a cell
+  lists its puff, and what it adds to the length already counted counts
+  at once. On an Apple M4, 250 sight checks through 4 of 32 crystal clouds
+  take 0.030 instead of 0.060 ms once the clouds are grown (−50 %) and
+  0.046 instead of 0.066 ms halfway through the fade (−30 %) at the 0.8 m
+  threshold, and 0.023 instead of 0.029 ms (−21 %) and 0.036 instead of
+  0.041 ms (−12 %) when any contact blocks; `occlusion`, which counts every
+  cloud along the line to its end, takes 0.60 instead of 1.58 ms for the
+  same lines once grown (−62 %; medians of 11 alternated runs). The
+  amounts are the same but for rounding: they differ in the last bits (by
+  at most 6.3e-7 of the amount) on up to 9 % of the lines in the tests'
+  workloads, and none of 140,000 `blocks_sight` answers changed. A line
+  that meets more than 64 separate stretches of one cloud leaves the rest
+  out, so the rule counts less there, never more (the tests' lines meet at
+  most 9). `EXPECTED` and `EXPECTED_CHORDS` changed, as both hash crystal
+  clouds; `EXPECTED_MESHES` did not.
 - `FacetRule::Chords`, a faceted rule between `Core` and `Exact`: the
   length of a line inside each puff's hard polyhedron, clipped to the ball
   of its `Puff::room` (inside the fill's space, so clear of walls), minus a

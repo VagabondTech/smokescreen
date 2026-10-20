@@ -14,7 +14,7 @@ use smokescreen::*;
 /// Recorded on aarch64-apple-darwin; CI checks it on x86-64 Linux and Windows
 /// too. Any platform (or optimisation level, or CPU feature set) that differs
 /// breaks lockstep.
-const EXPECTED: u64 = 0xba64_31b9_4bb6_62aa;
+const EXPECTED: u64 = 0x9fe6_c015_d40a_21a0;
 
 struct Fnv(u64);
 
@@ -127,7 +127,7 @@ fn determinism_hash() {
 /// Recorded on aarch64-apple-darwin, like `EXPECTED`. The faceted chord
 /// rule's runs have a hash of their own, so that adding the rule left
 /// `EXPECTED` as it was.
-const EXPECTED_CHORDS: u64 = 0x1834_799b_ac21_c89d;
+const EXPECTED_CHORDS: u64 = 0x82fe_2063_330b_c7e5;
 
 #[test]
 fn determinism_hash_chords() {

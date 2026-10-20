@@ -29,7 +29,8 @@ both).
   front hasn't reached or the fade has eaten (3× faster late in the fade),
   per-check hole filtering; both leave results bit-identical. Volumetric
   samples a voxel apart instead of half a voxel (`Tuning::volume_steps`), a
-  third cheaper (0.2).
+  third cheaper, and crystal checks work out each puff's chord once per
+  line instead of in every bin cell that lists it, half the cost (0.2).
 - **General-purpose clouds:** sources (point, line, box), presets
   (`grenade`, `wall`, `gas`, `fog_bank`, `steam_vent`), `Tuning::max_clouds`
   so every cloud that counts is drawn, pop order independence.
@@ -104,6 +105,23 @@ both).
   or recommend `FacetRule::Chords` plus a lower threshold (it leaves out
   the blend between puffs, most of what it doesn't count). Crystal has the
   same trade-off unless its threshold is 0.
+- **The exact faceted rule's precision.** Its trace places each surface
+  crossing to about 5 mm (`MIN_STEP`). Against a reference trace in f64
+  with steps down to 1e-7 m, a line's amount is off by 1.3–3.2 mm on
+  average and by up to 2.2 cm, so `blocks_sight`'s 2 cm margin holds by
+  experience (the tests' 730,000 random lines), not by proof. Measured on
+  an Apple M4 for 0.2 and left out: placing each crossing to 1e-5 m (a
+  secant guess, then a step just past it) cuts the average error a
+  hundredfold but still misses slivers thinner than a step (up to 4.5 mm
+  on a line), and costs 7–8 % on checks through fading clouds and 13–23 %
+  on `occlusion`. Also searching every stretch a step jumps over brings
+  the worst line to 0.3 mm, at 21–35 % and 36–46 %. A margin small enough
+  to prove would also need steps that hold two crossings searched, and the
+  wall clip's slope allowed for: trilinear between voxels, it changes up to
+  about 1.8 times as fast as distance near corners. The margin itself
+  matters little at 0.8 m: through faceted clouds, `blocks_sight` traces
+  13.7 % of its checks with it and would trace 13.4 % without. When any
+  contact blocks, a margin of 0 would halve them (23 % to 11 %).
 - **`NoiseWithinRule::Filled`.** Its cost (about 12 % more than the default
   close up at the best step) could come down by adding up the baked light
   channels along the ray instead of working out the light at every sample,
@@ -168,6 +186,12 @@ The README's tables come from `cargo bench -p smokescreen`. The weak spots:
   shell, and halfway through the fade only the inner 3/8 of the fill
   distance is still solid core, which the lines the rule sees through
   miss. The faceted core rule behaves the same way.
+- **`occlusion` under the exact faceted rule** traces every line to the
+  end: 8.2 ms for the bench's 250 lines through four grown clouds on an
+  Apple M4, about 33 µs a line, where `blocks_sight` settles most of them
+  from chord bounds in 0.04 ms. `SmokeVision::transmittance` calls
+  `occlusion`, so a game that asks it often through faceted smoke pays
+  that; the chord rule costs 0.9 ms there.
 - **The per-tick snapshot** of faceted and crystal clouds (every puff's
   position and size: 0.1 to 0.3 ms for 32 clouds) is computed for every
   cloud, whether or not a check comes near it. Compute a cloud's puffs on

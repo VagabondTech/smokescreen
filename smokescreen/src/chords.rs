@@ -3,12 +3,12 @@
 //! core rules (each puff's polyhedron clipped to its room, or its inscribed
 //! sphere).
 //!
-//! All of them walk the puff bins along the segment. The crystal and core
-//! rules add up, in each bin cell, the length of the union of the pieces'
-//! intervals inside that cell: cells split the segment into disjoint parts,
-//! so nothing is counted twice. The chord rule works out each puff's
-//! interval once, the first time a cell lists the puff, and adds what it
-//! adds to the union counted so far.
+//! All of them walk the puff bins along the segment. The core rule adds up,
+//! in each bin cell, the length of the union of the pieces' intervals inside
+//! that cell: cells split the segment into disjoint parts, so nothing is
+//! counted twice. The crystal and chord rules work out each puff's interval
+//! once, the first time a cell lists the puff, and add what it adds to the
+//! union counted so far.
 
 use glam::{IVec3, Vec3};
 
@@ -19,8 +19,9 @@ use crate::math::{safe_recip, slab};
 /// Intervals one bin cell collects before merging them.
 const CELL_INTERVALS: usize = 64;
 
-/// Words of the puffs-seen masks of [`ChordBounds`] and [`ChordField`]
-/// (puffs past it are tested again in every cell, which only costs time).
+/// Words of the puffs-seen masks of [`CrystalField`], [`ChordField`] and
+/// [`ChordBounds`] (puffs past it are tested again in every cell, which only
+/// costs time).
 const SEEN_WORDS: usize = 32;
 
 /// A few intervals along a ray, merged on demand, minus where the ray is
@@ -420,26 +421,34 @@ impl CrystalField<'_> {
     }
 
     /// Add the length of `ro + rd·t`, `t0 ≤ t ≤ t1`, inside the cloud to
-    /// `acc` (exactly: the union of the puffs), a bin cell at a time. Stops
-    /// (and returns `true`) as soon as `stop(*acc)` holds.
+    /// `acc` (exactly: the union of the puffs, unless the line meets more
+    /// than 64 separate stretches of the cloud, when it leaves the rest out:
+    /// less, never more). Stops (and returns `true`) as soon as `stop(*acc)`
+    /// holds.
     pub fn amount(&self, ro: Vec3, rd: Vec3, t0: f32, t1: f32, acc: &mut f32, stop: &dyn Fn(f32) -> bool) -> bool {
-        let mut iv = Intervals::new(&[]);
-        walk_bins(self.bins, ro, rd, t0, t1, |list, enter, exit| {
-            iv.clear();
+        // Each puff's chord is one interval along the whole ray (polyhedra
+        // are convex), found the first time a cell lists the puff, rather
+        // than worked out again in every cell that lists it (three times as
+        // many chords). What it adds to what is counted counts at once:
+        // every addition is at least 0, so stopping early can't change the
+        // answer.
+        let mut counted = Counted::new();
+        let mut seen = [0u64; SEEN_WORDS];
+        walk_bins(self.bins, ro, rd, t0, t1, |list, _enter, _exit| {
+            let before = *acc;
             for &i in list {
+                let (word, bit) = ((i / 64) as usize, 1u64 << (i % 64));
+                if let Some(w) = seen.get_mut(word) {
+                    if *w & bit != 0 {
+                        continue;
+                    }
+                    *w |= bit;
+                }
                 if let Some((lo, hi)) = polyhedron_interval(&self.live[i as usize], ro, rd) {
-                    iv.push(lo.max(enter), hi.min(exit));
+                    *acc += counted.add(lo.max(t0), hi.min(t1), &[]);
                 }
             }
-            if iv.n == 0 && iv.banked == 0.0 {
-                return false;
-            }
-            let covered = iv.covered();
-            if covered > 0.0 {
-                *acc += covered;
-                return stop(*acc);
-            }
-            false
+            *acc > before && stop(*acc)
         })
     }
 }
@@ -937,9 +946,46 @@ mod tests {
         (puffs, live, bins, holes)
     }
 
+    /// The length of the union of each listed puff's `chord`, clipped to
+    /// every bin cell along `ro + rd·t`, `0 ≤ t ≤ t1`, less `holes`, added
+    /// up cell by cell.
+    fn per_cell(
+        bins: &Bins,
+        ro: Vec3,
+        rd: Vec3,
+        t1: f32,
+        holes: &[(f32, f32)],
+        chord: impl Fn(usize) -> Option<(f32, f32)>,
+    ) -> f32 {
+        let mut iv = Intervals::new(holes);
+        let mut acc = 0.0;
+        walk_bins(bins, ro, rd, 0.0, t1, |list, enter, exit| {
+            iv.clear();
+            for &i in list {
+                if let Some((lo, hi)) = chord(i as usize) {
+                    iv.push(lo.max(enter), hi.min(exit));
+                }
+            }
+            acc += iv.covered();
+            false
+        });
+        acc
+    }
+
+    /// Lines through and around [`hand_cloud`].
+    fn hand_lines() -> impl Iterator<Item = (Vec3, Vec3)> {
+        (0..400).map(|k| {
+            let (s, c) = crate::math::sin_cos(k as f32 * 0.37);
+            let (s2, c2) = crate::math::sin_cos(k as f32 * 1.13);
+            let a = Vec3::new(-1.5 + s, 1.3 + c, -1.0 + s2);
+            let b = Vec3::new(4.2 + c2, 1.4 - s * c, 3.8 + s2 * c);
+            (a, b)
+        })
+    }
+
     /// The chord rule counts what clipping every listed puff's chord to
-    /// every cell counts (as the crystal rule does), to rounding; and
-    /// stopping early gives the answer the whole amount gives.
+    /// every cell counts, to rounding; and stopping early gives the answer
+    /// the whole amount gives.
     #[test]
     fn chord_amounts_match_a_cell_by_cell_count() {
         let (puffs, live, bins, holes) = hand_cloud();
@@ -949,38 +995,53 @@ mod tests {
             puffs: &puffs,
             holes: &holes,
         };
-        let per_cell = |ro: Vec3, rd: Vec3, t1: f32| {
-            let mut spans = [(0.0, 0.0); HOLE_BUFFER];
-            let mut iv = Intervals::new(hole_spans(field.holes, ro, rd, &mut spans));
-            let mut acc = 0.0;
-            walk_bins(field.bins, ro, rd, 0.0, t1, |list, enter, exit| {
-                iv.clear();
-                for &i in list {
-                    if let Some((lo, hi)) = field.chord(i as usize, ro, rd) {
-                        iv.push(lo.max(enter), hi.min(exit));
-                    }
-                }
-                acc += iv.covered();
-                false
-            });
-            acc
-        };
         let mut through = 0;
-        for k in 0..400 {
-            let (s, c) = crate::math::sin_cos(k as f32 * 0.37);
-            let (s2, c2) = crate::math::sin_cos(k as f32 * 1.13);
-            let a = Vec3::new(-1.5 + s, 1.3 + c, -1.0 + s2);
-            let b = Vec3::new(4.2 + c2, 1.4 - s * c, 3.8 + s2 * c);
+        for (a, b) in hand_lines() {
             let len = a.distance(b);
             let rd = (b - a) / len;
             let mut whole = 0.0;
             field.amount(a, rd, 0.0, len, &mut whole, &|_| false);
-            let reference = per_cell(a, rd, len);
+            let mut spans = [(0.0, 0.0); HOLE_BUFFER];
+            let holes = hole_spans(field.holes, a, rd, &mut spans);
+            let reference = per_cell(&bins, a, rd, len, holes, |i| field.chord(i, a, rd));
             assert!(
                 (whole - reference).abs() <= 1e-5 * (1.0 + reference),
                 "{whole} vs {reference}"
             );
             through += (whole > 0.0) as u32;
+            for threshold in [0.1, 0.5, 1.0, 2.0] {
+                let mut acc = 0.0;
+                let stopped = field.amount(a, rd, 0.0, len, &mut acc, &|acc| acc >= threshold);
+                assert_eq!(stopped, whole >= threshold, "{whole} at {threshold}");
+            }
+        }
+        assert!(through > 300, "only {through} lines through the cloud");
+    }
+
+    /// So does the crystal rule (the union of the puffs' polyhedra, which
+    /// it once counted cell by cell), also when any contact blocks.
+    #[test]
+    fn crystal_amounts_match_a_cell_by_cell_count() {
+        let (_, live, bins, _) = hand_cloud();
+        let field = CrystalField {
+            bins: &bins,
+            live: &live,
+        };
+        let mut through = 0;
+        for (a, b) in hand_lines() {
+            let len = a.distance(b);
+            let rd = (b - a) / len;
+            let mut whole = 0.0;
+            field.amount(a, rd, 0.0, len, &mut whole, &|_| false);
+            let reference = per_cell(&bins, a, rd, len, &[], |i| polyhedron_interval(&live[i], a, rd));
+            assert!(
+                (whole - reference).abs() <= 1e-5 * (1.0 + reference),
+                "{whole} vs {reference}"
+            );
+            through += (whole > 0.0) as u32;
+            let mut acc = 0.0;
+            let touched = field.amount(a, rd, 0.0, len, &mut acc, &|acc| acc > 0.0);
+            assert_eq!(touched, whole > 0.0, "{whole} on any contact");
             for threshold in [0.1, 0.5, 1.0, 2.0] {
                 let mut acc = 0.0;
                 let stopped = field.amount(a, rd, 0.0, len, &mut acc, &|acc| acc >= threshold);
