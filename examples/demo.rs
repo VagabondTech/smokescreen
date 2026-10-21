@@ -44,6 +44,13 @@
 //!   less that. The smoke must look just as it does without it; compare the
 //!   `agreement` or `tiers` captures (the showcase times its shots by the
 //!   app's clock).
+//! - `SMOKE_DEMO_TUNNELS=<n>`, for the `agreement` and `tiers` scripts: once
+//!   the smoke is grown (or at `SMOKE_DEMO_SWEEP_AGE`), 16 bullets along the
+//!   front view carve tunnels through it, and it freezes while they are
+//!   open. Half a second before it pops, n older smokes pop out of every
+//!   view, with 16 tunnels through each. The renderer keeps every drawn
+//!   smoke's holes in one array, oldest smoke first, so with n = 5 the smoke
+//!   in view brings the 81st to 96th.
 //! - `SMOKE_DEMO_BUDGET_MS=<ms>` sets the budget for budget mode (default 2).
 //! - `SMOKE_DEMO_GPU_TIMINGS=1` / `0` turns GPU timestamp diagnostics on or
 //!   off (HUD timings, budget mode, the tier sweep). Default: on, except on
@@ -1484,21 +1491,22 @@ fn update_hud(
     };
 }
 
-/// Has any smoke been growing for longer than `seconds`?
+/// Has the newest smoke been growing for longer than `seconds`?
 fn grown(world: &SmokeWorld, clock: &SmokeClock, seconds: f32) -> bool {
     let rate = world.config().tick_rate;
-    world.clouds().any(|c| {
+    world.clouds().max_by_key(|c| c.spec().pop_tick).is_some_and(|c| {
         c.age(clock.tick, rate)
             .is_some_and(|a| a > c.timeline().start + seconds)
     })
 }
 
-/// Did any smoke pop more than `seconds` ago?
+/// Did the newest smoke pop more than `seconds` ago?
 fn older_than(world: &SmokeWorld, clock: &SmokeClock, seconds: f32) -> bool {
     let rate = world.config().tick_rate;
     world
         .clouds()
-        .any(|c| c.age(clock.tick, rate).is_some_and(|a| a > seconds))
+        .max_by_key(|c| c.spec().pop_tick)
+        .is_some_and(|c| c.age(clock.tick, rate).is_some_and(|a| a > seconds))
 }
 
 fn place(eye: Vec3, at: Vec3, transform: &mut Transform, cam: &mut FlyCam) {
@@ -2005,6 +2013,8 @@ struct Sweep {
     freeze_age: Option<f32>,
     /// Steady point lights in the smoke (`SMOKE_DEMO_SWEEP_LIGHTS`).
     lights: usize,
+    /// `SMOKE_DEMO_TUNNELS`.
+    tunnels: Option<Tunnels>,
 }
 
 impl Sweep {
@@ -2024,6 +2034,7 @@ impl Sweep {
             ),
             freeze_age: setting("sweep_age").and_then(|s| s.parse().ok()),
             lights: setting("sweep_lights").and_then(|s| s.parse().ok()).unwrap_or(0),
+            tunnels: Tunnels::from_setting(),
         }
     }
 }
@@ -2044,6 +2055,69 @@ fn spawn_sweep_lights(commands: &mut Commands, n: usize) {
             },
             Transform::from_xyz(1.2 * angle.cos(), height, 4.6 + 1.2 * angle.sin()),
         ));
+    }
+}
+
+/// Bullet tunnels for the `tiers` and `agreement` scripts
+/// (`SMOKE_DEMO_TUNNELS`): 16 through the smoke they look at, and 16
+/// through each of `older` smokes that pop before it, out of every view.
+struct Tunnels {
+    older: usize,
+    /// The script's frame on which the bullets were fired.
+    fired: Option<u32>,
+}
+
+/// Where the older smokes pop, all in one place: 40 m up, in mid-air, so
+/// they are above every view's frustum and in front of every camera. (A
+/// smoke whose box straddles a camera's plane is dispatched over the whole
+/// screen, which would add its cost to the smoke in view.)
+const OLDER_SMOKES: Vec3 = Vec3::new(0.0, 40.0, 30.0);
+
+impl Tunnels {
+    fn from_setting() -> Option<Self> {
+        let older = setting("tunnels")?.parse().ok()?;
+        Some(Self { older, fired: None })
+    }
+
+    fn spawn_older(&self, commands: &mut Commands) {
+        for k in 0..self.older {
+            commands.spawn((
+                Smoke::default().with_seed(100 + k as u32),
+                Transform::from_translation(OLDER_SMOKES),
+            ));
+        }
+    }
+
+    /// Fires the bullets on the first call once every smoke has popped, and
+    /// is true from three frames later on, when the tunnels are fully open
+    /// (they open within 0.05 s and start closing after 0.35 s).
+    fn open(&mut self, frame: u32, world: &mut SmokeWorld, level: &Level, tick: u64) -> bool {
+        if self.fired.is_none() {
+            if world.clouds().count() <= self.older {
+                return false;
+            }
+            // Through the smoke in view: a 4 × 4 bundle along the front view,
+            // clear of the low wall and the crates, each to the first wall.
+            let (eye, at) = (Vec3::new(-2.5, 1.7, -9.0), Vec3::new(0.0, 1.4, 5.0));
+            let dir = (at - eye).normalize();
+            let right = dir.cross(Vec3::Y).normalize();
+            for i in 0..16 {
+                let (column, row) = ((i % 4) as f32, (i / 4) as f32);
+                let start = eye - right * column + Vec3::Y * (-1.0 + 0.8 * row);
+                let end = start + dir * level.raycast(start, dir, 60.0).unwrap_or(60.0);
+                world.bullet(start, end, tick);
+            }
+            // Through all the older smokes at once.
+            if self.older > 0 {
+                for i in 0..16 {
+                    let (column, row) = ((i % 4) as f32, (i / 4) as f32);
+                    let start = OLDER_SMOKES + Vec3::new(-10.0, -0.6 + 0.6 * row, -1.2 + 0.8 * column);
+                    world.bullet(start, start + Vec3::X * 20.0, tick);
+                }
+            }
+            self.fired = Some(frame);
+        }
+        self.fired.is_some_and(|f| frame >= f + 3)
     }
 }
 
@@ -2082,8 +2156,9 @@ fn tier_sweep(
     mut settings: ResMut<SmokeSettings>,
     diagnostics: Res<DiagnosticsStore>,
     (gpu, mut last_frame): (Res<GpuTimings>, Local<Option<Instant>>),
-    world: Res<SmokeWorld>,
+    mut world: ResMut<SmokeWorld>,
     clock: Res<SmokeClock>,
+    level: Res<Level>,
     mut finish: ResMut<Finish>,
 ) {
     let Ok((mut transform, mut cam, mut smoke_cam)) = camera.single_mut() else {
@@ -2144,15 +2219,31 @@ fn tier_sweep(
             }
         }
         s if s == grow_stage => {
-            if sweep.stage_frame == 1 {
+            // With tunnels, the older smokes pop half a second before it.
+            let pop_frame = match &sweep.tunnels {
+                Some(tunnels) => {
+                    if sweep.stage_frame == 1 {
+                        tunnels.spawn_older(&mut commands);
+                    }
+                    11
+                }
+                None => 1,
+            };
+            if sweep.stage_frame == pop_frame {
                 commands.spawn((Smoke::default().with_seed(7), Transform::from_xyz(0.0, 0.0, 4.6)));
             }
             // Freeze the smoke once fully grown (or at the age asked for), so
-            // every tier sees the same shape.
-            let frozen = match sweep.freeze_age {
+            // every tier sees the same shape; with tunnels, once they are open.
+            let ready = match sweep.freeze_age {
                 Some(age) => older_than(&world, &clock, age),
                 None => grown(&world, &clock, 3.5),
             };
+            let frame = sweep.stage_frame;
+            let frozen = ready
+                && sweep
+                    .tunnels
+                    .as_mut()
+                    .is_none_or(|t| t.open(frame, &mut world, &level, clock.tick));
             if frozen {
                 virtual_time.pause();
                 advance(sweep);
@@ -2342,6 +2433,8 @@ struct AgreementRun {
     freeze_age: Option<f32>,
     /// The dial step to draw at (`SMOKE_DEMO_TIER`); by default the top one.
     tier: usize,
+    /// `SMOKE_DEMO_TUNNELS`.
+    tunnels: Option<Tunnels>,
 }
 
 impl AgreementRun {
@@ -2354,6 +2447,7 @@ impl AgreementRun {
             tier: setting("tier")
                 .and_then(|s| s.parse().ok())
                 .map_or(quality::TIERS - 1, |t: usize| t.min(quality::TIERS - 1)),
+            tunnels: Tunnels::from_setting(),
         }
     }
 }
@@ -2424,16 +2518,29 @@ fn agreement_run(
                 *tonemapping = Tonemapping::None;
                 *dither = DebandDither::Disabled;
             }
+            // With tunnels, the older smokes pop half a second before it.
+            if run.stage_frame == 30
+                && let Some(tunnels) = &run.tunnels
+            {
+                tunnels.spawn_older(&mut commands);
+            }
             if run.stage_frame > 40 {
                 commands.spawn((smoke, Transform::from_xyz(0.0, 0.0, 4.6)));
                 advance(run);
             }
         }
         1 => {
-            let frozen = match run.freeze_age {
+            let ready = match run.freeze_age {
                 Some(age) => older_than(&world, &clock, age),
                 None => grown(&world, &clock, 3.5),
             };
+            // With tunnels, freeze once they are open.
+            let frame = run.stage_frame;
+            let frozen = ready
+                && run
+                    .tunnels
+                    .as_mut()
+                    .is_none_or(|t| t.open(frame, &mut world, &level, clock.tick));
             if frozen {
                 virtual_time.pause();
                 // What the report needs to know: the amount of full-density
@@ -2441,11 +2548,12 @@ fn agreement_run(
                 // -ln(transmittance) / sigma.
                 let config = world.config();
                 let rate = config.tick_rate;
+                // The smoke in view's: it pops last.
                 let age = world
                     .clouds()
                     .filter_map(|c| c.age(clock.drawn(), rate))
-                    .fold(0.0, f32::max);
-                let meta = format!(
+                    .fold(f32::INFINITY, f32::min);
+                let mut meta = format!(
                     "style {:?}\nthreshold {}\nvolume_steps {:?}\nfacet_rule {:?}\nsigma {}\nage {age:.3}\nerosion {}\ndetail_erosion {}\ntier {}\nnoise_within_rule {:?}\n",
                     settings.style,
                     config.tuning.sight_threshold,
@@ -2457,6 +2565,9 @@ fn agreement_run(
                     quality::TIER_NAMES[run.tier],
                     settings.noise_within_rule,
                 );
+                if let Some(tunnels) = &run.tunnels {
+                    let _ = writeln!(meta, "tunnels {} older smokes", tunnels.older);
+                }
                 std::fs::write(format!("{}/meta.txt", run.dir), meta).ok();
                 advance(run);
             }
