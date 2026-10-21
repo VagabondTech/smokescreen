@@ -218,13 +218,21 @@ cargo run --example presets                 # every preset and look; also minima
   either: a test around the noise read in every sample cost 4–12 % close
   up even where it skipped nothing (one that changed no pixel cost 10 %),
   and a SIMD group keeps the pace of its rays through thin smoke, which
-  never get nearly opaque. Ending rays sooner paid instead: a ray ends
-  once less than 5 % of the scene shows through (`OPAQUE_BELOW` in
-  `smoke_march.wesl`), 8–9 % cheaper close up by default for at most 6
-  levels out of 255, and 7 % with `Filled`, which then fills from where
-  its march turns opaque. `Capped` goes on to 1 %: its budget is worked
-  out from it, and at 5 % the larger budget kept rays reading the noise
-  for longer, 15 % slower.
+  never get nearly opaque. Skipping it only where no noise value could
+  leave smoke, which is exact, fared no better: the test on the sample's
+  density before the noise read cost 5–7 % even where it never fired, and
+  skipping 36 % of the noise reads halfway through the fade only won that
+  back. Ending rays sooner paid instead: a ray ends once less than 5 % of
+  the scene shows through (`OPAQUE_BELOW` in `smoke_march.wesl`), 8–9 %
+  cheaper close up by default for at most 6 levels out of 255, and 7 %
+  with `Filled`, which then fills from where its march turns opaque.
+  `Capped` goes on to 1 %: its budget is worked out from it, and at 5 %
+  the larger budget kept rays reading the noise for longer, 15 % slower.
+  Taking every second sample once less than a quarter of the scene shows
+  through paid much less: 2–4 % close up at the top three steps while a
+  cloud is grown or blooming, barely above the noise, and nothing halfway
+  through the fade, so it was left out. Its test on the transmittance
+  cost nothing.
 - The march is just as touchy about state carried along the ray. The
   noise budget's bookkeeping (two floats and a few operations per sample)
   cost 9–14 % close up at the top dial steps even when it limited nothing,
@@ -233,6 +241,11 @@ cargo run --example presets                 # every preset and look; also minima
   modes with and without MSAA, plus the single-smoke kernels below. Going
   back over what an empty-space jump skipped, to draw a cloud's edge
   exactly, cost 12–17 % close up for no visible change with the noise on.
+  Fewer fetches don't pay on their own either. Reading density and the
+  open mask in one fetch, and the lighting only where the noise leaves
+  smoke, took 14–23 % of the fetches out close up and saved nothing.
+  Reading the lighting once per voxel's worth of samples took 22–26 % out
+  and cost 2–6 % on a grown cloud, as it carried the light along the ray.
 - The march is short of registers rather than arithmetic on the M4. One
   dispatch per smoke with a kernel compiled for one smoke (`SINGLE_SMOKE`:
   no per-ray interval arrays, the slot in `view.params.z`, so its data is
