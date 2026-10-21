@@ -158,10 +158,20 @@ The README's tables come from `cargo bench -p smokescreen`. The weak spots:
   cautious: inside a dense cloud rays end long before it, so close up a
   quarter would keep the noise too, but the march would have to measure
   how far its rays get. Tried on the M4 and dropped: a third fewer
-  instructions in the sample loop (6–7 % slower), the lighting read once
-  per four samples (no faster on a grown cloud, and up to 87 levels of
-  change at the cheapest steps), and the composite reading the march's
-  depths at its resolution instead of the multisampled depth (no faster).
+  instructions in the sample loop (6–7 % slower), and the composite
+  reading the march's depths at its resolution instead of the
+  multisampled depth (no faster). Fewer texture reads didn't pay either.
+  Skipping the noise where no noise value can leave smoke is exact, but
+  its test before the noise read cost as much as the skipping saved
+  halfway through the fade, and made a grown cloud 2–7 % slower. Reading
+  density and the open mask in one fetch, and the lighting only where the
+  noise leaves smoke, draws the same picture with 14–23 % fewer fetches
+  and was no faster. Reading the lighting once per voxel's worth of
+  samples was 2–6 % slower on a grown cloud, and once per four samples
+  changed the cheapest steps by up to 87 levels. On GPUs where fetches
+  set the pace, the same-picture version is the one to try first. Taking
+  every second sample once a ray is mostly opaque saved only 2–4 % close
+  up while a cloud is grown or blooming, too little to keep.
 
 - **Many point lights.** Each point light within range of a volumetric
   smoke is worked out at every sample that holds smoke, with a density
