@@ -193,7 +193,10 @@ cargo run --example presets                 # every preset and look; also minima
   that, every light reads as hidden and no flash lights the smoke (the
   plugin test `point_lights_that_reach_the_view_light_the_smoke` fails).
 - Keep `MAX_SLOTS`, `MAX_HOLES`, `MAX_LIGHTS` and the `Gpu*` struct layouts
-  in `render.rs` in step with `smoke_common.wesl`.
+  in `render.rs` in step with `smoke_common.wesl`. `limits_match_the_shaders`
+  checks the constants, and that `GpuGlobals`, one uniform buffer, stays
+  within the 64 KiB WebGPU allows. Every drawn smoke's holes share
+  `GpuGlobals::holes`: 512, the default 16 for each of 32 slots.
 - Atlases per slot: source (distance, sun, sky, region), open mask (R8),
   density and lit (baked on the GPU). The march and the lighting bake bind
   the open mask.

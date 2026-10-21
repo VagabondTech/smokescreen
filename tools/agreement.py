@@ -26,7 +26,10 @@ segment is blocked once it passes through that many metres of cloud.
 Volumetric smoke (the demo's default style; add `SMOKE_DEMO_SWEEP_AGE=16.5`
 for a fading cloud, `SMOKE_DEMO_NOISE=0` for the picture without its noise,
 `SMOKE_DEMO_NOISE_WITHIN_RULE=capped` or `filled` for the noise kept within the rule,
-`SMOKE_DEMO_TIER=0` for the cheapest dial step instead of the top one):
+`SMOKE_DEMO_TIER=0` for the cheapest dial step instead of the top one,
+`SMOKE_DEMO_TUNNELS=5` for 16 bullet tunnels through the smoke, the 81st to
+96th holes of six smokes: the counts should match those with
+`SMOKE_DEMO_TUNNELS=0`, where its 16 are the only ones):
 
     SMOKE_DEMO_SCRIPT=agreement SMOKE_DEMO_CAPTURE=agree cargo run --release --example demo
     python3 tools/agreement.py agree

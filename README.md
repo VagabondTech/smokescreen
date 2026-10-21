@@ -254,7 +254,7 @@ Point lights near volumetric smoke cost extra, as every sample within a light's 
 | `facet_rule` | `Exact` | `Chords` or `Core` for cheaper faceted checks that never block what the picture leaves clear: `Chords` counts each puff's hard polyhedron, `Core` only its inscribed sphere |
 | `volume_steps` | `Voxel` | `HalfVoxel` samples volumetric clouds every half voxel: a slightly more precise rule, at about 1.5 times the cost of a check |
 | `holes` | bullets: 0.38 m, closed by 1.8 s; blasts: 3.5 m, refilled by 5 s | `None` turns holes off |
-| `max_holes_per_cloud` | 16 | The newest win |
+| `max_holes_per_cloud` | 16 | The newest win; the plugin draws up to 512 at once across all smokes (16 for each of 32) |
 | `max_clouds` | 32 | Past this the oldest stop counting (and aren't drawn); also sizes the GPU atlas |
 | `sight_threshold` | 0.8 m | Cloud a sight line must cross to be blocked; 0 blocks on any contact |
 

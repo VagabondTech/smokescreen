@@ -300,6 +300,25 @@ are not in lockstep.
   cost are as before. `SmokeSystems::PrepareRender` now ends after Bevy's
   `CheckVisibility`. The demo's `SMOKE_DEMO_SWEEP_LIGHTS=<n>` puts n
   steady muzzle flashes in the tier sweep's smoke.
+- Every open hole is drawn. The plugin drew at most 64 holes at once
+  across all volumetric and faceted smokes, the oldest smokes' first, so
+  with the default 16 holes per cloud the fifth smoke full of holes drew
+  none of them: its tunnels and blasts stayed solid smoke where the rule
+  saw through. It now has room for 512, 16 for each of 32 smokes, so the
+  default tuning always fits, and it warns once if the smokes drawn hold
+  more (possible only with `Tuning::max_holes_per_cloud` above 16).
+  Crystal smoke, whose puffs shrink on the CPU, was never affected. With
+  64 holes or fewer the picture is the same to the pixel and costs the
+  same. Past 64, the smokes that lost their holes now pay for them as the
+  first four always did: on an Apple M4 at 1920×1080, close up at the
+  best step (medians of five alternated runs), six volumetric smokes with
+  16 bullet tunnels each take 1.70 instead of 1.51 ms (one such smoke
+  alone takes 1.60), and six faceted ones 83.5 instead of 30.2 ms, what
+  one faceted smoke with 16 tunnels already took (83.2 ms: tunnels make
+  faceted smoke about three times as costly to draw). The demo's
+  `SMOKE_DEMO_TUNNELS=<n>` sets up that scene for the `agreement` and
+  `tiers` scripts: n older smokes out of view with 16 tunnels each, then
+  16 through the smoke in view.
 - Volumetric smoke costs less to draw at every distance and dial step,
   and faceted smoke a little less, with the same picture to within one
   level out of 255. With MSAA, the smoke's passes that draw onto the scene

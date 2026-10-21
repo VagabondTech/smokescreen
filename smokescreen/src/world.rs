@@ -60,6 +60,8 @@ pub struct Tuning {
     /// Bullet and explosion holes; `None` turns them off.
     pub holes: Option<HoleSettings>,
     /// Holes per cloud. Beyond this the oldest open ones stop counting.
+    /// `bevy_smokescreen` draws up to 512 at once across its smokes: 16
+    /// for each of 32.
     pub max_holes_per_cloud: usize,
     /// Most clouds at once. Past this the oldest stop counting (renderers
     /// stop drawing them too), so a renderer that can draw this many never

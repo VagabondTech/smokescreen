@@ -59,7 +59,7 @@ The grid is 48×24×48 RGBA8 (distance, sun visibility, sky visibility, wall cli
 
 ## 3. Bake (GPU compute, only for slots that changed)
 
-**Density pass:** per voxel, apply the growth front, the dissolve and every open hole in the core's snapshot. This is the only place holes are evaluated, so a spray of 16 bullet tunnels costs 16 capsule tests per voxel once per frame, instead of per pixel per step. Per-sample hole evaluation is what makes naive implementations slow.
+**Density pass:** per voxel, apply the growth front, the dissolve and every open hole in the core's snapshot (the plugin has room for 512 across all smokes: 16, the default per cloud, for each of 32). This is the only place holes are evaluated, so a spray of 16 bullet tunnels costs 16 capsule tests per voxel once per frame, instead of per pixel per step. Per-sample hole evaluation is what makes naive implementations slow.
 
 The rule works out density in the same order: density per voxel first, then interpolated between voxels. Each tick the core takes the density of every fill-distance byte once (`DensityTable`, kept while a cloud's growth and dissolve stay the same) and samples interpolate those values over the open voxels, as the sampler interpolates the baked densities. Interpolating distances and then taking the density gives a different answer wherever the density curve bends, most at a cloud's edge, where the picture drew up to six times the smoke such a rule counted. Holes differ: the rule applies them at each sample, exactly, and the bake at each voxel's centre, so the picture's tunnels are smoothed over a voxel.
 
