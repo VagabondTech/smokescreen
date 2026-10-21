@@ -2,7 +2,7 @@
 // `Gpu*` structs in `render.rs`.
 
 const MAX_SLOTS: u32 = 32u;
-const MAX_HOLES: u32 = 64u;
+const MAX_HOLES: u32 = 512u;
 const MAX_LIGHTS: u32 = 8u;
 const PI: f32 = 3.14159265358979;
 

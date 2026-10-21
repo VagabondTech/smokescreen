@@ -1078,6 +1078,7 @@ fn build_frame(
     dir_lights: Query<(&DirectionalLight, &GlobalTransform, Has<SmokeSun>)>,
     ambient: Option<Res<GlobalAmbientLight>>,
     mut last: Local<Option<(Vec3, u64)>>,
+    mut warned_holes: Local<bool>,
 ) {
     let frame = frame.as_mut();
     frame.slots.clear();
@@ -1194,13 +1195,18 @@ fn build_frame(
         }
 
         let state = cloud.state;
+        // Every drawn smoke's holes share one array, oldest smoke first.
         let hole_start = frame.holes.len() as u32;
-        for h in &state.holes {
-            if frame.holes.len() >= render::MAX_HOLES {
-                break;
-            }
-            frame.holes.push(*h);
+        let room = render::MAX_HOLES - frame.holes.len();
+        if state.holes.len() > room && !*warned_holes {
+            *warned_holes = true;
+            warn!(
+                "More than {} holes are open in the smokes drawn: the newest smokes' holes past that aren't drawn, though the rule counts them. Keep Tuning::max_holes_per_cloud × the smokes drawn at once (Tuning::max_clouds, at most 32) within {}.",
+                render::MAX_HOLES,
+                render::MAX_HOLES
+            );
         }
+        frame.holes.extend(state.holes.iter().take(room));
         let hole_count = frame.holes.len() as u32 - hole_start;
         let needs_bake = global_rebake
             || owner.force_bake
@@ -1421,5 +1427,52 @@ mod tests {
             Transform::from_xyz(0.0, 1.5, 9.0).looking_to(Vec3::Z, Vec3::Y);
         app.update();
         assert!(app.world().resource::<SmokeFrame>().lights.is_empty());
+    }
+
+    #[test]
+    fn every_hole_the_rule_counts_is_drawn() {
+        let mut app = headless_app();
+        // Six smokes in a row, popped a frame apart: the last is the newest.
+        for k in 0..6 {
+            app.world_mut().spawn((
+                Smoke::default().with_seed(k + 1),
+                Transform::from_xyz(10.0 * k as f32, 0.0, 0.0),
+            ));
+            app.update();
+        }
+        for _ in 0..200 {
+            if app.world().resource::<SmokeFrame>().slots.len() == 6 {
+                break;
+            }
+            app.update();
+        }
+        assert_eq!(
+            app.world().resource::<SmokeFrame>().slots.len(),
+            6,
+            "the smokes never popped"
+        );
+
+        // 16 shots along the row, each through all six: 96 holes, where the
+        // renderer once had room for 64, so the fifth and sixth smokes'
+        // tunnels went undrawn.
+        let tick = app.world().resource::<SmokeClock>().tick;
+        let mut world = app.world_mut().resource_mut::<SmokeWorld>();
+        for i in 0..16 {
+            let (y, z) = (0.4 + 0.3 * (i / 4) as f32, -1.2 + 0.8 * (i % 4) as f32);
+            world.bullet(Vec3::new(-10.0, y, z), Vec3::new(60.0, y, z), tick);
+        }
+        app.update();
+
+        let frame = app.world().resource::<SmokeFrame>().clone();
+        let drawn = app.world().resource::<SmokeClock>().drawn();
+        let mut world = app.world_mut().resource_mut::<SmokeWorld>();
+        let view = world.view(drawn);
+        let clouds: Vec<_> = view.clouds().collect();
+        assert_eq!(clouds.len(), frame.slots.len());
+        for (k, (cloud, slot)) in clouds.iter().zip(&frame.slots).enumerate() {
+            assert_eq!(cloud.state.holes.len(), 16, "smoke {k}'s holes");
+            let holes = &frame.holes[slot.hole_start as usize..][..slot.hole_count as usize];
+            assert_eq!(holes, cloud.state.holes, "smoke {k}'s holes drawn");
+        }
     }
 }
