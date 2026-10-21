@@ -60,9 +60,13 @@ use crate::{
     quality::{FacetOcclusion, FacetShadows, SmokeQuality, screen_rect},
 };
 
-/// These must match the array sizes in `smoke_common.wesl`.
+/// These must match the array sizes in `smoke_common.wesl`
+/// (`limits_match_the_shaders` checks).
 pub(crate) const MAX_SLOTS: usize = 32;
-pub(crate) const MAX_HOLES: usize = 64;
+/// Holes drawn at once, across all smokes: the default
+/// `Tuning::max_holes_per_cloud` (16) for every slot. `GpuGlobals` is then
+/// 22.5 KiB, a uniform buffer well within the 64 KiB WebGPU allows.
+pub(crate) const MAX_HOLES: usize = 512;
 pub(crate) const MAX_LIGHTS: usize = 8;
 const BAKE_WORKGROUP: u32 = 4;
 const MARCH_WORKGROUP: u32 = 8;
@@ -2153,5 +2157,21 @@ mod tests {
         // Farther from the face than the range (and the centimetre spare).
         assert!(!reaches(&light(3.0, 1.95), min, max));
         assert!(!reaches(&light(-2.0, 1.95), min, max));
+    }
+
+    #[test]
+    fn limits_match_the_shaders() {
+        let common = include_str!("shaders/smoke_common.wesl");
+        for line in [
+            format!("const MAX_SLOTS: u32 = {MAX_SLOTS}u;"),
+            format!("const MAX_HOLES: u32 = {MAX_HOLES}u;"),
+            format!("const MAX_LIGHTS: u32 = {MAX_LIGHTS}u;"),
+            format!("bake_slots: array<vec4<u32>, {}>,", MAX_SLOTS / 4),
+        ] {
+            assert!(common.contains(&line), "smoke_common.wesl should say `{line}`");
+        }
+        // One uniform buffer: WebGPU allows 64 KiB.
+        let size = GpuGlobals::min_size().get();
+        assert!(size <= 64 << 10, "GpuGlobals is {size} bytes");
     }
 }
