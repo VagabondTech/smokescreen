@@ -345,6 +345,16 @@ are not in lockstep.
   within 1 % (0.43 ms with crystal smoke and 0.36 ms with volumetric
   smoke, medians of 15 alternated runs), frames with a fill running
   included.
+- The README no longer says that transparent objects need nothing.
+  Alpha-blended things behind or inside volumetric or faceted smoke (a
+  tracer, a muzzle-flash sprite, particles) draw over it at full strength,
+  and always have: Bevy draws them after the smoke, which writes no depth.
+  So they show through smoke that hides everything else. Opaque and
+  alpha-masked (`AlphaMode::Mask`) objects are hidden as they should be,
+  and crystal smoke hides everything behind it. Its Limitations say so
+  now, with what to do meanwhile: make effects that must stay hidden
+  opaque or masked, or hide them where `SmokeVision::blocks_sight` says the
+  smoke blocks the line from the camera.
 - Volumetric smoke costs less to draw at every distance and dial step,
   and faceted smoke a little less, with the same picture to within one
   level out of 255. With MSAA, the smoke's passes that draw onto the scene

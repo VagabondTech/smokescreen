@@ -10,8 +10,9 @@
 //! - `RenderGraph` (before cameras): bake density + lighting for the slots that
 //!   changed. Usually zero, one or two slots.
 //! - `Core3d` between the opaque (and transmissive) and transparent passes,
-//!   so glass and particles in front of a smoke draw over it, and before
-//!   TAA, bloom and tonemapping:
+//!   so glass and particles in front of a smoke draw over it (and, as the
+//!   smoke writes no depth, those behind it too), and before TAA, bloom and
+//!   tonemapping:
 //!   - faceted, full resolution: one fragment pass traces and shades;
 //!   - faceted, reduced resolution: coarse trace (compute), classify every
 //!     pixel (compute: facet interiors shaded from the coarse samples, the

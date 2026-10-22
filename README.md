@@ -301,7 +301,8 @@ From a clone of the repository, run one with `cargo run --release --example pres
 
 ## Limitations
 
-- A first-person weapon needs its own camera to stay visible inside smoke (see `viewmodel`); transparent objects need nothing.
+- A first-person weapon needs its own camera to stay visible inside smoke (see `viewmodel`).
+- Transparent (alpha-blended) objects behind or inside volumetric or faceted smoke draw over it at full strength, so a tracer, a muzzle-flash sprite or particles behind a smoke show through it: Bevy draws them after the smoke, which writes no depth. Opaque and alpha-masked (`AlphaMode::Mask`) objects are hidden as they should be, crystal smoke hides everything behind it, and transparent objects in front of a smoke draw over it as they should. For effects that must stay hidden, use one of those, or hide them where the rule blocks the line from the camera (`SmokeVision::blocks_sight`).
 - Volumetric and faceted smoke are lit by one directional light and up to eight point lights at a time (unshadowed; the brightest of those whose range reaches both a smoke and a camera's view); spot lights don't light them yet. Crystal smoke takes any Bevy light.
 - Orthographic cameras aren't supported.
 - Clouds don't drift with wind, and doors closing on a smoke don't re-shape it.
