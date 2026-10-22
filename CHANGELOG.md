@@ -274,6 +274,32 @@ are not in lockstep.
   registers rather than of arithmetic: taking a third of the sample loop's
   instructions out (folding constants per smoke, advancing coordinates
   along the ray) made it 6–7 % slower, so that isn't done.
+- Volumetric smokes that overlap on screen cost about 40 % less to draw,
+  with the same picture. Where two smokes came close on screen, every
+  volumetric smoke on screen went through the march that adds up the smokes
+  a ray crosses, with room for all 32 slots per ray and the point-light
+  code compiled in; it reads those per-ray arrays at every sample, so two
+  overlapping smokes cost 3.2 times one smoke. Now smokes are marched in
+  groups: those whose screen rectangles come close, directly or through
+  others, share one dispatch over their own rectangle, and a smoke apart
+  from the rest keeps the single-smoke kernel even while others overlap
+  elsewhere on screen. A group's kernel has room for 8 smokes per ray
+  wherever no point on screen lies in more than 8 of the group's
+  rectangles, and leaves the light code out when no light reaches the
+  group; past 8, and until a kernel has compiled, the old march draws. On
+  an Apple M4 at 1920×1080 (medians of four or five alternated runs), two
+  grenades overlapping on screen take, close up at the best step, 2.75
+  instead of 4.57 ms grown (−40 %) and 2.38 instead of 4.19 halfway through
+  the fade (−43 %); with `NoiseWithinRule::Capped` 2.63 instead of 4.06
+  (−35 %), with `Filled` 3.00 instead of 4.81 (−38 %). At mid-range the
+  best step takes 1.11 instead of 1.91 ms (−42 %), far away 0.40 instead
+  of 0.82 (−52 %), and close up the cheapest step 1.00 instead of 1.21
+  (−17 %). With a third smoke apart from those two, the mid-range view
+  takes 1.96 instead of 3.74 ms (−48 %). One smoke on its own costs what
+  it did. No pixel changes by more than one level out of 255 (rounding
+  where the light code is left out; none changes with one smoke, or with
+  the light code in). The demo's `SMOKE_DEMO_SWEEP_SMOKES=2` or `3` puts
+  those smokes into the `tiers` and `agreement` scripts.
 - Point lights light volumetric and faceted smoke. They never did: the
   plugin read each `PointLight`'s `ViewVisibility` while Bevy had it
   cleared (after `VisibilitySystems::VisibilityPropagate` resets it and
@@ -345,6 +371,16 @@ are not in lockstep.
   within 1 % (0.43 ms with crystal smoke and 0.36 ms with volumetric
   smoke, medians of 15 alternated runs), frames with a fill running
   included.
+- The README no longer says that transparent objects need nothing.
+  Alpha-blended things behind or inside volumetric or faceted smoke (a
+  tracer, a muzzle-flash sprite, particles) draw over it at full strength,
+  and always have: Bevy draws them after the smoke, which writes no depth.
+  So they show through smoke that hides everything else. Opaque and
+  alpha-masked (`AlphaMode::Mask`) objects are hidden as they should be,
+  and crystal smoke hides everything behind it. Its Limitations say so
+  now, with what to do meanwhile: make effects that must stay hidden
+  opaque or masked, or hide them where `SmokeVision::blocks_sight` says the
+  smoke blocks the line from the camera.
 - Volumetric smoke costs less to draw at every distance and dial step,
   and faceted smoke a little less, with the same picture to within one
   level out of 255. With MSAA, the smoke's passes that draw onto the scene

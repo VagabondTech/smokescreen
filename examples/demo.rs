@@ -51,6 +51,11 @@
 //!   view, with 16 tunnels through each. The renderer keeps every drawn
 //!   smoke's holes in one array, oldest smoke first, so with n = 5 the smoke
 //!   in view brings the 81st to 96th.
+//! - `SMOKE_DEMO_SWEEP_SMOKES=2` or `3`, for the `agreement` and `tiers`
+//!   scripts: a second smoke pops with the first, where the showcase's
+//!   `overlap` shot puts one. The two overlap on screen in every view, so the
+//!   renderer marches them together. A third pops beside the building, apart
+//!   from them on screen in the far view, so it gets a march of its own.
 //! - `SMOKE_DEMO_BUDGET_MS=<ms>` sets the budget for budget mode (default 2).
 //! - `SMOKE_DEMO_GPU_TIMINGS=1` / `0` turns GPU timestamp diagnostics on or
 //!   off (HUD timings, budget mode, the tier sweep). Default: on, except on
@@ -1929,7 +1934,7 @@ fn capture_script(
                 // A second, short-lived smoke overlapping the first one.
                 commands.spawn((
                     Smoke::default().with_lifetime(6.0).with_seed(11),
-                    Transform::from_xyz(3.2, 0.0, 2.6),
+                    Transform::from_translation(OVERLAP_SMOKE),
                 ));
             }
             "taa" => {
@@ -2036,6 +2041,30 @@ impl Sweep {
             lights: setting("sweep_lights").and_then(|s| s.parse().ok()).unwrap_or(0),
             tunnels: Tunnels::from_setting(),
         }
+    }
+}
+
+/// Where the showcase's `overlap` shot pops a second smoke: on screen it
+/// overlaps the one by the doorway in every view.
+const OVERLAP_SMOKE: Vec3 = Vec3::new(3.2, 0.0, 2.6);
+
+/// Where `SMOKE_DEMO_SWEEP_SMOKES=3` pops a third smoke: beside the
+/// building, to the right as the views look, apart on screen from the other
+/// two in the far view and out of the close one, and in front of every
+/// view's camera (a box that straddles a camera's plane is marched over the
+/// whole screen).
+const APART_SMOKE: Vec3 = Vec3::new(-16.0, 0.0, 10.0);
+
+/// More smokes for the `tiers` and `agreement` scripts, popping with the
+/// first (`SMOKE_DEMO_SWEEP_SMOKES`): a second one overlapping it, and a
+/// third one apart.
+fn spawn_more_smokes(commands: &mut Commands) {
+    let smokes = setting("sweep_smokes").and_then(|s| s.parse::<u32>().ok()).unwrap_or(1);
+    for (seed, at) in [(11, OVERLAP_SMOKE), (13, APART_SMOKE)]
+        .into_iter()
+        .take(smokes.saturating_sub(1) as usize)
+    {
+        commands.spawn((Smoke::default().with_seed(seed), Transform::from_translation(at)));
     }
 }
 
@@ -2231,6 +2260,7 @@ fn tier_sweep(
             };
             if sweep.stage_frame == pop_frame {
                 commands.spawn((Smoke::default().with_seed(7), Transform::from_xyz(0.0, 0.0, 4.6)));
+                spawn_more_smokes(&mut commands);
             }
             // Freeze the smoke once fully grown (or at the age asked for), so
             // every tier sees the same shape; with tunnels, once they are open.
@@ -2526,6 +2556,7 @@ fn agreement_run(
             }
             if run.stage_frame > 40 {
                 commands.spawn((smoke, Transform::from_xyz(0.0, 0.0, 4.6)));
+                spawn_more_smokes(&mut commands);
                 advance(run);
             }
         }

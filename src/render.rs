@@ -10,8 +10,9 @@
 //! - `RenderGraph` (before cameras): bake density + lighting for the slots that
 //!   changed. Usually zero, one or two slots.
 //! - `Core3d` between the opaque (and transmissive) and transparent passes,
-//!   so glass and particles in front of a smoke draw over it, and before
-//!   TAA, bloom and tonemapping:
+//!   so glass and particles in front of a smoke draw over it (and, as the
+//!   smoke writes no depth, those behind it too), and before TAA, bloom and
+//!   tonemapping:
 //!   - faceted, full resolution: one fragment pass traces and shades;
 //!   - faceted, reduced resolution: coarse trace (compute), classify every
 //!     pixel (compute: facet interiors shaded from the coarse samples, the
@@ -441,18 +442,33 @@ struct SmokePipelines {
     facet_retrace: [CachedComputePipelineId; 2],
 }
 
-/// The volumetric march's single-smoke kernels (`SINGLE_SMOKE`): one smoke
-/// per dispatch, with or without its point lights, per noise mode and MSAA.
-/// Unlike `SmokePipelines::march`, which the renderer falls back on, they
-/// compile on first use: the noise mode and MSAA in use on the first frame.
+/// The volumetric march's kernels for one smoke per dispatch
+/// (`SINGLE_SMOKE`) and for up to 8 smokes along a ray (`RAY_SMOKES_8`),
+/// with or without the point lights, per noise mode and MSAA. Unlike
+/// `SmokePipelines::march`, which the renderer falls back on, they compile on
+/// first use: the noise mode and MSAA in use on the first frame.
 #[derive(Resource, Clone)]
 struct MarchSpecializer {
     layouts: [BindGroupLayoutDescriptor; 2],
     shader: Handle<Shader>,
 }
 
+/// The most smokes one ray may meet in the march kernel with short per-ray
+/// arrays (`RAY_SMOKES_8` in smoke_march.wesl).
+const OVERLAP8_SMOKES: usize = 8;
+
+/// What a specialised march kernel adds up along a ray.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum MarchKernel {
+    /// One smoke, whose slot the dispatch's view uniforms hold.
+    Single,
+    /// Every smoke a ray crosses, up to `OVERLAP8_SMOKES` of them.
+    Overlap8,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct MarchKey {
+    kernel: MarchKernel,
     rule: NoiseWithinRule,
     msaa: bool,
     /// Whether the point lights are compiled in.
@@ -463,7 +479,11 @@ impl SpecializedComputePipeline for MarchSpecializer {
     type Key = MarchKey;
 
     fn specialize(&self, key: Self::Key) -> ComputePipelineDescriptor {
-        let mut defs: Vec<ShaderDefVal> = vec!["SINGLE_SMOKE".into()];
+        let (kernel, label) = match key.kernel {
+            MarchKernel::Single => ("SINGLE_SMOKE", "smoke_march_single"),
+            MarchKernel::Overlap8 => ("RAY_SMOKES_8", "smoke_march_overlap8"),
+        };
+        let mut defs: Vec<ShaderDefVal> = vec![kernel.into()];
         if key.msaa {
             defs.push("MULTISAMPLED".into());
         }
@@ -476,7 +496,7 @@ impl SpecializedComputePipeline for MarchSpecializer {
             defs.push("NO_POINT_LIGHTS".into());
         }
         ComputePipelineDescriptor {
-            label: Some("smoke_march_single".into()),
+            label: Some(label.into()),
             layout: vec![self.layouts[key.msaa as usize].clone()],
             shader: self.shader.clone(),
             shader_defs: defs,
@@ -596,8 +616,8 @@ impl SpecializedRenderPipeline for OverlaySpecializer {
 /// Volumetric passes of one camera.
 struct VolumetricView {
     texture: CachedTexture,
-    /// One march over every smoke's rectangle that adds up the smokes a ray
-    /// crosses, or one single-smoke march per smoke.
+    /// One march per group of smokes whose screen rectangles come close
+    /// (`march_groups`): a single-smoke march for a smoke on its own.
     marches: Vec<MarchDispatch>,
     composite: OverlayPipelines,
     /// Composite scissors in render-target pixels: x, y, width, height. One
@@ -609,8 +629,8 @@ struct MarchDispatch {
     pipeline: CachedComputePipelineId,
     /// Smoke-buffer rectangle to march: min.xy, max.xy (exclusive).
     rect: UVec4,
-    /// The slot a single-smoke march reads; none for the march over every
-    /// smoke, which reads the camera's view uniforms as they are.
+    /// The slot a single-smoke march reads; none for a march that adds up
+    /// the smokes a ray crosses.
     slot: Option<u32>,
     /// This march's view uniforms: the camera's, with its rectangle and slot.
     uniform_offset: u32,
@@ -1370,16 +1390,59 @@ fn cached_texture(
     )
 }
 
-/// Whether no two of these screen rectangles (`None` for one out of view)
-/// come within `gap` pixels of each other.
-fn apart(rects: &[Option<(Vec2, Vec2)>], gap: f32) -> bool {
-    let rects: Vec<_> = rects.iter().flatten().collect();
-    let near = |a0: f32, a1: f32, b0: f32, b1: f32| a0 < b1 + gap && b0 < a1 + gap;
-    rects.iter().enumerate().all(|(i, a)| {
-        rects[i + 1..]
-            .iter()
-            .all(|b| !(near(a.0.x, a.1.x, b.0.x, b.1.x) && near(a.0.y, a.1.y, b.0.y, b.1.y)))
-    })
+/// Groups the screen rectangles (`None` for one out of view, left out) that
+/// come within `gap` pixels of each other, directly or through others, and
+/// merges groups until no two groups' bounding rectangles come that close:
+/// a march covers its group's bounding rectangle, so it may not reach into
+/// another group's. Each group lists its members as indices into `rects`.
+fn march_groups(rects: &[Option<(Vec2, Vec2)>], gap: f32) -> Vec<Vec<usize>> {
+    let near = |a: (Vec2, Vec2), b: (Vec2, Vec2)| {
+        a.0.x < b.1.x + gap && b.0.x < a.1.x + gap && a.0.y < b.1.y + gap && b.0.y < a.1.y + gap
+    };
+    let mut groups: Vec<(Vec<usize>, (Vec2, Vec2))> = rects
+        .iter()
+        .enumerate()
+        .filter_map(|(i, rect)| rect.map(|rect| (vec![i], rect)))
+        .collect();
+    'merge: loop {
+        for i in 0..groups.len() {
+            for j in i + 1..groups.len() {
+                if near(groups[i].1, groups[j].1) {
+                    let (members, rect) = groups.remove(j);
+                    let (into, bound) = &mut groups[i];
+                    into.extend(members);
+                    *bound = (bound.0.min(rect.0), bound.1.max(rect.1));
+                    continue 'merge;
+                }
+            }
+        }
+        break;
+    }
+    groups
+        .into_iter()
+        .map(|(mut members, _)| {
+            members.sort_unstable();
+            members
+        })
+        .collect()
+}
+
+/// The most of these rectangles that share a point. Rectangles that overlap
+/// pairwise share the corner of their overlap at the largest minimum on each
+/// axis, so counting at every pair of one's x minimum and another's y
+/// minimum finds it.
+fn most_overlapping(rects: &[(Vec2, Vec2)]) -> usize {
+    rects
+        .iter()
+        .flat_map(|a| rects.iter().map(move |b| Vec2::new(a.0.x, b.0.y)))
+        .map(|p| {
+            rects
+                .iter()
+                .filter(|r| r.0.cmple(p).all() && p.cmple(r.1).all())
+                .count()
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// Whether a point light can light anything in a box: the march adds a
@@ -1420,22 +1483,22 @@ fn prepare_smoke_views(
             let pipelines = pipelines.as_ref()?;
             let specializer = specializer.as_ref()?;
             let msaa_on = msaa.samples() > 1;
-            // The single-smoke kernels for this camera's noise mode and MSAA,
-            // queued on the first frame (later calls look them up).
+            // The march kernels for this camera's noise mode and MSAA, queued
+            // on the first frame (later calls look them up), by
+            // `[kernel][lights]`.
             let rule = frame.settings.noise_within_rule;
-            let single_kernel = |march_specialized: &mut SpecializedComputePipelines<MarchSpecializer>, lights| {
+            let kernel = |march_specialized: &mut SpecializedComputePipelines<MarchSpecializer>, kernel, lights| {
                 let spec = march_specializer.as_deref()?;
                 let key = MarchKey {
+                    kernel,
                     rule,
                     msaa: msaa_on,
                     lights,
                 };
                 Some(march_specialized.specialize(&pipeline_cache, spec, key))
             };
-            let single_kernels = [
-                single_kernel(&mut march_specialized, false),
-                single_kernel(&mut march_specialized, true),
-            ];
+            let kernels = [MarchKernel::Single, MarchKernel::Overlap8]
+                .map(|k| [false, true].map(|lights| kernel(&mut march_specialized, k, lights)));
             if frame.slots.is_empty() {
                 return None;
             }
@@ -1517,80 +1580,90 @@ fn prepare_smoke_views(
                 let march_max = ((hi.as_vec2() / vol_divisor).ceil().as_uvec2() + UVec2::ONE).min(smoke_size);
                 UVec4::new(march_min.x, march_min.y, march_max.x, march_max.y)
             };
-            // Each smoke on its own, with its slot in a uniform, where no ray
-            // can meet two smokes' boxes: a ray then takes the march's
+            // One march per group of smokes whose screen rectangles come within
+            // three smoke-buffer texels and two pixels of each other, directly
+            // or through others (`march_groups`), each over its own rectangle:
+            // no march, margin included, reaches into another group's
+            // rectangle or writes another's texels, and no ray in it meets
+            // another group's smoke. A smoke on its own gets the single-smoke
+            // kernel, with its slot in a uniform: a ray takes the march's
             // one-smoke path either way, so the picture is the same, and the
-            // single-smoke kernel needs fewer registers. The smokes'
-            // rectangles stay three smoke-buffer texels and two pixels apart,
-            // so no march, margin included, reaches into another smoke's
-            // rectangle or writes another's texels. Elsewhere, and until the
-            // kernels have compiled, one march adds up the smokes a ray crosses.
-            let volumetric_slots = frame
+            // kernel needs fewer registers. A group adds up the smokes a ray
+            // crosses, with room for 8 of them wherever no point of the screen
+            // lies in more than 8 of the group's rectangles (a ray meets only
+            // smokes whose rectangle holds its pixel); its short arrays made
+            // two overlapping smokes 32-39 % cheaper close up at the top four
+            // dial steps on an Apple M4. A kernel no point light reaches is
+            // compiled without the light code. Past 8 smokes on a pixel, and
+            // until a kernel has compiled, a group falls back on the march
+            // with room for every slot, which draws the same picture.
+            let volumetric_slots: Vec<_> = frame
                 .slots
                 .iter()
                 .enumerate()
                 .take(MAX_SLOTS)
-                .filter(|(_, s)| s.facet.is_none());
-            let box_rect = |min, max| screen_rect(clip_from_internal, camera_pos, near, size.as_vec2(), [(min, max)]);
+                .filter(|(_, s)| s.facet.is_none())
+                .collect();
             let bounds: Vec<_> = volumetric_slots
-                .clone()
-                .map(|(_, s)| box_rect(s.bounds_min, s.bounds_max))
+                .iter()
+                .map(|(_, s)| {
+                    screen_rect(
+                        clip_from_internal,
+                        camera_pos,
+                        near,
+                        size.as_vec2(),
+                        [(s.bounds_min, s.bounds_max)],
+                    )
+                })
                 .collect();
             let lights = &frame.lights[..frame.lights.len().min(MAX_LIGHTS)];
-            let singles: Option<Vec<_>> = apart(&bounds, 3.0 * vol_divisor + 2.0)
-                .then(|| {
-                    volumetric_slots
-                        .filter_map(|(slot, s)| {
-                            let rect = box_rect(s.drawn_min, s.drawn_max)?;
-                            let lit = lights.iter().any(|l| reaches(l, s.bounds_min, s.bounds_max));
-                            Some(single_kernels[lit as usize].map(|kernel| (kernel, rect, slot as u32)))
-                        })
-                        .collect::<Option<Vec<_>>>()
+            let (marches, scissors): (Vec<_>, Vec<_>) = march_groups(&bounds, 3.0 * vol_divisor + 2.0)
+                .into_iter()
+                .filter_map(|members| {
+                    let smokes = || members.iter().map(|&i| volumetric_slots[i].1);
+                    let rect = screen_rect(
+                        clip_from_internal,
+                        camera_pos,
+                        near,
+                        size.as_vec2(),
+                        smokes().map(|s| (s.drawn_min, s.drawn_max)),
+                    )?;
+                    let lit = lights
+                        .iter()
+                        .any(|l| smokes().any(|s| reaches(l, s.bounds_min, s.bounds_max)));
+                    let (kernel, slot) = match members[..] {
+                        [i] => (Some(MarchKernel::Single), Some(volumetric_slots[i].0 as u32)),
+                        _ => {
+                            let rects: Vec<_> = members.iter().filter_map(|&i| bounds[i]).collect();
+                            let fits = most_overlapping(&rects) <= OVERLAP8_SMOKES;
+                            (fits.then_some(MarchKernel::Overlap8), None)
+                        }
+                    };
+                    let pipeline = kernel
+                        .and_then(|k| kernels[k as usize][lit as usize])
+                        .filter(|&id| pipeline_cache.get_compute_pipeline(id).is_some())
+                        .unwrap_or(pipelines.march[rule as usize][msaa_on as usize]);
+                    let march = MarchDispatch {
+                        pipeline,
+                        rect: march_rect(rect),
+                        slot,
+                        uniform_offset: 0,
+                    };
+                    Some((march, scissor(rect)))
                 })
-                .flatten()
-                .filter(|marches| {
-                    !marches.is_empty()
-                        && marches
-                            .iter()
-                            .all(|&(kernel, ..)| pipeline_cache.get_compute_pipeline(kernel).is_some())
-                });
+                .unzip();
             let union_rect = vol_rect.map_or(UVec4::ZERO, march_rect);
-            let mut volumetric = vol_rect.map(|rect| {
-                let (marches, scissors) = match singles {
-                    Some(singles) => singles
-                        .into_iter()
-                        .map(|(pipeline, rect, slot)| {
-                            let march = MarchDispatch {
-                                pipeline,
-                                rect: march_rect(rect),
-                                slot: Some(slot),
-                                uniform_offset: 0,
-                            };
-                            (march, scissor(rect))
-                        })
-                        .unzip(),
-                    None => {
-                        let march = MarchDispatch {
-                            pipeline: pipelines.march[rule as usize][msaa_on as usize],
-                            rect: union_rect,
-                            slot: None,
-                            uniform_offset: 0,
-                        };
-                        (vec![march], vec![scissor(rect)])
-                    }
-                };
-                VolumetricView {
-                    texture: cached_texture(
-                        &mut texture_cache,
-                        &device,
-                        "smoke_buffer",
-                        smoke_size,
-                        TextureFormat::Rgba16Float,
-                    ),
-                    marches,
-                    composite: overlay(&mut specialized, OverlayKind::Composite),
-                    scissors,
-                }
+            let mut volumetric = vol_rect.map(|_| VolumetricView {
+                texture: cached_texture(
+                    &mut texture_cache,
+                    &device,
+                    "smoke_buffer",
+                    smoke_size,
+                    TextureFormat::Rgba16Float,
+                ),
+                marches,
+                composite: overlay(&mut specialized, OverlayKind::Composite),
+                scissors,
             });
 
             // Faceted.
@@ -1707,19 +1780,17 @@ fn prepare_smoke_views(
                 facet_px,
             };
             let uniform_offset = uniforms.0.push(&view_uniforms);
-            // A single-smoke march reads its own rectangle and slot.
+            // Each march reads its own rectangle, and a single-smoke march its
+            // slot.
             for march in volumetric.iter_mut().flat_map(|v| &mut v.marches) {
-                march.uniform_offset = match march.slot {
-                    Some(slot) => uniforms.0.push(&GpuView {
-                        rect: march.rect,
-                        params: UVec4 {
-                            z: slot,
-                            ..view_uniforms.params
-                        },
-                        ..view_uniforms
-                    }),
-                    None => uniform_offset,
-                };
+                march.uniform_offset = uniforms.0.push(&GpuView {
+                    rect: march.rect,
+                    params: UVec4 {
+                        z: march.slot.unwrap_or(0),
+                        ..view_uniforms.params
+                    },
+                    ..view_uniforms
+                });
             }
 
             Some(ViewSmoke {
@@ -2111,36 +2182,64 @@ fn smoke_pass(
 mod tests {
     use super::*;
 
-    /// `apart` for rectangles given as [x0, y0, x1, y1].
-    fn apart_of(rects: &[[f32; 4]], gap: f32) -> bool {
-        let rects: Vec<_> = rects
-            .iter()
-            .map(|r| Some((Vec2::new(r[0], r[1]), Vec2::new(r[2], r[3]))))
-            .collect();
-        apart(&rects, gap)
+    fn rect(r: [f32; 4]) -> (Vec2, Vec2) {
+        (Vec2::new(r[0], r[1]), Vec2::new(r[2], r[3]))
+    }
+
+    /// `march_groups` for rectangles given as [x0, y0, x1, y1].
+    fn groups_of(rects: &[[f32; 4]], gap: f32) -> Vec<Vec<usize>> {
+        let rects: Vec<_> = rects.iter().map(|&r| Some(rect(r))).collect();
+        march_groups(&rects, gap)
     }
 
     #[test]
-    fn apart_needs_the_gap_on_one_axis() {
+    fn march_groups_need_the_gap_on_one_axis() {
         let a = [0.0, 0.0, 100.0, 100.0];
         // Side by side: apart only once the gap between them reaches `gap`.
-        assert!(apart_of(&[a, [110.0, 0.0, 200.0, 100.0]], 10.0));
-        assert!(!apart_of(&[a, [109.0, 0.0, 200.0, 100.0]], 10.0));
+        assert_eq!(groups_of(&[a, [110.0, 0.0, 200.0, 100.0]], 10.0), [vec![0], vec![1]]);
+        assert_eq!(groups_of(&[a, [109.0, 0.0, 200.0, 100.0]], 10.0), [vec![0, 1]]);
         // Overlapping, or one inside the other.
-        assert!(!apart_of(&[a, [50.0, 50.0, 150.0, 150.0]], 0.0));
-        assert!(!apart_of(&[a, [40.0, 40.0, 60.0, 60.0]], 0.0));
+        assert_eq!(groups_of(&[a, [50.0, 50.0, 150.0, 150.0]], 0.0), [vec![0, 1]]);
+        assert_eq!(groups_of(&[a, [40.0, 40.0, 60.0, 60.0]], 0.0), [vec![0, 1]]);
         // Diagonal neighbours are apart if either axis has the gap.
-        assert!(apart_of(&[a, [105.0, 120.0, 200.0, 200.0]], 10.0));
-        // One rectangle, or none: apart. Any close pair spoils it.
-        assert!(apart_of(&[[0.0, 0.0, 1920.0, 1080.0]], 10.0));
-        assert!(apart_of(&[], 10.0));
-        assert!(!apart_of(
-            &[a, [500.0, 0.0, 600.0, 100.0], [595.0, 50.0, 700.0, 150.0]],
-            10.0
-        ));
-        // Out of view: ignored.
-        let b = Some((Vec2::new(0.0, 200.0), Vec2::new(100.0, 300.0)));
-        assert!(apart(&[Some((Vec2::ZERO, Vec2::splat(100.0))), None, b], 10.0));
+        assert_eq!(groups_of(&[a, [105.0, 120.0, 200.0, 200.0]], 10.0), [vec![0], vec![1]]);
+        // One rectangle, or none.
+        assert_eq!(groups_of(&[[0.0, 0.0, 1920.0, 1080.0]], 10.0), [vec![0]]);
+        assert!(groups_of(&[], 10.0).is_empty());
+        // A close pair goes together; the rest stay on their own.
+        assert_eq!(
+            groups_of(&[a, [500.0, 0.0, 600.0, 100.0], [595.0, 50.0, 700.0, 150.0]], 10.0),
+            [vec![0], vec![1, 2]]
+        );
+        // Through a third, rectangles far apart join.
+        assert_eq!(
+            groups_of(&[a, [500.0, 0.0, 600.0, 100.0], [95.0, 50.0, 505.0, 60.0]], 10.0),
+            [vec![0, 1, 2]]
+        );
+        // So does one near none of a group's members but inside the group's
+        // bounding rectangle, which the group's march covers.
+        assert_eq!(
+            groups_of(&[a, [100.0, 100.0, 200.0, 200.0], [150.0, 0.0, 200.0, 40.0]], 10.0),
+            [vec![0, 1, 2]]
+        );
+        // Out of view: left out.
+        let b = Some(rect([0.0, 200.0, 100.0, 300.0]));
+        assert_eq!(march_groups(&[Some(rect(a)), None, b], 10.0), [vec![0], vec![2]]);
+    }
+
+    #[test]
+    fn most_overlapping_counts_rectangles_that_share_a_point() {
+        assert_eq!(most_overlapping(&[]), 0);
+        assert_eq!(most_overlapping(&[rect([0.0, 0.0, 10.0, 10.0])]), 1);
+        // A chain: each overlaps the next, but no point lies in all three.
+        let chain = [[0.0, 0.0, 10.0, 10.0], [8.0, 0.0, 18.0, 10.0], [16.0, 0.0, 26.0, 10.0]].map(rect);
+        assert_eq!(most_overlapping(&chain), 2);
+        // Rectangles that overlap pairwise share a point.
+        let star = [[0.0, 0.0, 10.0, 10.0], [5.0, -5.0, 15.0, 5.0], [-5.0, 3.0, 7.0, 20.0]].map(rect);
+        assert_eq!(most_overlapping(&star), 3);
+        // Edges count: a ray through the shared edge may meet both.
+        let edge = [[0.0, 0.0, 10.0, 10.0], [10.0, 0.0, 20.0, 10.0]].map(rect);
+        assert_eq!(most_overlapping(&edge), 2);
     }
 
     #[test]
@@ -2170,6 +2269,9 @@ mod tests {
         ] {
             assert!(common.contains(&line), "smoke_common.wesl should say `{line}`");
         }
+        let march = include_str!("shaders/smoke_march.wesl");
+        let line = format!("const RAY_SMOKES: u32 = {OVERLAP8_SMOKES}u;");
+        assert!(march.contains(&line), "smoke_march.wesl should say `{line}`");
         // One uniform buffer: WebGPU allows 64 KiB.
         let size = GpuGlobals::min_size().get();
         assert!(size <= 64 << 10, "GpuGlobals is {size} bytes");

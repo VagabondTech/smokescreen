@@ -9,19 +9,26 @@
 // case of a ray crossing a single smoke takes a fast path with that smoke's
 // data hoisted out of the loop.
 //
-// Two compile-time variants make that fast path cheaper still, without
-// changing a sample:
+// Compile-time variants make the march cheaper still, without changing a
+// sample:
 // - SINGLE_SMOKE: the dispatch marches one smoke, the slot in
 //   `view.params.z`, over its own screen rectangle. The renderer dispatches
-//   it once per smoke, and only when no ray can meet two smokes' boxes, so
-//   every ray takes the fast path. The kernel then needs none of the per-ray
-//   interval arrays, and the slot is the same for every invocation, so its
-//   data can stay out of the per-ray registers. On an Apple M4 that made the
-//   march 27-32 % cheaper close up at the best dial step.
+//   it for a smoke whose rectangle no other smoke's comes near, so no ray
+//   can meet two smokes' boxes and every ray takes the fast path. The kernel
+//   then needs none of the per-ray interval arrays, and the slot is the same
+//   for every invocation, so its data can stay out of the per-ray registers.
+//   On an Apple M4 that made the march 27-32 % cheaper close up at the best
+//   dial step.
+// - RAY_SMOKES_8: room in the per-ray interval arrays for 8 smokes instead
+//   of every slot, where the renderer has worked out that no ray meets more.
+//   The overlapping path reads them at every sample: on the M4 the short
+//   arrays made two overlapping smokes 32-39 % cheaper to draw close up at
+//   the top four dial steps.
 // - NO_POINT_LIGHTS: the point lights compiled out, for smokes no light
 //   reaches (a light out of range adds exactly nothing). Unused, their code
 //   still cost registers: 8 % close up once the arrays were gone, nothing
-//   while they were there.
+//   while the long ones were there, and 4-11 % with the short ones and two
+//   overlapping smokes.
 // The march is short of registers rather than of arithmetic: removing a
 // third of the sample loop's instructions (constants folded per smoke,
 // coordinates advanced along the ray) made it 6-7 % slower on the M4.
@@ -85,6 +92,12 @@ import package::shaders::smoke_common::{
 const OPAQUE_BELOW: f32 = 0.01;
 @else
 const OPAQUE_BELOW: f32 = 0.05;
+
+// Room for the smokes one ray meets, in the march that adds them up.
+@if(RAY_SMOKES_8)
+const RAY_SMOKES: u32 = 8u;
+@else
+const RAY_SMOKES: u32 = MAX_SLOTS;
 
 @group(0) @binding(0) var<uniform> globals: SmokeGlobals;
 @group(0) @binding(1) var<uniform> view: SmokeView;
@@ -329,9 +342,9 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Which smokes does this ray pass through, and where?
     // Avoid infinities for axis-aligned rays in the slab tests.
     let inv_rd = 1.0 / select(rd, vec3<f32>(1e-6), abs(rd) < vec3<f32>(1e-6));
-    @if(!SINGLE_SMOKE) var t0s: array<f32, MAX_SLOTS>;
-    @if(!SINGLE_SMOKE) var t1s: array<f32, MAX_SLOTS>;
-    @if(!SINGLE_SMOKE) var ids: array<u32, MAX_SLOTS>;
+    @if(!SINGLE_SMOKE) var t0s: array<f32, RAY_SMOKES>;
+    @if(!SINGLE_SMOKE) var t1s: array<f32, RAY_SMOKES>;
+    @if(!SINGLE_SMOKE) var ids: array<u32, RAY_SMOKES>;
     var count = 0u;
     var t_begin = 1e30;
     var t_end = 0.0;
@@ -356,7 +369,8 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
             let hit = ray_aabb(ro, inv_rd, s.bounds_min.xyz, s.bounds_max.xyz);
             let a = max(hit.x, 0.0);
             let b = min(hit.y, t_scene);
-            if (b > a) {
+            // The renderer keeps every ray within RAY_SMOKES smokes.
+            if (b > a && count < RAY_SMOKES) {
                 t0s[count] = a;
                 t1s[count] = b;
                 ids[count] = i;
