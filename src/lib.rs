@@ -74,6 +74,7 @@ mod render;
 use std::sync::Arc;
 
 use bevy::{
+    asset::AssetEventSystems,
     camera::visibility::VisibilitySystems,
     ecs::system::SystemParam,
     light::{DirectionalLight, GlobalAmbientLight, PointLight},
@@ -149,12 +150,17 @@ impl Default for SmokePlugin {
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SmokeSystems {
     /// Pop new smokes, apply impacts, advance the simulation to
-    /// [`SmokeClock::tick`].
+    /// [`SmokeClock::tick`]. It ends before Bevy's visibility systems start
+    /// (see [`SmokeSystems::PrepareRender`]), so a system ordered after them
+    /// can't be ordered before this set.
     Simulate,
     /// Gather everything the renderer needs and pick each camera's tier.
-    /// Point lights are read after Bevy's
-    /// [`VisibilitySystems::CheckVisibility`], which decides which of them
-    /// can reach a camera's view.
+    /// Crystal puffs are moved, shown and hidden first, before Bevy's
+    /// [`VisibilitySystems::VisibilityPropagate`] and
+    /// [`VisibilitySystems::CalculateBounds`] and its asset events, so each
+    /// puff is drawn in the frame the rule counts it. Point lights are read
+    /// after Bevy's [`VisibilitySystems::CheckVisibility`], which decides
+    /// which of them can reach a camera's view.
     PrepareRender,
 }
 
@@ -218,9 +224,16 @@ impl Plugin for SmokePlugin {
                         .chain()
                         .in_set(SmokeSystems::Simulate),
                     (
+                        // Before Bevy works out what is visible and sends
+                        // asset events: a puff the rule counts is culled
+                        // where it is now and drawn this frame, a new cloud's
+                        // material with it.
+                        crystal::sync_crystals
+                            .before(VisibilitySystems::VisibilityPropagate)
+                            .before(VisibilitySystems::CalculateBounds)
+                            .before(AssetEventSystems),
                         light_clouds,
                         build_frame,
-                        crystal::sync_crystals,
                         quality::update_smoke_quality,
                     )
                         .chain()
@@ -1474,5 +1487,195 @@ mod tests {
             let holes = &frame.holes[slot.hole_start as usize..][..slot.hole_count as usize];
             assert_eq!(holes, cloud.state.holes, "smoke {k}'s holes drawn");
         }
+    }
+
+    #[test]
+    fn every_crystal_puff_the_rule_counts_is_drawn() {
+        use std::any::TypeId;
+
+        use bevy::{
+            asset::AssetEvent,
+            camera::{
+                primitives::{Aabb, Frustum, Sphere},
+                visibility::VisibleEntities,
+            },
+            ecs::message::Messages,
+            platform::collections::HashSet,
+        };
+
+        /// Puff-frames in which the picture and the rule part ways.
+        #[derive(Debug, Default, PartialEq)]
+        struct Faults {
+            /// Counted by the rule but not drawn by the camera that sees
+            /// every puff: hidden, culled, or its cloud's material not yet
+            /// sent to the renderer.
+            undrawn: u32,
+            /// Counted, but not drawn where the rule has it.
+            misplaced: u32,
+            /// Drawn by a camera but not counted.
+            uncounted: u32,
+            /// Drawn or culled by the edge camera other than Bevy's culling
+            /// of where the puff is now would have it.
+            culled: u32,
+        }
+
+        let mut app = headless_app();
+        // One camera sees both clouds whole, the other only the first one's
+        // right side.
+        let whole = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                Transform::from_xyz(0.0, 3.0, 18.0).looking_at(Vec3::new(0.0, 1.5, 0.0), Vec3::Y),
+            ))
+            .id();
+        let edge = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                Camera { order: 1, ..default() },
+                Transform::from_xyz(6.0, 1.5, 8.0).looking_to(Vec3::NEG_Z, Vec3::Y),
+            ))
+            .id();
+        app.world_mut().spawn((
+            Smoke {
+                lifetime: Some(10.0),
+                ..Smoke::grenade().with_style(SmokeStyle::Crystal).with_seed(3)
+            },
+            Transform::default(),
+        ));
+
+        let units = app.world().resource::<SmokeConfig>().units;
+        let rotation = crystal::frame_rotation(&units);
+        let mut materials = app
+            .world()
+            .resource::<Messages<AssetEvent<StandardMaterial>>>()
+            .get_cursor();
+        let mut announced = HashSet::new();
+        let mut faults = Faults::default();
+        let (mut counted, mut switched, mut edge_drawn, mut edge_culled) = (0, 0, 0, 0);
+        let mut counted_before = HashSet::new();
+        let mut late = None;
+        // Puffs the rule counts in each cloud's first frame.
+        let mut first_frame = HashMap::new();
+        // 12 s: the 10 s cloud's whole life.
+        for frame in 0..240 {
+            let tick = app.world().resource::<SmokeClock>().tick;
+            let mut world = app.world_mut().resource_mut::<SmokeWorld>();
+            match frame {
+                // A volley through the grown cloud: puffs shrink out of the
+                // way, to nothing on the bullets' paths, and grow back as the
+                // tunnels close.
+                40 => {
+                    for i in 0..9 {
+                        let (y, z) = (0.6 + 0.6 * (i / 3) as f32, -1.0 + (i % 3) as f32);
+                        world.bullet(Vec3::new(-10.0, y, z), Vec3::new(10.0, y, z), tick);
+                    }
+                }
+                // A blast on its left: the puffs there go, then refill.
+                48 => world.explosion(Vec3::new(-1.5, 1.0, 0.0), Some(1.5), tick),
+                // A cloud heard of late, as by a client: popped half a second
+                // ago, so its first frame already shows grown puffs.
+                60 => {
+                    let mut spec = CloudSpec::new(Vec3::new(-5.0, 0.0, -4.0), tick - 64, 4, SmokeStyle::Crystal);
+                    spec.timeline = Some(SmokeTimeline {
+                        lifetime: 6.0,
+                        ..world.config().tuning.timeline
+                    });
+                    late = Some(world.pop(spec));
+                }
+                _ => {}
+            }
+            app.update();
+
+            let drawn = app.world().resource::<SmokeClock>().drawn();
+            let mut world = app.world_mut().resource_mut::<SmokeWorld>();
+            let view = world.view(drawn);
+            let clouds: Vec<_> = view
+                .clouds()
+                .filter(|c| c.spec.style == SmokeStyle::Crystal)
+                .map(|c| (c.state.id, c.state.live.clone()))
+                .collect();
+
+            let world = app.world();
+            let events = world.resource::<Messages<AssetEvent<StandardMaterial>>>();
+            announced.extend(materials.read(events).filter_map(|e| match e {
+                AssetEvent::Added { id } => Some(*id),
+                _ => None,
+            }));
+            let drawn_by = |camera: Entity| -> HashSet<Entity> {
+                let visible = world.get::<VisibleEntities>(camera).unwrap();
+                visible.get(TypeId::of::<Mesh3d>()).iter().copied().collect()
+            };
+            let (in_whole, in_edge) = (drawn_by(whole), drawn_by(edge));
+            let frustum = world.get::<Frustum>(edge).unwrap();
+            let entities = world.resource::<crystal::CrystalClouds>();
+            let mut counted_now = HashSet::new();
+            for (id, live) in &clouds {
+                first_frame
+                    .entry(*id)
+                    .or_insert_with(|| live.iter().filter(|p| p.radius > 0.0).count());
+                let puffs = entities.puffs(*id);
+                for (i, p) in live.iter().enumerate().filter(|(_, p)| p.radius > 0.0) {
+                    counted += 1;
+                    let Some(&e) = puffs.get(i) else {
+                        faults.undrawn += 1;
+                        continue;
+                    };
+                    counted_now.insert(e);
+                    let shown = world.get::<InheritedVisibility>(e).is_some_and(|v| v.get())
+                        && world.get::<ViewVisibility>(e).is_some_and(|v| v.get())
+                        && in_whole.contains(&e)
+                        && world
+                            .get::<MeshMaterial3d<StandardMaterial>>(e)
+                            .is_some_and(|m| announced.contains(&m.0.id()));
+                    if !shown {
+                        faults.undrawn += 1;
+                    }
+                    let place = GlobalTransform::from(crystal::puff_transform(&units, rotation, p));
+                    if world.get::<GlobalTransform>(e) != Some(&place) {
+                        faults.misplaced += 1;
+                    }
+                    // Bevy's own culling test (`check_visibility_cpu_culling`)
+                    // of the puff where it is now.
+                    let seen = world.get::<Aabb>(e).is_none_or(|aabb| {
+                        let world_from_local = place.affine();
+                        let sphere = Sphere {
+                            center: world_from_local.transform_point3a(aabb.center),
+                            radius: place.radius_vec3a(aabb.half_extents),
+                        };
+                        frustum.intersects_sphere(&sphere, false)
+                            && frustum.intersects_obb(aabb, &world_from_local, true, false)
+                    });
+                    if seen != in_edge.contains(&e) {
+                        faults.culled += 1;
+                    }
+                    if seen {
+                        edge_drawn += 1;
+                    } else {
+                        edge_culled += 1;
+                    }
+                }
+            }
+            faults.uncounted += in_whole
+                .iter()
+                .chain(&in_edge)
+                .filter(|e| world.get::<CrystalPuff>(**e).is_some() && !counted_now.contains(*e))
+                .count() as u32;
+            switched += counted_now.symmetric_difference(&counted_before).count();
+            counted_before = counted_now;
+        }
+
+        assert!(counted > 10_000, "the cloud never grew: {counted} puff-frames");
+        assert!(switched > 200, "few puffs switched on or off: {switched}");
+        let late = late.unwrap();
+        assert!(first_frame[&late] > 0, "the late cloud's first frame showed nothing");
+        assert!(
+            edge_drawn > 0 && edge_culled > 0,
+            "the edge camera should see part of the cloud: {edge_drawn} drawn, {edge_culled} culled"
+        );
+        assert_eq!(faults, Faults::default(), "over {counted} puff-frames the rule counted");
+        let mut puffs = app.world_mut().query::<&CrystalPuff>();
+        assert_eq!(puffs.iter(app.world()).count(), 0, "puffs left once the cloud is gone");
     }
 }

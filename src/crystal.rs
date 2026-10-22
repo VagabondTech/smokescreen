@@ -1,8 +1,8 @@
 //! The crystal style: every puff is a plain flat-shaded mesh, drawn by Bevy's
 //! own renderer like any other object (so it is lit, casts and receives
-//! shadows, and costs a few triangles). Each frame the puffs are moved to
-//! where the core says they are at the drawn tick, so the picture is exactly
-//! what the core's rule checks.
+//! shadows, and costs a few triangles). Each frame, before Bevy works out
+//! what is visible, the puffs are moved to where the core says they are at
+//! the drawn tick, so the picture is exactly what the core's rule checks.
 
 use bevy::{
     asset::RenderAssetUsages,
@@ -11,7 +11,7 @@ use bevy::{
     platform::collections::HashMap,
     prelude::*,
 };
-use smokescreen::{CloudId, Polyhedron, Style};
+use smokescreen::{CloudId, LivePuff, Polyhedron, Style, Units};
 
 use crate::{Smoke, SmokeClock, SmokeConfig, SmokeSettings, SmokeWorld};
 
@@ -130,6 +130,33 @@ fn crystal_material(tint: Vec3, albedo: Vec3, debug: bool) -> StandardMaterial {
     }
 }
 
+/// The world's axes in the core's frame, as a rotation.
+pub(crate) fn frame_rotation(units: &Units) -> Quat {
+    Quat::from_mat3(&Mat3::from_cols(
+        units.dir_from_internal(Vec3::X),
+        units.dir_from_internal(Vec3::Y),
+        units.dir_from_internal(Vec3::Z),
+    ))
+}
+
+/// Where a puff's mesh (inradius 1) is drawn: at the puff, turned as it is
+/// and scaled to its inradius. `frame` is [`frame_rotation`].
+pub(crate) fn puff_transform(units: &Units, frame: Quat, p: &LivePuff) -> Transform {
+    Transform {
+        translation: units.from_internal(p.center),
+        rotation: frame * Quat::from_mat3(&p.to_local.transpose()),
+        scale: Vec3::splat(p.radius / units.metres_per_unit),
+    }
+}
+
+#[cfg(test)]
+impl CrystalClouds {
+    /// A cloud's puff entities, in the order of `CloudState::live`.
+    pub(crate) fn puffs(&self, id: CloudId) -> &[Entity] {
+        self.0.get(&id).map_or(&[], |c| &c.puffs)
+    }
+}
+
 /// Spawn, move, show and hide the puffs of every crystal cloud at the drawn
 /// tick, and despawn those of clouds that are gone.
 #[allow(clippy::too_many_arguments)]
@@ -148,14 +175,13 @@ pub(crate) fn sync_crystals(
     let (Some(meshes), Some(mut materials)) = (meshes, materials) else {
         return;
     };
+    // No crystal smoke: leave the snapshot to `build_frame`, which runs
+    // alongside Bevy's visibility systems.
+    if clouds.0.is_empty() && !world.clouds().any(|c| c.spec().style == Style::Crystal) {
+        return;
+    }
     let units = config.units;
-    let m = units.metres_per_unit;
-    // The world's axes in the core's frame, as a rotation.
-    let frame = Quat::from_mat3(&Mat3::from_cols(
-        units.dir_from_internal(Vec3::X),
-        units.dir_from_internal(Vec3::Y),
-        units.dir_from_internal(Vec3::Z),
-    ));
+    let frame = frame_rotation(&units);
     let albedo = settings.albedo.to_vec3();
     let tints: HashMap<CloudId, Vec3> = smokes
         .iter()
@@ -186,15 +212,23 @@ pub(crate) fn sync_crystals(
             for e in entry.puffs.drain(..) {
                 commands.entity(e).despawn();
             }
+            // Spawned in place, and shown if the rule counts them: these
+            // commands land before Bevy's visibility systems run.
             entry.puffs = live
                 .iter()
                 .map(|p| {
+                    let (transform, visibility) = if p.radius > 0.0 {
+                        (puff_transform(&units, frame, p), Visibility::Inherited)
+                    } else {
+                        (Transform::default(), Visibility::Hidden)
+                    };
                     let mut e = commands.spawn((
                         CrystalPuff { cloud: id },
                         Mesh3d(meshes.0[p.shape as usize].clone()),
                         MeshMaterial3d(entry.material.clone()),
-                        Transform::default(),
-                        Visibility::Hidden,
+                        transform,
+                        GlobalTransform::from(transform),
+                        visibility,
                     ));
                     if !settings.crystal_shadows {
                         e.insert(NotShadowCaster);
@@ -216,7 +250,7 @@ pub(crate) fn sync_crystals(
         }
         for (p, &e) in live.iter().zip(&entry.puffs) {
             let Ok((mut transform, mut global, mut visibility)) = puffs.get_mut(e) else {
-                // Spawned this frame: placed next frame.
+                // Spawned this frame, already in place.
                 continue;
             };
             if p.radius <= 0.0 {
@@ -224,11 +258,7 @@ pub(crate) fn sync_crystals(
                 continue;
             }
             visibility.set_if_neq(Visibility::Inherited);
-            let t = Transform {
-                translation: units.from_internal(p.center),
-                rotation: frame * Quat::from_mat3(&p.to_local.transpose()),
-                scale: Vec3::splat(p.radius / m),
-            };
+            let t = puff_transform(&units, frame, p);
             if *transform != t {
                 *transform = t;
                 // The plugin runs after transform propagation: keep the
