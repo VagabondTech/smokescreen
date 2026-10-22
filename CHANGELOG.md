@@ -319,6 +319,32 @@ are not in lockstep.
   `SMOKE_DEMO_TUNNELS=<n>` sets up that scene for the `agreement` and
   `tiers` scripts: n older smokes out of view with 16 tunnels each, then
   16 through the smoke in view.
+- Crystal puffs are drawn in the frame the rule counts them. The plugin
+  moved, showed and hid them after Bevy had worked out what is visible, so
+  a puff switched on (as a cloud grows, or as a hole closes) was drawn a
+  frame late, and a puff switched off (by a bullet, a blast or the fade)
+  was drawn a frame too long at its old size. Bevy also culled each puff
+  where it had been the frame before. A cloud whose first frame already
+  holds grown puffs, as when a client hears of a pop late and pops it at
+  the server's earlier tick, showed a frame late: its puffs were spawned
+  hidden and placed the frame after. In the plugin's new test, which
+  follows two clouds through their growth, a volley, a blast and the fade,
+  the old order left 385 of the 23,501 puff-frames the rule counted
+  undrawn and drew 312 that it no longer counted, and a camera on the
+  cloud's edge drew or culled 22 against where the puffs were. Now there
+  are none: picture and rule agree in every frame, as the crystal style
+  promises. The demo's `crystal` clip changes only around its volley, its
+  blast and the refill: the old order still showed, for a frame, the puffs
+  a shot or the blast had knocked out, and drew those that grow back a
+  frame late. `SmokeSystems::Simulate` now ends before Bevy's visibility
+  systems (`VisibilityPropagate`, `CalculateBounds`) and asset events
+  start, so a system ordered after those can't be ordered before it. The
+  two used to run side by side, but making Bevy's wait costs nothing
+  measurable: in a headless app on an Apple M4, with 2,000 or 10,000
+  meshes, a shadowed sun and a new grenade every 2 s, the CPU frame stayed
+  within 1 % (0.43 ms with crystal smoke and 0.36 ms with volumetric
+  smoke, medians of 15 alternated runs), frames with a fill running
+  included.
 - Volumetric smoke costs less to draw at every distance and dial step,
   and faceted smoke a little less, with the same picture to within one
   level out of 255. With MSAA, the smoke's passes that draw onto the scene

@@ -263,6 +263,12 @@ cargo run --example presets                 # every preset and look; also minima
   `@if(SINGLE_SMOKE)`: keep it shared, so they draw the same pixels.
 - Crystal puffs are plugin-owned entities (`CrystalPuff`). `sync_crystals`
   runs after transform propagation, so it writes `GlobalTransform` itself.
+  It runs before Bevy's `VisibilityPropagate`, `CalculateBounds` and
+  `AssetEventSystems`, so each puff is culled where it is now and drawn in
+  the frame the rule counts it, with a new cloud's material; new puffs are
+  spawned in place for the same reason. Unordered, Bevy's systems ran first
+  and puffs switched on and off a frame late. The plugin test
+  `every_crystal_puff_the_rule_counts_is_drawn` catches that.
 - `SmokeObstacle` voxelisation runs on a background task; until the first
   level exists, new `Smoke` entities wait before popping.
 - GPU timings exist for an Apple M4 (Metal) and, as ratios only, for a
