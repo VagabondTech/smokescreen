@@ -1592,11 +1592,11 @@ fn prepare_smoke_views(
             // crosses, with room for 8 of them wherever no point of the screen
             // lies in more than 8 of the group's rectangles (a ray meets only
             // smokes whose rectangle holds its pixel); its short arrays made
-            // two overlapping smokes 32-36 % cheaper close up at the best dial
-            // steps on an Apple M4. A kernel no point light reaches is compiled
-            // without the light code. Past 8 smokes on a pixel, and until a
-            // kernel has compiled, a group falls back on the march with room
-            // for every slot, which draws the same picture.
+            // two overlapping smokes 32-39 % cheaper close up at the top four
+            // dial steps on an Apple M4. A kernel no point light reaches is
+            // compiled without the light code. Past 8 smokes on a pixel, and
+            // until a kernel has compiled, a group falls back on the march
+            // with room for every slot, which draws the same picture.
             let volumetric_slots: Vec<_> = frame
                 .slots
                 .iter()

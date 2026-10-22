@@ -257,9 +257,16 @@ cargo run --example presets                 # every preset and look; also minima
   was worth 8 % once the arrays were gone and nothing before. Taking a
   third of the sample loop's instructions out (constants folded per smoke,
   coordinates advanced along the ray) made it 6–7 % slower, with the slot
-  uniform or not. `render.rs` picks per camera and frame (`apart`,
-  `reaches`); smokes whose screen rectangles come close fall back to the
-  general kernel. The two share the one-smoke path's text through
+  uniform or not. `render.rs` picks per camera and frame: smokes whose
+  screen rectangles come close are marched together, one dispatch per group
+  (`march_groups`), by the general kernel; a smoke on its own by the
+  single-smoke one. The general kernel's per-ray arrays have room for 8
+  smokes (`RAY_SMOKES_8`) where no point on screen lies in more than 8 of
+  the group's rectangles (`most_overlapping`): its overlapping path reads
+  them at every sample, and the short arrays made two overlapping smokes
+  32–39 % cheaper close up, 39–47 % with the light code out too (it was
+  worth 4–11 % there). Groups that need more fall back on the 32-slot
+  kernel. The kernels share the one-smoke path's text through
   `@if(SINGLE_SMOKE)`: keep it shared, so they draw the same pixels.
 - Crystal puffs are plugin-owned entities (`CrystalPuff`). `sync_crystals`
   runs after transform propagation, so it writes `GlobalTransform` itself.
