@@ -153,11 +153,15 @@ The README's tables come from `cargo bench -p smokescreen`. The weak spots:
   pass over the multisampled target (about 0.2 ms at any distance) is
   gone while nothing transparent is on screen. With something
   transparent, the composite could join Bevy's transparent pass instead
-  of a pass of its own, if its upsample moved to a compute pass. The
-  coarser march takes the far side of the farthest smoke's box, which is
-  cautious: inside a dense cloud rays end long before it, so close up a
-  quarter would keep the noise too, but the march would have to measure
-  how far its rays get. Tried on the M4 and dropped: a third fewer
+  of a pass of its own, if its upsample moved to a compute pass. Since 0.2
+  the march measures how far its rays actually see smoke
+  (`SmokeCamera::measured_depth`), which inside a dense cloud is long
+  before the far side of its box, and close up goes to a quarter at every
+  step: 0.98 instead of 1.46 ms at the best step. The measurement comes
+  back from the GPU a few frames late; a CPU estimate from the rule would
+  be deterministic, and without the noise it sees nearly the same depths,
+  but it would cost the CPU hundreds of lines per camera every frame.
+  Tried on the M4 and dropped: a third fewer
   instructions in the sample loop (6–7 % slower), and the composite
   reading the march's depths at its resolution instead of the
   multisampled depth (no faster). Fewer texture reads didn't pay either.

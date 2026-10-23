@@ -124,6 +124,10 @@ const RAY_SMOKES: u32 = MAX_SLOTS;
 @group(0) @binding(7) var smoke_out: texture_storage_2d<rgba16float, write>;
 // 1 where the level is open, 0 where it is solid, per voxel.
 @group(0) @binding(8) var open_atlas: texture_3d<f32>;
+// Where each ray last saw smoke through more than a fifth of the scene, on
+// frames the camera measures (`view.params.w`): `smoke_depth.wesl` counts it
+// for the resolution the march runs at.
+@group(0) @binding(9) var depth_out: texture_storage_2d<r32float, write>;
 
 // A ray's sample sequence (see the top of the file). Without growth it is
 // arithmetic: t_k = t_0 + k·b. Between jumps a ray steps by the recurrence
@@ -394,6 +398,9 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     if (count == 0u) {
         textureStore(smoke_out, px, vec4<f32>(0.0, 0.0, 0.0, 1.0));
+        if (view.params.w != 0u) {
+            textureStore(depth_out, px, vec4<f32>(0.0));
+        }
         return;
     }
 
@@ -423,6 +430,10 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
     var rule = vec4<f32>(0.0);
     // Half the stretch the last jump stepped over, for the sample it lands on.
     var skipped = 0.0;
+    // The end of the last step that held smoke while more than a fifth of the
+    // scene still showed through. Carrying it cost nothing measurable on an
+    // Apple M4; it is written out only on frames the camera measures.
+    var seen = 0.0;
 
     // With SINGLE_SMOKE every ray that gets here meets exactly one smoke.
     @if(SINGLE_SMOKE) let one = true;
@@ -439,6 +450,9 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
         var t = seq_t(seq, k);
         if (t_stop <= t) {
             textureStore(smoke_out, px, vec4<f32>(0.0, 0.0, 0.0, 1.0));
+            if (view.params.w != 0u) {
+                textureStore(depth_out, px, vec4<f32>(0.0));
+            }
             return;
         }
         loop {
@@ -473,6 +487,7 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
                 continue;
             }
             if (smp.sigma > 0.0) {
+                seen = select(seen, t + dt, transmittance > 0.2);
                 // Energy-conserving integration over the step (Hillaire 2015).
                 let step_t = exp(-smp.sigma * span);
                 radiance += transmittance * smp.source * (1.0 - step_t) / smp.sigma;
@@ -568,6 +583,7 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
                 continue;
             }
             if (sigma_t > 0.0) {
+                seen = select(seen, t + dt, transmittance > 0.2);
                 let step_t = exp(-sigma_t * span);
                 radiance += transmittance * source * (1.0 - step_t) / sigma_t;
                 transmittance *= step_t;
@@ -593,4 +609,7 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
         transmittance = 0.0;
     }
     textureStore(smoke_out, px, vec4<f32>(radiance * view.march.x, transmittance));
+    if (view.params.w != 0u) {
+        textureStore(depth_out, px, vec4<f32>(seen));
+    }
 }

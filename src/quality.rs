@@ -27,7 +27,11 @@ use bevy::{
     render::{RenderApp, extract_component::ExtractComponent},
 };
 
-use crate::{SmokeCamera, SmokeResolution, noise::NOISE_SIZE, render::SmokeFrame};
+use crate::{
+    SmokeCamera, SmokeResolution,
+    noise::NOISE_SIZE,
+    render::{MeasuredDepths, SmokeFrame},
+};
 
 /// Number of steps on the dial.
 pub const TIERS: usize = 6;
@@ -180,12 +184,12 @@ impl VolumetricQuality {
 /// to predict what a tier switch will save. Measured with the demo's scripted
 /// tier sweep with the smoke close up (where budgets bind; at a distance the
 /// faceted tiers save less, about 0.5× at the bottom), on an Apple M4. Close
-/// up the volumetric tiers are near each other: the top ones march coarser
-/// there too ([`VolumetricQuality::resolution_by_distance`]), and the
-/// composite costs the same at every tier. The controller learns the
-/// absolute scale on the player's GPU.
+/// up the volumetric tiers are near each other: every one marches at a
+/// quarter there, where the rays see smoke no farther than a quarter allows
+/// ([`SmokeCamera::measured_depth`]), and the composite costs the same at
+/// every tier. The controller learns the absolute scale on the player's GPU.
 pub const FACET_RELATIVE_COST: [f32; TIERS] = [0.25, 0.26, 0.33, 0.36, 0.49, 1.0];
-pub const VOLUMETRIC_RELATIVE_COST: [f32; TIERS] = [0.59, 0.59, 0.79, 0.85, 0.94, 1.0];
+pub const VOLUMETRIC_RELATIVE_COST: [f32; TIERS] = [0.85, 0.85, 0.90, 0.93, 0.95, 1.0];
 
 /// What the dial is doing on a camera this frame. Added automatically with
 /// [`SmokeCamera`]; read it for HUDs and logs.
@@ -204,7 +208,30 @@ pub struct SmokeQuality {
     /// resolution, or coarser close up
     /// ([`VolumetricQuality::resolution_by_distance`]).
     pub volumetric_resolution: SmokeResolution,
+    /// How far this camera's rays see volumetric smoke, measured on the GPU
+    /// a few frames ago ([`SmokeCamera::measured_depth`]), in world units:
+    /// the 97th percentile over the screen's 8×8 tiles of the march of where
+    /// a ray last saw smoke through more than a fifth of the scene. `None`
+    /// while the camera isn't measuring, or before a measurement has come
+    /// back since it last jumped.
+    pub measured_depth: Option<f32>,
     pub(crate) controller: BudgetController,
+    /// Whether the render world measures how far the rays see smoke this
+    /// frame, and what the measurements need between frames.
+    pub(crate) measure: bool,
+    pub(crate) depth: DepthState,
+}
+
+/// The measured depth's bookkeeping, per camera.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct DepthState {
+    /// The camera's position last frame (internal frame).
+    eye: Vec3,
+    /// The frame it last moved more than [`JUMP`] in one frame.
+    jump: u32,
+    /// The depth in use (metres, internal frame), kept until the next
+    /// measurement or jump.
+    held: Option<f32>,
 }
 
 impl SmokeQuality {
@@ -474,6 +501,70 @@ const FINE_NOISE_SCALE: f32 = 2.7;
 /// itself, so a camera near a limit doesn't flip between two resolutions.
 const COARSER_WITHIN: f32 = 0.8;
 
+/// With a measured depth, a resolution is taken at its limit and kept until
+/// the depth passes this many times the limit: a measurement moves from
+/// frame to frame where the far side of a box doesn't.
+const MEASURED_KEEP: f32 = 1.25;
+
+/// The share of the march's tiles that must see smoke within a resolution's
+/// limit for the measured depth to take it.
+const MEASURED_SHARE: f64 = 0.97;
+
+/// The measured depth a camera uses is this many frames old: by then the GPU
+/// has finished and the readback has come back, and a fixed age keeps the
+/// demo's captures, which wait for the GPU every frame, the same from run to
+/// run.
+const MEASURED_LAG: u32 = 3;
+
+/// A camera measures on every this many frames (those whose number is a
+/// multiple of it, so the demo's captures measure on the same frames every
+/// run), and keeps its choice in between. Measuring cost about 0.05 ms a
+/// frame on an Apple M4 at 1080p, and the depth changes slowly.
+const MEASURE_EVERY: u32 = 4;
+
+/// A camera that moves farther than this in one frame (metres, internal
+/// frame) has jumped: measurements from before it no longer count.
+const JUMP: f32 = 1.0;
+
+const COARSER: [SmokeResolution; 3] = [
+    SmokeResolution::TwoThirds,
+    SmokeResolution::Half,
+    SmokeResolution::Quarter,
+];
+
+/// The farthest distance at which a march `r` coarse still gives every noise
+/// texel (`texel`, metres) a pixel of its own, for pixels `pixel_angle`
+/// radians across.
+fn limit(r: SmokeResolution, texel: f32, pixel_angle: f32) -> f32 {
+    texel / (r.divisor() * pixel_angle)
+}
+
+/// The coarsest resolution, down to a quarter but never finer than `step`,
+/// whose limit `depth` is within `enter` times of, or within `keep` times of
+/// if `previous` was at least that coarse.
+fn coarsest_within(
+    step: SmokeResolution,
+    previous: SmokeResolution,
+    depth: f32,
+    texel: f32,
+    pixel_angle: f32,
+    enter: f32,
+    keep: f32,
+) -> SmokeResolution {
+    let mut chosen = step;
+    for r in COARSER {
+        if r.divisor() <= step.divisor() {
+            continue;
+        }
+        let limit = limit(r, texel, pixel_angle);
+        let kept = r.divisor() <= previous.divisor() && depth <= keep * limit;
+        if kept || depth <= enter * limit {
+            chosen = r;
+        }
+    }
+    chosen
+}
+
 /// The resolution to march volumetric smoke at
 /// ([`VolumetricQuality::resolution_by_distance`]): the step's, or coarser
 /// while every texel of the finest noise (`texel`, metres) still gets a
@@ -489,53 +580,97 @@ pub(crate) fn march_resolution(
     texel: f32,
     pixel_angle: f32,
 ) -> SmokeResolution {
-    let Some(far) = far else {
-        return step;
-    };
-    // The farthest distance at which a march `r` coarse still gives every
-    // noise texel a pixel.
-    let limit = |r: SmokeResolution| texel / (r.divisor() * pixel_angle);
-    let mut chosen = step;
-    for r in [
-        SmokeResolution::TwoThirds,
-        SmokeResolution::Half,
-        SmokeResolution::Quarter,
-    ] {
-        if r.divisor() <= step.divisor() {
-            continue;
-        }
-        let keep = r.divisor() <= previous.divisor() && far <= limit(r);
-        let enter = far <= COARSER_WITHIN * limit(r);
-        if keep || enter {
-            chosen = r;
+    match far {
+        Some(far) => coarsest_within(step, previous, far, texel, pixel_angle, COARSER_WITHIN, 1.0),
+        None => step,
+    }
+}
+
+/// The resolution from a measured depth ([`SmokeCamera::measured_depth`]):
+/// as [`march_resolution`] with the depth for `far`, but a resolution is
+/// taken at its limit and kept to [`MEASURED_KEEP`] times it.
+pub(crate) fn measured_resolution(
+    step: SmokeResolution,
+    previous: SmokeResolution,
+    depth: f32,
+    texel: f32,
+    pixel_angle: f32,
+) -> SmokeResolution {
+    coarsest_within(step, previous, depth, texel, pixel_angle, 1.0, MEASURED_KEEP)
+}
+
+/// Whether measuring could make the march coarser than `chosen` (the far side
+/// of the boxes' choice): only if some coarser resolution's limit reaches
+/// `near`, the nearest point of the volumetric smoke on screen, since no ray
+/// sees smoke nearer than that. While a measurement is in use (`held`: the
+/// resolution it gave) a resolution at least as coarse stays in reach to
+/// [`MEASURED_KEEP`] times its limit; a resolution left from before the
+/// camera jumped doesn't count.
+pub(crate) fn measuring_helps(
+    step: SmokeResolution,
+    chosen: SmokeResolution,
+    held: Option<SmokeResolution>,
+    near: f32,
+    texel: f32,
+    pixel_angle: f32,
+) -> bool {
+    COARSER.into_iter().any(|r| {
+        let reach = if held.is_some_and(|h| r.divisor() <= h.divisor()) {
+            MEASURED_KEEP
+        } else {
+            1.0
+        };
+        r.divisor() > step.divisor() && r.divisor() > chosen.divisor() && near <= reach * limit(r, texel, pixel_angle)
+    })
+}
+
+/// The [`MEASURED_SHARE`] percentile of a histogram of tile depths, `bin`
+/// metres a bin: the far edge of the bin it falls in. `None` if no tile saw
+/// smoke.
+pub(crate) fn depth_percentile(histogram: &[u32], bin: f32) -> Option<f32> {
+    let tiles: u64 = histogram.iter().map(|&n| n as u64).sum();
+    if tiles == 0 {
+        return None;
+    }
+    let wanted = ((tiles as f64 * MEASURED_SHARE).ceil() as u64).max(1);
+    let mut sum = 0;
+    for (i, &n) in histogram.iter().enumerate() {
+        sum += n as u64;
+        if sum >= wanted {
+            return Some((i + 1) as f32 * bin);
         }
     }
-    chosen
+    Some(histogram.len() as f32 * bin)
 }
 
 /// Picks every smoke camera's tier for this frame.
 pub(crate) fn update_smoke_quality(
-    mut cameras: Query<(&SmokeCamera, &mut SmokeQuality, &Camera, &GlobalTransform)>,
+    mut cameras: Query<(Entity, &SmokeCamera, &mut SmokeQuality, &Camera, &GlobalTransform)>,
     frame: Res<SmokeFrame>,
     diagnostics: Option<Res<DiagnosticsStore>>,
+    depths: Option<Res<MeasuredDepths>>,
 ) {
-    for (settings, mut quality, camera, transform) in &mut cameras {
+    let mut depth_logs = depths.as_ref().map(|d| d.0.lock().unwrap());
+    // The internal frame's metres per world unit.
+    let scale = frame.internal_from_world.x_axis.truncate().length();
+    for (entity, settings, mut quality, camera, transform) in &mut cameras {
         let quality = quality.as_mut();
         let max_tier = tier_from_quality(settings.quality);
 
         // Coverage of each style on this camera (smoke data is in the core's
         // internal frame).
         let mut coverage = [0.0_f32; 2];
-        // The farthest point of any volumetric smoke on screen, and the
-        // angle a pixel spans.
+        // The farthest and the nearest point of any volumetric smoke on
+        // screen, and the angle a pixel spans.
         let mut far = None;
+        let mut nearest_smoke = None;
         let mut pixel_angle = 0.0;
+        let eye = frame.internal_from_world.transform_point3(transform.translation());
         if let Some(size) = camera.physical_viewport_size() {
             let clip_from_view = camera.clip_from_view();
             let size = size.max(UVec2::ONE).as_vec2();
             let internal_from_world = frame.internal_from_world;
             let clip_from_internal = clip_from_view * transform.to_matrix().inverse() * internal_from_world.inverse();
-            let eye = internal_from_world.transform_point3(transform.translation());
             let near = clip_from_view.w_axis.z * internal_from_world.x_axis.truncate().length();
             for (style, faceted) in [false, true].into_iter().enumerate() {
                 let boxes = frame
@@ -558,6 +693,8 @@ pub(crate) fn update_smoke_quality(
                         s.drawn_max,
                     );
                     far = Some(far.unwrap_or(0.0_f32).max(corner.distance(eye)));
+                    let nearest = eye.clamp(s.drawn_min, s.drawn_max).distance(eye);
+                    nearest_smoke = Some(nearest_smoke.unwrap_or(f32::MAX).min(nearest));
                 }
             }
         }
@@ -613,12 +750,58 @@ pub(crate) fn update_smoke_quality(
         }
 
         let vol_q = settings.volumetric_quality(quality.tier);
-        quality.volumetric_resolution = if vol_q.resolution_by_distance {
-            let texel = 1.0 / (NOISE_SIZE as f32 * frame.settings.noise_frequency * FINE_NOISE_SCALE);
-            march_resolution(vol_q.resolution, quality.volumetric_resolution, far, texel, pixel_angle)
+        let previous = quality.volumetric_resolution;
+        let texel = 1.0 / (NOISE_SIZE as f32 * frame.settings.noise_frequency * FINE_NOISE_SCALE);
+        let by_box = if vol_q.resolution_by_distance {
+            march_resolution(vol_q.resolution, previous, far, texel, pixel_angle)
         } else {
             vol_q.resolution
         };
+
+        // How far the rays actually see smoke, measured on the GPU: rays end
+        // inside a dense cloud long before the far side of its box. Measured
+        // only where that could make the march coarser.
+        let state = &mut quality.depth;
+        if state.eye.distance(eye) > JUMP {
+            state.jump = frame.frame;
+            state.held = None;
+        }
+        state.eye = eye;
+        // The resolution a measurement in use gave (last frame's).
+        let held = state.held.map(|_| previous);
+        let helps = settings.measured_depth
+            && vol_q.resolution_by_distance
+            && nearest_smoke
+                .is_some_and(|near| measuring_helps(vol_q.resolution, by_box, held, near, texel, pixel_angle));
+        quality.measure = helps && frame.frame.is_multiple_of(MEASURE_EVERY);
+        if helps {
+            // This camera's measurement of `MEASURED_LAG` frames ago, if
+            // taken since its last jump; otherwise the one in use stays.
+            let wanted = frame.frame.wrapping_sub(MEASURED_LAG);
+            let since_jump = wanted.wrapping_sub(state.jump) < u32::MAX / 2;
+            if let Some(m) = depth_logs
+                .as_ref()
+                .and_then(|m| m.get(&entity))
+                .and_then(|log| log.iter().find(|m| m.frame == wanted))
+                && since_jump
+            {
+                state.held = m.depth;
+            }
+        } else {
+            state.held = None;
+        }
+        quality.volumetric_resolution = match state.held {
+            Some(depth) => {
+                let r = measured_resolution(vol_q.resolution, previous, depth, texel, pixel_angle);
+                if r.divisor() > by_box.divisor() { r } else { by_box }
+            }
+            None => by_box,
+        };
+        quality.measured_depth = state.held.map(|depth| depth / scale);
+    }
+    // Forget the measurements of cameras that are gone.
+    if let Some(logs) = depth_logs.as_mut() {
+        logs.retain(|camera, _| cameras.contains(*camera));
     }
 }
 
@@ -707,6 +890,62 @@ mod tests {
         // Never finer than the step.
         assert_eq!(pick(Half, Full, 30.0), Half);
         assert_eq!(pick(Quarter, Full, 30.0), Quarter);
+    }
+
+    #[test]
+    fn measured_depth_is_taken_at_the_limit_and_kept_beyond_it() {
+        use SmokeResolution::*;
+        // The camera of `march_coarser_close_up`: ⅔ at 22.5 m, ½ at 16.9 m,
+        // ¼ at 8.44 m.
+        let pick = |step, previous, depth| measured_resolution(step, previous, depth, 0.026, 0.00077);
+        // Taken at the limit itself...
+        assert_eq!(pick(Full, Half, 8.4), Quarter);
+        assert_eq!(pick(Full, Full, 8.5), Half);
+        assert_eq!(pick(Full, Full, 16.8), Half);
+        assert_eq!(pick(Full, Full, 22.5), TwoThirds);
+        // ... and kept to 1.25 times it.
+        assert_eq!(pick(Full, Quarter, 10.5), Quarter);
+        assert_eq!(pick(Full, Quarter, 10.6), Half);
+        // Never finer than the step.
+        assert_eq!(pick(Quarter, Full, 30.0), Quarter);
+    }
+
+    #[test]
+    fn measures_only_where_the_march_could_go_coarser() {
+        use SmokeResolution::*;
+        let helps = |step, chosen, held, near| measuring_helps(step, chosen, held, near, 0.026, 0.00077);
+        // Close up at the best step the box gives a half: a quarter is in
+        // reach while the nearest smoke is within its limit.
+        assert!(helps(Full, Half, None, 2.0));
+        assert!(!helps(Full, Half, None, 9.0));
+        // A quarter taken from a measurement stays in reach to 1.25 times.
+        assert!(helps(Full, Half, Some(Quarter), 10.0));
+        assert!(!helps(Full, Half, Some(Half), 10.0));
+        // At mid-range the box gives full resolution; far away nothing coarser
+        // is in reach, even right after a jump from close up, where the march
+        // was at a quarter (the demo's tier sweep, from its close view to its
+        // far one).
+        assert!(helps(Full, Full, None, 9.5));
+        assert!(!helps(Full, Full, None, 22.7));
+        assert!(!helps(Full, Full, None, 23.0));
+        // A step already at a quarter has nothing to gain.
+        assert!(!helps(Quarter, Quarter, None, 2.0));
+    }
+
+    #[test]
+    fn measured_depth_is_the_97th_percentile_of_tiles() {
+        assert_eq!(depth_percentile(&[0; 8], 0.25), None);
+        let mut histogram = [0_u32; 256];
+        histogram[0] = 97;
+        histogram[200] = 3;
+        // The far edge of the bin the 97th tile of 100 falls in.
+        assert_eq!(depth_percentile(&histogram, 0.25), Some(0.25));
+        histogram[0] = 96;
+        histogram[200] = 4;
+        assert_eq!(depth_percentile(&histogram, 0.25), Some(50.25));
+        let mut one = [0_u32; 256];
+        one[27] = 1;
+        assert_eq!(depth_percentile(&one, 0.25), Some(7.0));
     }
 
     #[test]

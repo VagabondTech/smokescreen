@@ -19,7 +19,10 @@
 //!     rest queued), retrace the queue (indirect compute), composite;
 //!   - volumetric: raymarch at reduced resolution, then composite.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 use bevy::{
     asset::{embedded_asset, load_embedded_asset},
@@ -29,7 +32,7 @@ use bevy::{
         schedule::{Core3d, Core3dSystems, camera_driver},
     },
     pbr::main_transmissive_pass_3d,
-    platform::collections::HashSet,
+    platform::collections::{HashMap, HashSet},
     prelude::*,
     render::{
         ExtractSchedule, GpuResourceAppExt, Render, RenderApp, RenderStartup, RenderSystems,
@@ -47,6 +50,7 @@ use bevy::{
             *,
         },
         renderer::{RenderContext, RenderDevice, RenderGraph, RenderQueue, ViewQuery},
+        sync_world::MainEntity,
         texture::{CachedTexture, TextureCache},
         view::{ExtractedView, Msaa, ViewDepthStencilTexture, ViewTarget},
     },
@@ -69,6 +73,13 @@ pub(crate) const MAX_SLOTS: usize = 32;
 /// 22.5 KiB, a uniform buffer well within the 64 KiB WebGPU allows.
 pub(crate) const MAX_HOLES: usize = 512;
 pub(crate) const MAX_LIGHTS: usize = 8;
+/// The measured depth's histogram: `DEPTH_BINS` bins of `DEPTH_BIN` metres,
+/// as in `smoke_depth.wesl` (`limits_match_the_shaders` checks).
+pub(crate) const DEPTH_BINS: usize = 256;
+pub(crate) const DEPTH_BIN: f32 = 0.25;
+/// Buffers a camera's histogram is read back through: it measures every
+/// frame, and a readback comes back a frame or two later.
+const DEPTH_READBACKS: usize = 4;
 const BAKE_WORKGROUP: u32 = 4;
 const MARCH_WORKGROUP: u32 = 8;
 
@@ -203,6 +214,27 @@ pub(crate) struct SlotUpload {
 #[derive(Resource, Clone, Default)]
 pub(crate) struct SmokeUploads(pub Arc<Mutex<Vec<SlotUpload>>>);
 
+/// Each smoke camera's recent depth measurements (main-world camera entity
+/// to measurements, oldest first), read back on the render world and read by
+/// the quality controller in the main world (`quality::update_smoke_quality`).
+#[derive(Resource, Clone, Default)]
+pub(crate) struct MeasuredDepths(pub Arc<Mutex<HashMap<Entity, Vec<MeasuredDepth>>>>);
+
+/// How far a camera's rays saw volumetric smoke on one frame.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MeasuredDepth {
+    /// `SmokeFrame::frame` of the frame measured.
+    pub frame: u32,
+    /// The 97th percentile, over the march's 8×8 tiles that saw smoke, of
+    /// the farthest point at which a ray of the tile still saw smoke through
+    /// more than a fifth of the scene (metres, internal frame); `None` when
+    /// no tile saw smoke.
+    pub depth: Option<f32>,
+}
+
+/// Measurements kept per camera: the controller reads one a few frames old.
+const MEASURED_KEPT: usize = 8;
+
 // ---------------------------------------------------------------------------
 // GPU-side layouts. Must match `smoke_common.wesl`.
 // ---------------------------------------------------------------------------
@@ -313,7 +345,8 @@ struct GpuView {
     march: Vec4,
     /// Volumetric smoke-buffer rectangle to march: min.xy, max.xy (exclusive).
     rect: UVec4,
-    /// x: max steps, y: jitter frame, z: the slot a single-smoke march reads.
+    /// x: max steps, y: jitter frame, z: the slot a single-smoke march reads,
+    /// w: 1 if the march measures how far its rays see smoke.
     params: UVec4,
     /// Faceted. x: coarse divisor, y: max steps, z: shadow steps, w: flags
     /// (one of them for the volumetric composite).
@@ -386,8 +419,33 @@ struct SmokeGpu {
     facet_puffs: Buffer,
     facet_cells: Buffer,
     facet_indices: Buffer,
+    /// Bound for the march's measured depth on frames a camera doesn't
+    /// measure (the march then writes nothing to it).
+    depth_unused: TextureView,
     generation: u32,
 }
+
+/// A camera's depth histogram, and the buffers it is read back through
+/// (`DEPTH_READBACKS`, used in turn).
+struct CameraDepth {
+    histogram: Buffer,
+    readbacks: [Buffer; DEPTH_READBACKS],
+    /// Readback buffers still waiting for the GPU or being read.
+    busy: Arc<[AtomicBool; DEPTH_READBACKS]>,
+    next: usize,
+    /// The readback buffer this frame's histogram went to, and the frame.
+    copied: Option<(usize, u32)>,
+    /// The last frame it measured.
+    used: u32,
+    /// Where each ray last saw smoke, at the march's size. Kept here rather
+    /// than in Bevy's `TextureCache`, which drops a texture unused for three
+    /// frames: a camera measures on every fourth, and a new texture is
+    /// cleared before its first use (8 MB at 1080p and full resolution).
+    texture: Option<(UVec2, TextureView)>,
+}
+
+#[derive(Resource, Default)]
+struct DepthReadbacks(HashMap<Entity, CameraDepth>);
 
 /// The faceted retrace queue: indirect dispatch arguments, a count, and one
 /// word per queued pixel. Shared by all cameras (their passes run in order)
@@ -440,6 +498,9 @@ struct SmokePipelines {
     facet_coarse: [CachedComputePipelineId; 2],
     facet_classify: [CachedComputePipelineId; 2],
     facet_retrace: [CachedComputePipelineId; 2],
+    /// Counts each 8×8 tile's measured depth into a camera's histogram.
+    depth_layout: BindGroupLayoutDescriptor,
+    depth_reduce: CachedComputePipelineId,
 }
 
 /// The volumetric march's kernels for one smoke per dispatch
@@ -623,6 +684,19 @@ struct VolumetricView {
     /// Composite scissors in render-target pixels: x, y, width, height. One
     /// per march.
     scissors: Vec<UVec4>,
+    /// This frame's depth measurement, if the camera measures.
+    depth: Option<DepthPass>,
+}
+
+/// A camera's depth measurement this frame: the march writes how far each
+/// ray saw smoke into `texture`, each 8×8 tile's farthest is counted into
+/// `histogram`, and that goes to readback buffer `slot`.
+struct DepthPass {
+    camera: Entity,
+    texture: TextureView,
+    histogram: Buffer,
+    readback: Buffer,
+    slot: usize,
 }
 
 struct MarchDispatch {
@@ -696,7 +770,10 @@ pub(crate) fn build(app: &mut App, config: SmokeConfig, uploads: SmokeUploads) {
     embedded_asset!(app, "shaders/smoke_facet_classify.wesl");
     embedded_asset!(app, "shaders/smoke_facet_retrace.wesl");
     embedded_asset!(app, "shaders/smoke_facet_composite.wesl");
+    embedded_asset!(app, "shaders/smoke_depth.wesl");
 
+    let depths = MeasuredDepths::default();
+    app.insert_resource(depths.clone());
     app.add_plugins((
         ExtractResourcePlugin::<SmokeFrame>::default(),
         ExtractComponentPlugin::<SmokeCamera>::default(),
@@ -711,9 +788,11 @@ pub(crate) fn build(app: &mut App, config: SmokeConfig, uploads: SmokeUploads) {
     render_app
         .insert_resource(config)
         .insert_resource(uploads)
+        .insert_resource(depths)
         .insert_resource(NoiseData::start())
         .init_resource::<SmokeRenderState>()
         .init_resource::<FacetWork>()
+        .init_resource::<DepthReadbacks>()
         .init_gpu_resource::<SmokeViewUniforms>()
         .init_gpu_resource::<SpecializedRenderPipelines<OverlaySpecializer>>()
         .init_gpu_resource::<SpecializedComputePipelines<MarchSpecializer>>()
@@ -728,6 +807,7 @@ pub(crate) fn build(app: &mut App, config: SmokeConfig, uploads: SmokeUploads) {
                 (prepare_smoke, prepare_smoke_views)
                     .chain()
                     .in_set(RenderSystems::PrepareResources),
+                read_back_depths.in_set(RenderSystems::Cleanup),
             ),
         )
         .add_systems(RenderGraph, bake_smoke.before(camera_driver))
@@ -840,6 +920,16 @@ fn init_smoke_gpu(
     );
     let facet_cells = storage("smoke_facet_cells", slots * limits.max_cells as u64 * 8);
     let facet_indices = storage("smoke_facet_indices", slots * limits.max_indices as u64 * 4);
+    let depth_unused = device.create_texture(&TextureDescriptor {
+        label: Some("smoke_depth_unused"),
+        size: Extent3d::default(),
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: TextureDimension::D2,
+        format: TextureFormat::R32Float,
+        usage: TextureUsages::STORAGE_BINDING,
+        view_formats: &[],
+    });
     *generation += 1;
     commands.insert_resource(SmokeGpu {
         source_view: view(&source),
@@ -855,6 +945,7 @@ fn init_smoke_gpu(
         facet_puffs,
         facet_cells,
         facet_indices,
+        depth_unused: view(&depth_unused),
         generation: *generation,
     });
 }
@@ -916,6 +1007,7 @@ fn init_smoke_pipelines(mut commands: Commands, asset_server: Res<AssetServer>, 
                     sampler(SamplerBindingType::Filtering),
                     texture_storage_2d(TextureFormat::Rgba16Float, StorageTextureAccess::WriteOnly),
                     texture_3d(TextureSampleType::Float { filterable: true }),
+                    texture_storage_2d(TextureFormat::R32Float, StorageTextureAccess::WriteOnly),
                 ),
             ),
         )
@@ -1018,6 +1110,7 @@ fn init_smoke_pipelines(mut commands: Commands, asset_server: Res<AssetServer>, 
         load_embedded_asset!(asset_server.as_ref(), "shaders/smoke_facet_retrace.wesl");
     let facet_composite_shader: Handle<Shader> =
         load_embedded_asset!(asset_server.as_ref(), "shaders/smoke_facet_composite.wesl");
+    let depth_shader: Handle<Shader> = load_embedded_asset!(asset_server.as_ref(), "shaders/smoke_depth.wesl");
 
     let compute = |label: &'static str,
                    layout: &BindGroupLayoutDescriptor,
@@ -1106,6 +1199,18 @@ fn init_smoke_pipelines(mut commands: Commands, asset_server: Res<AssetServer>, 
         &retrace_shader,
         "retrace",
     );
+    let depth_layout = BindGroupLayoutDescriptor::new(
+        "smoke_depth_layout",
+        &BindGroupLayoutEntries::sequential(
+            ShaderStages::COMPUTE,
+            (
+                uniform_buffer::<GpuView>(true),
+                texture_2d(TextureSampleType::Float { filterable: false }),
+                storage_buffer_sized(false, None),
+            ),
+        ),
+    );
+    let depth_reduce = compute("smoke_depth_reduce", &depth_layout, &depth_shader, "reduce", vec![]);
 
     commands.insert_resource(MarchSpecializer {
         layouts: march_layouts.clone(),
@@ -1124,6 +1229,8 @@ fn init_smoke_pipelines(mut commands: Commands, asset_server: Res<AssetServer>, 
         facet_coarse,
         facet_classify,
         facet_retrace,
+        depth_layout,
+        depth_reduce,
     });
     commands.insert_resource(OverlaySpecializer {
         composite_layouts: [composite_layout(false), composite_layout(true)],
@@ -1364,6 +1471,31 @@ fn prepare_smoke(
     gpu.globals.write_buffer(&device, &queue);
 }
 
+fn new_camera_depth(device: &RenderDevice) -> CameraDepth {
+    let buffer = |label: &'static str, usage: BufferUsages| {
+        device.create_buffer(&BufferDescriptor {
+            label: Some(label),
+            size: (DEPTH_BINS * 4) as u64,
+            usage,
+            mapped_at_creation: false,
+        })
+    };
+    CameraDepth {
+        histogram: buffer(
+            "smoke_depth_histogram",
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+        ),
+        readbacks: std::array::from_fn(|_| {
+            buffer("smoke_depth_readback", BufferUsages::MAP_READ | BufferUsages::COPY_DST)
+        }),
+        busy: Arc::new(Default::default()),
+        next: 0,
+        copied: None,
+        used: 0,
+        texture: None,
+    }
+}
+
 fn cached_texture(
     cache: &mut TextureCache,
     device: &RenderDevice,
@@ -1462,11 +1594,13 @@ fn prepare_smoke_views(
         &SmokeCamera,
         Option<&SmokeQuality>,
         &Msaa,
+        &MainEntity,
     )>,
     frame: Res<SmokeFrame>,
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
     mut texture_cache: ResMut<TextureCache>,
+    mut readbacks: ResMut<DepthReadbacks>,
     mut uniforms: ResMut<SmokeViewUniforms>,
     pipelines: Option<Res<SmokePipelines>>,
     specializer: Option<Res<OverlaySpecializer>>,
@@ -1478,7 +1612,7 @@ fn prepare_smoke_views(
 ) {
     uniforms.0.clear();
     let mut work_needed = 0_u64;
-    for (entity, view, camera, settings, quality, msaa) in &views {
+    for (entity, view, camera, settings, quality, msaa, main_entity) in &views {
         let prepared = (|| {
             let pipelines = pipelines.as_ref()?;
             let specializer = specializer.as_ref()?;
@@ -1664,7 +1798,45 @@ fn prepare_smoke_views(
                 marches,
                 composite: overlay(&mut specialized, OverlayKind::Composite),
                 scissors,
+                depth: None,
             });
+            // Measure how far the rays see smoke when the controller asks
+            // (`SmokeQuality::measure`) and a readback buffer is free.
+            if let Some(vol) = volumetric.as_mut()
+                && quality.is_some_and(|q| q.measure)
+            {
+                let camera = main_entity.id();
+                let state = readbacks.0.entry(camera).or_insert_with(|| new_camera_depth(&device));
+                let slot = state.next;
+                if !state.busy[slot].load(Ordering::Acquire) {
+                    if state.texture.as_ref().is_none_or(|(size, _)| *size != smoke_size) {
+                        let texture = device.create_texture(&TextureDescriptor {
+                            label: Some("smoke_depth"),
+                            size: Extent3d {
+                                width: smoke_size.x,
+                                height: smoke_size.y,
+                                depth_or_array_layers: 1,
+                            },
+                            mip_level_count: 1,
+                            sample_count: 1,
+                            dimension: TextureDimension::D2,
+                            format: TextureFormat::R32Float,
+                            usage: TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING,
+                            view_formats: &[],
+                        });
+                        let view = texture.create_view(&TextureViewDescriptor::default());
+                        state.texture = Some((smoke_size, view));
+                    }
+                    vol.depth = Some(DepthPass {
+                        camera,
+                        texture: state.texture.as_ref().map(|(_, view)| view.clone()).unwrap(),
+                        histogram: state.histogram.clone(),
+                        readback: state.readbacks[slot].clone(),
+                        slot,
+                    });
+                }
+            }
+            let measuring = volumetric.as_ref().is_some_and(|v| v.depth.is_some());
 
             // Faceted.
             // Angle of one pixel: 2 tan(fov/2) / height.
@@ -1767,7 +1939,7 @@ fn prepare_smoke_views(
                     vol_q.max_steps.max(1),
                     if settings.temporal_jitter { frame.frame } else { 0 },
                     0,
-                    0,
+                    measuring as u32,
                 ),
                 facet: UVec4::new(facet_divisor, facet_q.max_steps.max(1), facet_q.shadow_steps, flags),
                 facet_f: Vec4::new(
@@ -1936,6 +2108,7 @@ fn smoke_pass(
     view_uniforms: Res<SmokeViewUniforms>,
     pipeline_cache: Res<PipelineCache>,
     work: Res<FacetWork>,
+    (frame, mut readbacks): (Res<SmokeFrame>, ResMut<DepthReadbacks>),
     mut ctx: RenderContext,
 ) {
     let (Some(gpu), Some(pipelines), Some(specializer)) = (gpu, pipelines, specializer) else {
@@ -2140,6 +2313,7 @@ fn smoke_pass(
                 &gpu.linear_repeat,
                 &vol.texture.default_view,
                 &gpu.open_view,
+                vol.depth.as_ref().map_or(&gpu.depth_unused, |d| &d.texture),
             )),
         );
         let composite_group = device.create_bind_group(
@@ -2164,6 +2338,46 @@ fn smoke_pass(
         }
         span.end(ctx.command_encoder());
 
+        // Count each 8×8 tile's farthest measured depth into the camera's
+        // histogram, march by march (their rectangles don't overlap), and
+        // copy it to a readback buffer (`read_back_depths`).
+        if let Some(depth) = &vol.depth
+            && let Some(reduce) = pipeline_cache.get_compute_pipeline(pipelines.depth_reduce)
+            && let Some(state) = readbacks.0.get_mut(&depth.camera)
+        {
+            let group = device.create_bind_group(
+                "smoke_depth",
+                &pipeline_cache.get_bind_group_layout(&pipelines.depth_layout),
+                &BindGroupEntries::sequential((
+                    view_binding.clone(),
+                    &depth.texture,
+                    depth.histogram.as_entire_binding(),
+                )),
+            );
+            ctx.command_encoder().clear_buffer(&depth.histogram, 0, None);
+            {
+                let mut pass = ctx.command_encoder().begin_compute_pass(&ComputePassDescriptor {
+                    label: Some("smoke_depth"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(reduce);
+                for march in &vol.marches {
+                    let r = march.rect;
+                    let dispatch =
+                        (UVec2::new(r.z, r.w) - UVec2::new(r.x, r.y) + MARCH_WORKGROUP - 1) / MARCH_WORKGROUP;
+                    pass.set_bind_group(0, &group, &[march.uniform_offset]);
+                    pass.dispatch_workgroups(dispatch.x.max(1), dispatch.y.max(1), 1);
+                }
+            }
+            let size = depth.histogram.size();
+            ctx.command_encoder()
+                .copy_buffer_to_buffer(&depth.histogram, 0, &depth.readback, 0, size);
+            state.busy[depth.slot].store(true, Ordering::Release);
+            state.copied = Some((depth.slot, frame.frame));
+            state.next = (depth.slot + 1) % DEPTH_READBACKS;
+            state.used = frame.frame;
+        }
+
         let span = diagnostics.time_span(ctx.command_encoder(), "smoke_composite");
         {
             let mut pass = overlay_pass!(ctx, target, resolved, "smoke_composite");
@@ -2176,6 +2390,47 @@ fn smoke_pass(
         }
         span.end(ctx.command_encoder());
     }
+}
+
+/// Maps the depth histograms copied this frame and hands each camera's
+/// measurement to the main world (`MeasuredDepths`) once the GPU is done with
+/// it, usually a frame or two later.
+fn read_back_depths(
+    device: Res<RenderDevice>,
+    frame: Res<SmokeFrame>,
+    mut readbacks: ResMut<DepthReadbacks>,
+    depths: Res<MeasuredDepths>,
+) {
+    // Run the callbacks of readbacks the GPU has finished.
+    let _ = device.poll(PollType::Poll);
+    for (&camera, state) in readbacks.0.iter_mut() {
+        let Some((slot, measured)) = state.copied.take() else {
+            continue;
+        };
+        let buffer = state.readbacks[slot].clone();
+        let busy = state.busy.clone();
+        let depths = depths.0.clone();
+        let mapped = buffer.clone();
+        buffer.slice(..).map_async(MapMode::Read, move |result| {
+            if result.is_ok() {
+                if let Ok(data) = mapped.slice(..).get_mapped_range() {
+                    let depth = crate::quality::depth_percentile(bytemuck::cast_slice(&data), DEPTH_BIN);
+                    let mut depths = depths.lock().unwrap();
+                    let log = depths.entry(camera).or_default();
+                    log.push(MeasuredDepth { frame: measured, depth });
+                    if log.len() > MEASURED_KEPT {
+                        log.remove(0);
+                    }
+                }
+                mapped.unmap();
+            }
+            busy[slot].store(false, Ordering::Release);
+        });
+    }
+    // Forget cameras that stopped measuring a while ago.
+    readbacks.0.retain(|_, state| {
+        frame.frame.wrapping_sub(state.used) < 600 || state.busy.iter().any(|b| b.load(Ordering::Acquire))
+    });
 }
 
 #[cfg(test)]
@@ -2272,6 +2527,13 @@ mod tests {
         let march = include_str!("shaders/smoke_march.wesl");
         let line = format!("const RAY_SMOKES: u32 = {OVERLAP8_SMOKES}u;");
         assert!(march.contains(&line), "smoke_march.wesl should say `{line}`");
+        let depth = include_str!("shaders/smoke_depth.wesl");
+        for line in [
+            format!("const DEPTH_BINS: u32 = {DEPTH_BINS}u;"),
+            format!("const DEPTH_BIN: f32 = {DEPTH_BIN:?};"),
+        ] {
+            assert!(depth.contains(&line), "smoke_depth.wesl should say `{line}`");
+        }
         // One uniform buffer: WebGPU allows 64 KiB.
         let size = GpuGlobals::min_size().get();
         assert!(size <= 64 << 10, "GpuGlobals is {size} bytes");

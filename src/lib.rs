@@ -538,6 +538,14 @@ pub struct SmokeCamera {
     pub volumetric: Option<VolumetricQuality>,
     /// Pin the faceted knobs instead of deriving them from the dial.
     pub facets: Option<FacetQuality>,
+    /// March volumetric smoke as coarse as where the rays actually see smoke
+    /// allows ([`VolumetricQuality::resolution_by_distance`]), measured on
+    /// the GPU and read back a few frames later
+    /// ([`SmokeQuality::measured_depth`]). Inside a dense cloud the rays end
+    /// long before its far side, so close up the march can go to a quarter
+    /// where the far side alone allows a half. Off, the far side of the
+    /// farthest smoke's box decides, as in 0.1. On by default.
+    pub measured_depth: bool,
 }
 
 /// Fraction of the camera resolution (per axis) the volumetric smoke is
@@ -580,6 +588,7 @@ impl SmokeCamera {
             temporal_jitter: false,
             volumetric: None,
             facets: None,
+            measured_depth: true,
         }
     }
 
