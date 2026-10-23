@@ -300,6 +300,24 @@ are not in lockstep.
   where the light code is left out; none changes with one smoke, or with
   the light code in). The demo's `SMOKE_DEMO_SWEEP_SMOKES=2` or `3` puts
   those smokes into the `tiers` and `agreement` scripts.
+- The volumetric composite reads the depth buffer for fewer pixels. It
+  weighs the 2×2 smoke texels around each pixel by position and by how
+  close each one's depth is to the pixel's, which reads five depths. Where
+  the four agree within 0.03 in every channel, any blend of them agrees
+  with any other within that, so no depth weights could move the pixel by
+  more: it now blends them by position alone and reads no depth. Close up
+  at the best step that is about nine pixels in ten, and a third to two
+  thirds at the two cheapest steps, whose texels lie 4 pixels apart. On an
+  Apple M4 at 1920×1080 with MSAA (medians of five alternated runs), a
+  grown cloud close up takes 1.19 instead of 1.45 ms at the best step
+  (−18 %), 1.11 instead of 1.30 at the high step (−15 %) and 0.83 instead
+  of 0.87 at the cheapest (−5 %); halfway through the fade the best step
+  takes 0.94 instead of 0.99 (−5 %). Without MSAA, close up at the best
+  step 1.14 instead of 1.21 ms (−6 %), and 11–13 % less at the steps
+  below. Mid-range and far away little changes. No pixel of the demo's
+  sweep changes by more than 5 levels out of 255, nor more than 0.009 % of
+  a frame by more than 1, and with `noise_within_rule` capped or filled
+  nothing the rule blocks shows through.
 - Point lights light volumetric and faceted smoke. They never did: the
   plugin read each `PointLight`'s `ViewVisibility` while Bevy had it
   cleared (after `VisibilitySystems::VisibilityPropagate` resets it and
