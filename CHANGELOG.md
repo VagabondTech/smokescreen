@@ -300,6 +300,27 @@ are not in lockstep.
   where the light code is left out; none changes with one smoke, or with
   the light code in). The demo's `SMOKE_DEMO_SWEEP_SMOKES=2` or `3` puts
   those smokes into the `tiers` and `agreement` scripts.
+- Surfaces inside volumetric smoke no longer show a pattern of bands. A
+  ray stops between two samples, at the scene or where it leaves its
+  smoke's box, and its last sample stood for a whole step, so it reached
+  anywhere from nothing to a whole step past a surface inside the smoke,
+  as each ray's jitter fell. The jitter's pattern showed on such surfaces:
+  bands 4 pixels apart where the march runs at a quarter resolution (the
+  two cheapest steps), a fine diagonal grain at a half. The last sample now
+  stands for the stretch up to half a step past where the ray stops, the
+  same for every ray: what the old overshoot came to on average, so the
+  smoke in front of surfaces keeps its weight. Walking past the demo's
+  crate 6–7 m from a grown cloud at the high step, a quarter and a half
+  resolution now differ by more than 2 levels out of 255 on 0.14 % of the
+  pixels instead of 0.46 %, and the picture changes a little less from
+  frame to frame. Against the old picture, at most 17 levels change, on at
+  most 0.4 % of a frame by more than 2. `tools/fairness.py --volumetric`
+  passes as before (its worst view 0.65 % instead of 0.71 %), and with
+  `noise_within_rule` capped or filled nothing the rule blocks shows
+  through, at the best and the cheapest step. Stopping exactly at the
+  surface removed the bands as well, but let a few pixels the rule blocks
+  show through at the cheapest steps with `noise_within_rule` set. It
+  costs nothing measurable on an Apple M4.
 - Point lights light volumetric and faceted smoke. They never did: the
   plugin read each `PointLight`'s `ViewVisibility` while Bevy had it
   cleared (after `VisibilitySystems::VisibilityPropagate` resets it and
