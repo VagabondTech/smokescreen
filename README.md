@@ -4,7 +4,7 @@
 
 Smoke that fills rooms, pours through doorways, stops at walls and blocks sight. **`bevy_smokescreen`** brings it to **Bevy 0.20**: smoke grenades, smoke walls, poison gas, fog banks and steam, in three looks, with gameplay queries that agree with what players see. Underneath is **`smokescreen`**, an engine-free simulation that gives bit-identical answers on x86-64 and ARM (checked in CI), so it works for multiplayer games and dedicated servers too.
 
-**Status:** early (0.1), for Bevy 0.20 only. Tested on an Apple M4 (macOS) and a software rasteriser, and used in a game on an AMD RX 6700 XT (Windows 10); NVIDIA and Intel GPUs haven't been tried yet.
+**Status:** early (0.2), for Bevy 0.20 only. Tested on an Apple M4 (macOS) and a software rasteriser, and used in a game on an AMD RX 6700 XT (Windows 10); NVIDIA and Intel GPUs haven't been tried yet.
 
 ![A smoke grenade is thrown into a yard, bounces and pops; the cloud floods the yard, bullets carve tunnels through it, and an HE grenade clears a sphere that refills from the edges](https://raw.githubusercontent.com/VagabondTech/smokescreen/main/docs/media/hero.webp)
 
@@ -48,7 +48,7 @@ Smoke that fills rooms, pours through doorways, stops at walls and blocks sight.
 ```toml
 [dependencies]
 bevy = "0.20"
-bevy_smokescreen = "0.1"
+bevy_smokescreen = "0.2"
 ```
 
 | `bevy_smokescreen` | Bevy | Minimum Rust |
@@ -168,7 +168,7 @@ The rule is the same function on every machine and in every look's terms: for vo
 
 ## Multiplayer and servers
 
-The simulation is its own crate, `smokescreen` (`smokescreen = "0.1"`, Rust 1.88 or newer), with no Bevy in it. A dedicated server links just that:
+The simulation is its own crate, `smokescreen` (`smokescreen = "0.2"`, Rust 1.88 or newer), with no Bevy in it. A dedicated server links just that:
 
 ```rust,ignore
 use smokescreen::*;

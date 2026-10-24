@@ -32,7 +32,7 @@ It needs Rust 1.88 or newer, and depends only on `glam` and `libm`:
 
 ```toml
 [dependencies]
-smokescreen = "0.1"
+smokescreen = "0.2"
 ```
 
 ## What it does
