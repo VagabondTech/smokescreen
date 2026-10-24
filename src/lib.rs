@@ -18,11 +18,13 @@
 //!
 //! - **Volumetric** ([`SmokeStyle::Volumetric`]): soft, light-scattering smoke
 //!   raymarched at reduced resolution.
-//! - **Faceted** ([`SmokeStyle::Faceted`]): hard-edged, tumbling polyhedral
-//!   puffs merged like metaballs, sphere-traced against a distance field.
 //! - **Crystal** ([`SmokeStyle::Crystal`]): tumbling polyhedra that don't
 //!   merge, drawn as ordinary meshes. The cheapest look, and the one whose
 //!   gameplay checks are cheapest and match the picture exactly.
+//! - **Faceted** ([`SmokeStyle::Faceted`]), experimental: hard-edged, tumbling
+//!   polyhedral puffs merged like metaballs, sphere-traced against a distance
+//!   field. It costs many times what volumetric smoke costs to draw, and more
+//!   again with bullet tunnels.
 //!
 //! The work is split so that each piece runs where it is cheapest:
 //!

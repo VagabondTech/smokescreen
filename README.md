@@ -32,6 +32,7 @@ Smoke that fills rooms, pours through doorways, stops at walls and blocks sight.
 - Lit by the sun with self-shadowing, darker indoors, lit from inside by muzzle flashes and explosions (any Bevy `PointLight`).
 - **Gameplay sees the same smoke.** `blocks_sight(a, b)` and `occlusion(a, b)` for AI, server-side visibility and audio; `density_at(p)` for gas damage.
 - **Level setup without collision code:** mark your level's meshes with `SmokeObstacle`.
+- **Cheap enough for a shooter:** on an Apple M4 at 1080p, a volumetric smoke filling the screen adds about 0.75 ms to a frame (a 60 fps frame has 16.7 ms), and 0.2 ms far away; 250 line-of-sight checks a tick cost 0.03 ms of CPU. Other GPUs haven't been measured yet ([Performance](#performance)).
 - **One performance dial per camera**, or a GPU millisecond budget that turns it for you. No dial step changes a cloud's shape, so a cheaper setting doesn't show through smoke a better one hides (one exception: the experimental faceted look's bullet tunnels, see [Limitations](#limitations)); volumetric smoke's noise falls a little differently from step to step (in the demo's views, at most 0.65 % of a smoke's pixels let more than 30 % more of the scene through than at the best step).
 - **Deterministic core for multiplayer** (`smokescreen`): engine-free, runs on your ticks and in your units, bit-identical on x86-64 and ARM, with a per-tick CPU budget.
 
@@ -53,6 +54,7 @@ bevy_smokescreen = "0.2"
 
 | `bevy_smokescreen` | Bevy | Minimum Rust |
 |---|---|---|
+| 0.2 | 0.20 | 1.97.1 |
 | 0.1 | 0.20 | 1.97.1 |
 
 Smoke needs compute shaders: native (Vulkan, Metal, DX12) or WebGPU, not WebGL2.
