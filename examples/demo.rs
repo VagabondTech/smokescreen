@@ -1483,7 +1483,7 @@ fn update_hud(
     let seen = vision.transmittance(cam.translation(), target);
     let style = match settings.style {
         SmokeStyle::Volumetric => "volumetric",
-        SmokeStyle::Faceted => "faceted",
+        SmokeStyle::Faceted => "faceted (experimental)",
         SmokeStyle::Crystal => "crystal",
     };
     let count = smokes.iter().filter(|s| s.cloud().is_some()).count();
@@ -2869,7 +2869,11 @@ fn clips() -> Vec<Clip> {
             Volumetric,
             "Volumetric: soft, lit by the sun, self-shadowed",
         ),
-        look("faceted", Faceted, "Faceted: hard polyhedra, merged like metaballs"),
+        look(
+            "faceted",
+            Faceted,
+            "Faceted (experimental): hard polyhedra, merged like metaballs",
+        ),
         look("crystal", Crystal, "Crystal: separate polyhedra, drawn as plain meshes"),
         Clip {
             name: "ledge",

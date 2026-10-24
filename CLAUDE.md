@@ -110,7 +110,7 @@ cargo run --example presets                 # every preset and look; also minima
    falls a little differently from step to step:
    `tools/fairness.py --volumetric` fails if more than 1 % of a view's smoke
    pixels let 0.3 more of the scene through than at the best step; the
-   demo's views reach 0.71 %, the far smoke mid-fade at the cheapest step).
+   demo's views reach 0.65 %, the far smoke mid-fade at the cheapest step).
    Then against the rule: the faceted and crystal pictures never show
    through anything the rule blocks. The volumetric noise does, most while a
    cloud fades, unless `SmokeSettings::noise_within_rule` is `Capped` (the

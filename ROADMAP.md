@@ -147,17 +147,19 @@ both).
 The README's tables come from `cargo bench -p smokescreen`. The weak spots:
 
 - **Volumetric frame time.** Close up at the best step, the smoke now
-  costs 1.45 ms on an Apple M4 (5.1 before 0.2): each smoke gets a
-  dispatch of its own, the composite got cheaper, and the march goes
-  coarser close up. About 0.4–0.5 ms of that is the composite's draw. Its
-  pass over the multisampled target (about 0.2 ms at any distance) is
-  gone while nothing transparent is on screen. With something
-  transparent, the composite could join Bevy's transparent pass instead
-  of a pass of its own, if its upsample moved to a compute pass. Since 0.2
-  the march measures how far its rays actually see smoke
-  (`SmokeCamera::measured_depth`), which inside a dense cloud is long
-  before the far side of its box, and close up goes to a quarter at every
-  step: 0.98 instead of 1.46 ms at the best step. The measurement comes
+  costs 0.75 ms on an Apple M4 (5.6 in 0.1.1): each smoke gets a dispatch
+  of its own, the composite reads depth only where the smoke texels
+  around a pixel disagree, and the march goes as coarse as where its rays
+  actually see smoke allows (`SmokeCamera::measured_depth`). Inside a
+  dense cloud that is long before the far side of its box, so close up
+  every step marches at a quarter, and the dial saves little there (0.62–0.66
+  ms at the three cheapest steps). Before the composite's shortcut, the composite was
+  about 0.6 ms of the best step's 1.43 close up, and the march's floor at
+  a quarter about 0.2. The composite's pass over the multisampled target
+  (about 0.2 ms at any distance) is gone while nothing transparent is on
+  screen. With something transparent, the composite could join Bevy's
+  transparent pass instead of a pass of its own, if its upsample moved to
+  a compute pass. The depth measurement comes
   back from the GPU a few frames late; a CPU estimate from the rule would
   be deterministic, and without the noise it sees nearly the same depths,
   but it would cost the CPU hundreds of lines per camera every frame.
@@ -176,6 +178,15 @@ The README's tables come from `cargo bench -p smokescreen`. The weak spots:
   set the pace, the same-picture version is the one to try first. Taking
   every second sample once a ray is mostly opaque saved only 2–4 % close
   up while a cloud is grown or blooming, too little to keep.
+
+- **Faceted is experimental** in 0.2. It costs 20–40 times what a
+  volumetric smoke costs to draw (13 times far away), and bullet tunnels
+  make it about three times dearer again: one faceted smoke with 16
+  tunnels takes about 83 ms close up at the best step on an Apple M4. At
+  the dial's cheaper steps, tunnel mouths you can see right through come
+  out a few pixels wider than at the best, so `tools/fairness.py` fails
+  with tunnels. The label goes once tunnels cost less and every step
+  draws them alike.
 
 - **Many point lights.** Each point light within range of a volumetric
   smoke is worked out at every sample that holds smoke, with a density
