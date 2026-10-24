@@ -42,6 +42,18 @@
 // moves as that box changes tick by tick. Skipped samples count against
 // the step budget as they did, so a tier reaches as far as it did.
 //
+// A ray stops between two samples: at the scene, or where it leaves the box
+// its smoke occupies. Its last sample stands for the stretch up to half a
+// step past that point, the same for every ray. Each sample used to stand
+// for a whole step, so the last one reached anywhere from nothing to a whole
+// step past a surface inside the smoke, depending on the ray's jitter, and
+// the jitter's pattern showed on such surfaces in bands a smoke texel wide
+// (4 pixels at a quarter resolution). Half a step is what that came to on
+// average. Stopping exactly at the surface instead let a few pixels the rule
+// blocks show through at the cheapest steps with `noise_within_rule` set: at
+// a quarter resolution a texel's ray stops at one pixel's depth, and the
+// overshoot covered the deeper surfaces of the pixels around it.
+//
 // Skipping the samples inside that box that read nothing (the 4³ bricks the
 // rule skips) was tried twice on an Apple M4, dropping their fetches and
 // jumping them outright, and cost 5–15 % close up and at mid-range both
@@ -434,7 +446,10 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
                 break;
             }
             let dt = base_step * (1.0 + t * growth);
-            let smp = sample_smoke(slot, ro + rd * t, dt, skipped, &budget, &rule, rd, phase_sun, multi_weight);
+            // The stretch this sample stands for: a step, or for the last one
+            // up to half a step past where the ray stops (see the top).
+            let span = select(dt, t_stop + 0.5 * dt - t, t + dt >= t_stop);
+            let smp = sample_smoke(slot, ro + rd * t, span, skipped, &budget, &rule, rd, phase_sun, multi_weight);
             skipped = 0.0;
             if (smp.coarse <= 0.002) {
                 // Next to nothing here: on to the first sample at least a
@@ -459,7 +474,7 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
             if (smp.sigma > 0.0) {
                 // Energy-conserving integration over the step (Hillaire 2015).
-                let step_t = exp(-smp.sigma * dt);
+                let step_t = exp(-smp.sigma * span);
                 radiance += transmittance * smp.source * (1.0 - step_t) / smp.sigma;
                 transmittance *= step_t;
             }
@@ -478,6 +493,7 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
             let p = ro + rd * t;
             let dt = base_step * (1.0 + t * growth);
+            let span = select(dt, t_end + 0.5 * dt - t, t + dt >= t_end);
             var sigma_t = 0.0;
             var source = vec3<f32>(0.0);
             var inside = false;
@@ -509,7 +525,7 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
                     continue;
                 }
                 fetched = true;
-                let smp = sample_smoke(s, p, dt, skipped, &budget, &rule, rd, phase_sun, multi_weight);
+                let smp = sample_smoke(s, p, span, skipped, &budget, &rule, rd, phase_sun, multi_weight);
                 coarse = max(coarse, smp.coarse);
                 sigma_t += smp.sigma;
                 source += smp.source;
@@ -552,7 +568,7 @@ fn march(@builtin(global_invocation_id) gid: vec3<u32>) {
                 continue;
             }
             if (sigma_t > 0.0) {
-                let step_t = exp(-sigma_t * dt);
+                let step_t = exp(-sigma_t * span);
                 radiance += transmittance * source * (1.0 - step_t) / sigma_t;
                 transmittance *= step_t;
             }
