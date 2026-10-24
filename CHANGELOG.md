@@ -339,6 +339,46 @@ are not in lockstep.
   sweep changes by more than 5 levels out of 255, nor more than 0.009 % of
   a frame by more than 1, and with `noise_within_rule` capped or filled
   nothing the rule blocks shows through.
+- Volumetric smoke marches coarser close up, as coarse as where its rays
+  actually see smoke allows. The march went as coarse as still gives every
+  texel of the finest noise a pixel at the far side of the farthest
+  volumetric smoke's box, but rays end inside a dense cloud long before
+  that. `SmokeCamera` gains `measured_depth`, on by default: each ray
+  carries the end of the last step that held smoke while more than a
+  fifth of the scene still showed through, and on every fourth frame the
+  march writes it out. A small pass counts each 8×8 tile's farthest into a
+  histogram, read back from the GPU, and the quality controller takes its
+  97th percentile from three frames back. It takes a resolution at its
+  limit and keeps it to 1.25 times the limit, keeps its choice between
+  measurements, falls back on the far side of the boxes after the camera
+  jumps, and measures only where a coarser resolution is in reach of the
+  nearest smoke. `SmokeQuality::measured_depth` reports the depth in use.
+  In the demo's close view rays see smoke within 7.0–8.25 m, against
+  12.1 m to the far side of the box, so close up every step marches at a
+  quarter. On an Apple M4 at 1920×1080 with MSAA (medians of five or six
+  alternated runs), close up at the best step a grown cloud takes 0.98
+  instead of 1.46 ms (−33 %), and 0.67 instead of 0.99 halfway through the
+  fade (−32 %); two overlapping grenades take 1.27 instead of 2.69 (−53 %);
+  with `NoiseWithinRule::Capped` 0.95 instead of 1.34 (−29 %), with
+  `Filled` 1.03 instead of 1.55 (−33 %). Close up the high, medium and low
+  steps take 20–27 % less, and at mid-range the best step takes 0.34
+  instead of 0.43 ms (−20 %). Far away the best step takes 0.22 instead of
+  0.18 ms, at the edge of what the batch tells apart: the nearest corner of
+  a grown cloud's box is just within reach of two-thirds there, so the
+  camera measures every fourth frame for nothing. The cheapest steps,
+  which already march at a quarter, cost what they did. Close up the
+  picture changes by at most 16 levels out of 255, on about 1 % of the
+  pixels by more than 1. `tools/fairness.py --volumetric` passes at every
+  step (its worst view 0.25 % at 1920×1080), and with `noise_within_rule`
+  capped or filled nothing the rule blocks shows through. The readback
+  comes a frame or two after the march, so the frame a change of
+  resolution lands on depends on the GPU: two players at one tick may march
+  at different resolutions for a few frames, within what the dial's
+  cheapest steps always do. The demo's captures wait for the GPU every
+  frame, so they draw the same pixels every run. Close up every step now
+  costs much the same, so the budget controller's per-step cost ratios are
+  measured again. Code that builds `SmokeCamera` or `SmokeQuality` with a
+  struct literal needs the new fields.
 - Point lights light volumetric and faceted smoke. They never did: the
   plugin read each `PointLight`'s `ViewVisibility` while Bevy had it
   cleared (after `VisibilitySystems::VisibilityPropagate` resets it and

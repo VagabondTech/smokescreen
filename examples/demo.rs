@@ -266,11 +266,6 @@ fn main() {
             "tiers" => {
                 app.insert_resource(Sweep::new(dir))
                     .add_systems(Update, tier_sweep.in_set(Step::Script));
-                // Without GPU timings the sweep times whole frames instead:
-                // make every frame wait for the GPU, so they include its work.
-                if !gpu_timings && let Some(render_app) = app.get_sub_app_mut(RenderApp) {
-                    render_app.add_systems(Render, wait_for_gpu.in_set(RenderSystems::Cleanup));
-                }
             }
             "budget" => {
                 app.insert_resource(BudgetRun::new(dir))
@@ -293,6 +288,13 @@ fn main() {
                 app.insert_resource(Capture { dir, step: 0 })
                     .add_systems(Update, capture_script.in_set(Step::Script));
             }
+        }
+        // Every frame waits for the GPU. The measured depth
+        // (`SmokeCamera::measured_depth`) then comes back on a fixed frame, so
+        // a capture draws the same pixels every run, and without GPU timings
+        // the tier sweep's frame times include the GPU's work.
+        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+            render_app.add_systems(Render, wait_for_gpu.in_set(RenderSystems::Cleanup));
         }
     } else if setting("smoke").as_deref() != Some("0") {
         app.add_systems(Update, opening_smoke);
@@ -1471,6 +1473,11 @@ fn update_hud(
         (SmokeStyle::Volumetric, SmokeResolution::Quarter) => format!("{dial}, marched at 1/4"),
         _ => dial,
     };
+    // How far the rays see smoke, when the camera measures it.
+    let dial = match (settings.style, status.measured_depth) {
+        (SmokeStyle::Volumetric, Some(depth)) => format!("{dial} (rays see smoke within {depth:.1} m)"),
+        _ => dial,
+    };
     // A gameplay query: can the camera see the red box behind the smoke?
     let target = Vec3::new(0.0, 0.9, 10.0);
     let seen = vision.transmittance(cam.translation(), target);
@@ -2154,7 +2161,8 @@ impl Tunnels {
 #[derive(Resource)]
 struct GpuTimings(bool);
 
-/// Blocks until the GPU has finished the frame (the tier sweep's frame times).
+/// Blocks until the GPU has finished the frame (in captures: a fixed delay
+/// for the measured depth, and the tier sweep's frame times).
 fn wait_for_gpu(device: Res<RenderDevice>) {
     let _ = device.poll(PollType::Wait {
         submission_index: None,

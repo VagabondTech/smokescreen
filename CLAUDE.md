@@ -212,6 +212,13 @@ cargo run --example presets                 # every preset and look; also minima
   sequence changes the picture: compare the
   tier sweep's frames grown and at `SMOKE_DEMO_SWEEP_AGE=0.8` and `16.5`
   before and after, and run `tools/fairness.py` on them.
+- The march's resolution close up comes from a depth measured on the GPU
+  (`SmokeCamera::measured_depth`; `read_back_depths` in render.rs) and read
+  three frames late (`MEASURED_LAG` in quality.rs). The demo's captures
+  wait for the GPU every frame (`wait_for_gpu`), so the measurement lands
+  on the same frame every run and captures stay reproducible; without the
+  wait it lands when the GPU is done. A capture that must not depend on it
+  can turn it off per camera.
 - Skipping the samples inside a smoke's occupied box that read nothing
   (the 4³ bricks the rule skips) does not pay on the M4: tried twice in
   the march, dropping their fetches and jumping them outright, it cost
