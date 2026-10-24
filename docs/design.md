@@ -86,6 +86,7 @@ A smoke that is fully grown and untouched (no holes, not fading, sun not moving)
   - lengthen steps with distance;
   - take a fast path with the smoke's data hoisted out of the loop when a ray crosses only one smoke (the single-smoke kernel's only path).
 - **Jitter and integration:** the start of each ray is jittered with interleaved gradient noise. Integration uses Hillaire's energy-conserving formula.
+- **The last step:** a ray stops between two samples, at the scene or where it leaves its smoke's box, and its last sample stands for the stretch up to half a step past that point, the same for every ray. Each sample used to stand for a whole step, so how far the last one reached past a surface inside the smoke, from nothing to a whole step, followed the jitter. The jitter's pattern then showed on such surfaces, in bands a smoke texel wide: 4 pixels at a quarter resolution, a fine diagonal grain at a half. Half a step is what that came to on average, so the smoke keeps its weight in front of surfaces. Stopping exactly at the surface removed the bands too, but at the cheapest steps with `noise_within_rule` set it let a few pixels the rule blocks show through: at a quarter resolution a texel's ray stops at one pixel's depth, and the overshoot had covered the deeper surfaces of the pixels around it.
 
 ## 5. Composite (full resolution, scissored)
 
