@@ -43,7 +43,7 @@ impl HoleSettings {
 
     /// The same settings with every length passed through `f` (for unit
     /// conversions).
-    pub fn map_lengths(&self, f: impl Fn(f32) -> f32) -> Self {
+    pub(crate) fn map_lengths(&self, f: impl Fn(f32) -> f32) -> Self {
         Self {
             bullet_radius: f(self.bullet_radius),
             explosion_radius: f(self.explosion_radius),
@@ -52,29 +52,23 @@ impl HoleSettings {
     }
 
     /// Seconds after which no hole has any effect.
-    pub fn max_duration(&self) -> f32 {
+    pub(crate) fn max_duration(&self) -> f32 {
         self.bullet_close.max(self.explosion_refill)
     }
 }
 
 /// What made a hole. Internally in metres, Y up.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum HoleKind {
+pub(crate) enum HoleKind {
     /// A tunnel along a shot.
     Bullet { start: Vec3, end: Vec3 },
     /// A cleared sphere.
     Explosion { center: Vec3, radius: f32 },
 }
 
-/// A hole event: what and when.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Hole {
-    pub kind: HoleKind,
-    pub tick: u64,
-}
-
 /// A hole at one moment: a capsule from `a` to `b` (a sphere when `a == b`).
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[doc(hidden)]
 pub struct HoleShape {
     pub a: Vec3,
     pub b: Vec3,
@@ -85,7 +79,7 @@ pub struct HoleShape {
 
 impl HoleShape {
     /// A hole that does nothing.
-    pub const NONE: Self = Self {
+    pub(crate) const NONE: Self = Self {
         a: Vec3::ZERO,
         b: Vec3::ZERO,
         radius: 0.0,
@@ -96,7 +90,7 @@ impl HoleShape {
     /// `ro + t·dir` (`inv` = 1/dir) for `t0 ≤ t ≤ t1`? A box test: `false`
     /// only when it certainly can't.
     #[inline]
-    pub fn near_ray(&self, ro: Vec3, inv: Vec3, t0: f32, t1: f32, grow: f32) -> bool {
+    pub(crate) fn near_ray(&self, ro: Vec3, inv: Vec3, t0: f32, t1: f32, grow: f32) -> bool {
         let r = Vec3::splat(self.radius + grow);
         let (near, far) = slab(ro, inv, self.a.min(self.b) - r, self.a.max(self.b) + r);
         near.max(t0) <= far.min(t1)
@@ -134,7 +128,7 @@ pub(crate) fn holes_near<'a>(
 
 impl HoleKind {
     /// The hole `age` seconds after the event, or `None` once it has closed.
-    pub fn shape(&self, age: f32, s: &HoleSettings) -> Option<HoleShape> {
+    pub(crate) fn shape(&self, age: f32, s: &HoleSettings) -> Option<HoleShape> {
         let t = age;
         if t < 0.0 {
             return None;
@@ -175,7 +169,7 @@ impl HoleKind {
     }
 
     /// Bounds of the hole at its largest.
-    pub fn bounds(&self, s: &HoleSettings) -> (Vec3, Vec3) {
+    pub(crate) fn bounds(&self, s: &HoleSettings) -> (Vec3, Vec3) {
         match *self {
             HoleKind::Bullet { start, end } => {
                 let r = Vec3::splat(s.bullet_radius);
@@ -188,7 +182,7 @@ impl HoleKind {
 
 /// Multiplier (0..1) on the volumetric style's density at `p`. Renderers
 /// mirror this exactly.
-pub fn hole_attenuation(p: Vec3, holes: &[HoleShape]) -> f32 {
+pub(crate) fn hole_attenuation(p: Vec3, holes: &[HoleShape]) -> f32 {
     let mut keep = 1.0;
     for h in holes {
         let d = distance_to_segment(p, h.a, h.b);

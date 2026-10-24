@@ -21,6 +21,7 @@ pub enum UpAxis {
 /// How the caller measures the world.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Units {
+    /// Which axis points up.
     pub up: UpAxis,
     /// Length of one caller unit in metres: 1 for metres, 0.0254 for inches.
     pub metres_per_unit: f32,
@@ -44,6 +45,7 @@ impl Units {
         metres_per_unit: 0.0254,
     };
 
+    /// Your own units: `metres_per_unit` metres to the unit, `up` up.
     pub const fn new(up: UpAxis, metres_per_unit: f32) -> Self {
         Self { up, metres_per_unit }
     }

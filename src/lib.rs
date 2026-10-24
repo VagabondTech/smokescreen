@@ -65,6 +65,8 @@
 //! The README in the repository root has a longer guide: presets, level
 //! setup, gameplay queries, networking and tuning.
 
+#![warn(missing_docs)]
+
 mod crystal;
 mod noise;
 mod obstacles;
@@ -85,7 +87,7 @@ use bevy::{
     transform::TransformSystems,
 };
 
-pub use crystal::{CrystalPuff, polyhedron_mesh};
+pub use crystal::CrystalPuff;
 pub use obstacles::SmokeObstacle;
 pub use quality::{FacetOcclusion, FacetQuality, FacetShadows, SmokeQuality, VolumetricQuality};
 pub use smokescreen;
@@ -102,6 +104,7 @@ pub use smokescreen::{
 use render::{FrameFacet, FrameLight, FrameSlot, SlotUpload, SmokeFrame, SmokeUploads};
 use smokescreen::light::{LightRays, visibility};
 
+/// What most apps use: `use bevy_smokescreen::prelude::*;`.
 pub mod prelude {
     pub use crate::{
         BoxObstacles, CrystalPuff, FacetQuality, FacetRule, FacetSettings, FlatGround, NoiseWithinRule, ObstacleBox,
@@ -259,7 +262,7 @@ pub type SharedLevel = Arc<dyn Level + Send + Sync>;
 /// Fixed configuration derived from [`SmokePlugin`]: what the renderer sizes
 /// its buffers by. Lengths in metres (the core's internal frame).
 #[derive(Resource, Clone, Copy, Debug)]
-pub struct SmokeConfig {
+pub(crate) struct SmokeConfig {
     /// Volumetric and faceted smokes drawn at once: [`Tuning::max_clouds`],
     /// at most 32.
     pub max_smokes: u32,
@@ -290,9 +293,10 @@ impl SmokeConfig {
 ///
 /// The [`Smoke`] component is a convenience on top: you can also pop clouds,
 /// add holes and query directly here, for example from your networking code
-/// with the server's ticks. Everything in it is drawn.
+/// with the server's ticks. Everything in it is drawn. It derefs to
+/// [`Smokes`], so call those methods on it.
 #[derive(Resource, Deref, DerefMut)]
-pub struct SmokeWorld(pub Smokes<SharedLevel>);
+pub struct SmokeWorld(Smokes<SharedLevel>);
 
 /// The tick the smoke is simulated and drawn at.
 ///
@@ -485,7 +489,10 @@ pub enum NoiseWithinRule {
 /// }
 /// ```
 #[derive(Resource, Clone)]
-pub struct SmokeLevel(pub SharedLevel);
+pub struct SmokeLevel(
+    /// The level: anything behind [`Level`], in world units.
+    pub SharedLevel,
+);
 
 /// Marks the directional light that lights smoke. Without it the first
 /// directional light found is used.
@@ -496,7 +503,9 @@ pub struct SmokeSun;
 /// a tunnel that closes in about 2 s.
 #[derive(Message, Clone, Copy, Debug)]
 pub struct SmokeBullet {
+    /// Where the shot starts, in world units.
     pub start: Vec3,
+    /// Where it ends: what it hit, or the end of its range.
     pub end: Vec3,
 }
 
@@ -504,6 +513,7 @@ pub struct SmokeBullet {
 /// Clears a sphere that refills over about 5 s.
 #[derive(Message, Clone, Copy, Debug)]
 pub struct SmokeExplosion {
+    /// Where it went off, in world units.
     pub center: Vec3,
     /// Radius of the cleared sphere. `None` uses [`HoleSettings::explosion_radius`].
     pub radius: Option<f32>,
@@ -552,10 +562,14 @@ pub struct SmokeCamera {
 /// raymarched at.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum SmokeResolution {
+    /// Every pixel.
     #[default]
     Full,
+    /// Two thirds per axis: about 44 % of the pixels.
     TwoThirds,
+    /// Half per axis: a quarter of the pixels.
     Half,
+    /// A quarter per axis: a sixteenth of the pixels.
     Quarter,
 }
 
@@ -572,12 +586,18 @@ impl SmokeResolution {
 }
 
 impl SmokeCamera {
-    /// The dial's six steps, cheapest first ([`quality::TIER_NAMES`]).
+    /// The cheapest of the dial's six steps ([`quality::TIER_NAMES`]),
+    /// `quality` 0.
     pub const MINIMUM: Self = Self::with_quality(0.0);
+    /// The second step, `quality` 0.2.
     pub const LOWER: Self = Self::with_quality(0.2);
+    /// The third step, `quality` 0.4.
     pub const LOW: Self = Self::with_quality(0.4);
+    /// The fourth step, `quality` 0.6.
     pub const MEDIUM: Self = Self::with_quality(0.6);
+    /// The fifth step, `quality` 0.8: the default.
     pub const HIGH: Self = Self::with_quality(0.8);
+    /// The best, `quality` 1.
     pub const ULTRA: Self = Self::with_quality(1.0);
 
     /// A fixed quality, 0 (cheapest) ..= 1 (best).
@@ -625,11 +645,17 @@ pub enum SmokeSource {
     Point,
     /// From every point between the entity and `offset` from it: a smoke
     /// wall.
-    Line { offset: Vec3 },
+    Line {
+        /// The line's other end, from the entity.
+        offset: Vec3,
+    },
     /// From every open point of a box centred on the entity: a fog bank, a
     /// gas-filled room. The box must fit the fill grid
     /// ([`Tuning::grid_dims`] × [`Tuning::voxel_size`]).
-    Box { half_extents: Vec3 },
+    Box {
+        /// Half the box's size along each axis.
+        half_extents: Vec3,
+    },
 }
 
 /// A cloud of smoke popping where the entity is, at the current

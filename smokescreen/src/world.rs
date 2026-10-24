@@ -128,9 +128,12 @@ impl Tuning {
 /// Everything a [`Smokes`] world needs to know up front.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
+    /// The caller's units and up axis: every position, length and result
+    /// the world takes or gives is in them.
     pub units: Units,
     /// Simulation ticks per second.
     pub tick_rate: f32,
+    /// How clouds spread, look and block sight, in [`Self::units`].
     pub tuning: Tuning,
     /// Work units per tick spent on unfinished fills, about 10 ns each plus
     /// [`Self::level_query_units`] per level query. If a fill would still be
@@ -207,11 +210,17 @@ pub enum CloudSource {
     Point,
     /// From every point of the segment from its origin to `end`: a smoke
     /// wall.
-    Line { end: Vec3 },
+    Line {
+        /// The segment's other end.
+        end: Vec3,
+    },
     /// From every open point of the box centred on its origin: a fog bank, a
     /// gas-filled room. The box must fit the fill grid
     /// ([`Tuning::grid_dims`]); set the cloud's volume to about the box's.
-    Box { half_extents: Vec3 },
+    Box {
+        /// Half the box's size along each axis.
+        half_extents: Vec3,
+    },
 }
 
 /// A cloud: where, when and how it popped. This is all a server has to send.
@@ -224,6 +233,7 @@ pub struct CloudSpec {
     /// Seeds the fill's lumps and the puffs' shapes and spin
     /// ([`CloudSpec::seed_from_origin`] makes one from the origin).
     pub seed: u32,
+    /// What it looks like, and so what the rule counts.
     pub style: Style,
     /// What it spreads from (the origin by default).
     pub source: CloudSource,
@@ -261,9 +271,10 @@ impl CloudSpec {
     }
 }
 
-/// A cloud's handle within one [`Smokes`] world.
+/// A cloud's handle within one [`Smokes`] world. Handles count up in the
+/// order clouds are added, so they aren't shared between machines.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct CloudId(pub u64);
+pub struct CloudId(pub(crate) u64);
 
 struct Ready {
     shape: Arc<CloudShape>,
@@ -353,6 +364,7 @@ fn hole_key(kind: &HoleKind) -> u64 {
 
 /// One cloud at one tick: its growth, holes and (faceted) puffs.
 #[derive(Clone, Debug, Default)]
+#[doc(hidden)]
 pub struct CloudState {
     cloud: usize,
     pub id: CloudId,
@@ -365,7 +377,7 @@ pub struct CloudState {
     /// Volumetric: the density of every fill-distance byte at this age,
     /// which samples interpolate (see [`DensityTable`]). Faceted and crystal
     /// clouds have the empty table.
-    pub density: DensityTable,
+    pub(crate) density: DensityTable,
     /// Box containing everything the cloud can occupy (internal frame).
     pub bounds: (Vec3, Vec3),
     /// Box containing everything it occupies at this tick, or `None` if
@@ -553,6 +565,7 @@ pub struct Smokes<L> {
 }
 
 impl<L: Level> Smokes<L> {
+    /// An empty world: no clouds yet, smoke spreading around `level`.
     pub fn new(config: Config, level: L) -> Self {
         let internal = config.tuning.to_internal(&config.units);
         Self {
@@ -570,19 +583,23 @@ impl<L: Level> Smokes<L> {
         }
     }
 
+    /// The configuration it was made with.
     pub fn config(&self) -> &Config {
         &self.config
     }
 
+    /// The caller's units ([`Config::units`]).
     pub fn units(&self) -> &Units {
         &self.config.units
     }
 
     /// The tuning in metres, with the grid rounded as it is used.
+    #[doc(hidden)]
     pub fn internal_tuning(&self) -> &Tuning {
         &self.internal
     }
 
+    /// The level smoke spreads around.
     pub fn level(&self) -> &L {
         &self.level
     }
@@ -659,12 +676,14 @@ impl<L: Level> Smokes<L> {
     /// received from a server). It must come from the same spec, level and
     /// tuning, or machines will disagree.
     ///
-    /// Its grid is used as it is. One put together by hand (received field
-    /// by field, say) needs its bricks ([`crate::Grid::build_bricks`]), and
-    /// checks are faster with its front bounds and, if it is volumetric,
-    /// its sample cells ([`crate::Grid::build_front_bounds`],
-    /// [`crate::Grid::build_sample_cells`]); without those they give the
-    /// same answers. [`fill_cloud`] builds all three.
+    /// A [`CloudShape`]'s contents are not part of the API yet: to send one
+    /// between machines, run the same version of this crate on both. Its
+    /// grid is used as it is. One put together by hand (received field by
+    /// field, say) needs its bricks (`Grid::build_bricks`), and checks are
+    /// faster with its front bounds and, if it is volumetric, its sample
+    /// cells (`Grid::build_front_bounds`, `Grid::build_sample_cells`);
+    /// without those they give the same answers. [`fill_cloud`] builds all
+    /// three.
     pub fn insert(&mut self, spec: CloudSpec, shape: Arc<CloudShape>) -> CloudId {
         self.new_cloud(spec, Fill::Ready(Ready::new(shape)))
     }
@@ -828,6 +847,7 @@ impl<L: Level> Smokes<L> {
         self.clouds.iter().map(CloudInfo::new)
     }
 
+    /// The cloud with this handle, if the world still has it.
     pub fn cloud(&self, id: CloudId) -> Option<CloudInfo<'_>> {
         self.clouds.iter().find(|c| c.id == id).map(CloudInfo::new)
     }
@@ -1194,14 +1214,17 @@ impl<'a> CloudInfo<'a> {
         Self { cloud }
     }
 
+    /// Its handle.
     pub fn id(&self) -> CloudId {
         self.cloud.id
     }
 
+    /// The spec it was added with.
     pub fn spec(&self) -> &'a CloudSpec {
         &self.cloud.spec
     }
 
+    /// The timeline it runs on: its spec's, or else the tuning's.
     pub fn timeline(&self) -> &'a Timeline {
         &self.cloud.timeline
     }
@@ -1241,6 +1264,7 @@ pub struct View<'a> {
 
 /// One cloud at the view's tick.
 #[derive(Clone, Copy)]
+#[doc(hidden)]
 pub struct CloudView<'a> {
     pub state: &'a CloudState,
     pub shape: &'a Arc<CloudShape>,
@@ -1267,7 +1291,7 @@ impl<'a> CloudView<'a> {
     }
 
     /// The faceted cloud's cores (see [`FacetRule::Core`]), if it is faceted.
-    pub fn core_field(&self) -> Option<CoreField<'a>> {
+    pub(crate) fn core_field(&self) -> Option<CoreField<'a>> {
         let f = self
             .shape
             .facets
@@ -1297,7 +1321,7 @@ impl<'a> CloudView<'a> {
     }
 
     /// The crystal cloud's puffs, if it is crystal.
-    pub fn crystal_field(&self) -> Option<CrystalField<'a>> {
+    pub(crate) fn crystal_field(&self) -> Option<CrystalField<'a>> {
         let f = self
             .shape
             .facets
@@ -1310,7 +1334,7 @@ impl<'a> CloudView<'a> {
     }
 
     /// The volumetric cloud's density field, if it is volumetric.
-    pub fn volume_field(&self) -> Option<VolumeField<'a>> {
+    pub(crate) fn volume_field(&self) -> Option<VolumeField<'a>> {
         self.shape.facets.is_none().then_some(VolumeField {
             grid: &self.shape.grid,
             density: &self.state.density,
@@ -1321,11 +1345,13 @@ impl<'a> CloudView<'a> {
 }
 
 impl<'a> View<'a> {
+    /// The tick it shows.
     pub fn tick(&self) -> u64 {
         self.tick
     }
 
     /// The clouds present at this tick (started and not yet gone).
+    #[doc(hidden)]
     pub fn clouds(&self) -> impl Iterator<Item = CloudView<'a>> + 'a {
         let clouds = self.clouds;
         let volume_steps = self.config.tuning.volume_steps;

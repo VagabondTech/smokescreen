@@ -55,7 +55,7 @@ pub(crate) fn setup_meshes(mut commands: Commands, meshes: Option<ResMut<Assets<
 
 /// A flat-shaded mesh of the polyhedron with inradius 1, built from the same
 /// face planes the core checks against, so the two agree exactly.
-pub fn polyhedron_mesh(shape: Polyhedron) -> Mesh {
+pub(crate) fn polyhedron_mesh(shape: Polyhedron) -> Mesh {
     let planes: Vec<Vec3> = shape.face_normals().iter().flat_map(|n| [*n, -*n]).collect();
     // Corners: where three faces meet, inside all the others.
     let mut corners: Vec<Vec3> = Vec::new();

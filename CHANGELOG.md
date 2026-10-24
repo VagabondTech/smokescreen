@@ -39,55 +39,81 @@ at the best, so players there see a little more through them. Its
 simulation and rule are as finished as the other styles'; the label is
 about drawing it. The API is unchanged.
 
+**The API is smaller.** Both crates document only what games, servers and
+bots use, and both now warn about public items without a doc comment.
+What only drew the smoke, tested it or filled it is private now, or
+hidden from the docs where `bevy_smokescreen` or the tests still need it.
+Hidden items are not part of the API and may change in any release, so
+`bevy_smokescreen` depends on exactly this version of `smokescreen`.
+
+- `smokescreen`: the modules are private; everything a game uses is at
+  the crate's root, as before. Hidden: `CloudState`, `CloudView`,
+  `View::clouds`, `Smokes::internal_tuning`, what a `CloudShape` holds
+  (`Facets`, `Puff`, `LivePuff`, `Grid`, `Bins`), `HoleShape`,
+  `Polyhedron::face_normals` and `corner_ratio`, and the `grid`, `light`
+  and `math` modules. Private: `ChordField`, `CoreField`, `CrystalField`,
+  `FacetField` and `VolumeField` (and the `CloudView` methods that made
+  them), `DensityTable`, `HoleKind`, `VolumeSteps::step`, the settings'
+  `map_lengths`, `FacetSettings::max_reach`, `HoleSettings::max_duration`,
+  the geometry helpers (`polyhedron_interval`, `inside_polyhedron`, `smin`,
+  `tunnel_sdf`, `hole_sdf`, `hole_attenuation`, `shape_density`,
+  `triangle_overlaps_box`, most of `math`), and `CloudId`'s number:
+  handles count up per world, so they aren't shared between machines.
+  Removed, as nothing called them: `FacetField::normal`,
+  `Grid::distance_at`, `holes::Hole` and `math::value_noise`.
+- `bevy_smokescreen`: private: `SmokeConfig`, `polyhedron_mesh`,
+  `quality::{BudgetController, BudgetInputs, FACET_RELATIVE_COST,
+  VOLUMETRIC_RELATIVE_COST}`, and `SmokeWorld`'s field (it derefs to
+  `Smokes`, as before).
+
 - **results** The volumetric rule works out density in the same order as
   the picture. A sample used to take the density of the distance
-  interpolated between voxels, while the GPU bakes each voxel's density and
-  its sampler interpolates those. The two differ wherever the density
+  interpolated between voxels, while the GPU bakes each voxel's density
+  and its sampler interpolates those. The two differ wherever the density
   curve bends, most at a cloud's edge: drawn without its noise, the
   picture showed 1.2 to 6 times the amount of cloud the rule counted along
   lines through less than 0.1 m of it, and 3–84 % more along thicker ones.
-  Now each cloud's snapshot holds a `DensityTable` (`CloudState::density`:
-  the density of every fill-distance byte at that tick), and samples
-  interpolate its values over the open voxels. The two now agree to within
-  1 % halfway through the fade from 0.05 m of cloud up, and to within 10 %
-  on a grown cloud, where the rest is the march stepping over the start of
-  a cloud's edge (see the roadmap). The rule counts more smoke near
-  clouds' edges: 1–3 % more along a typical line through a grown cloud,
-  6–16 % halfway through the fade, and 1–4 % more of the lines in the
-  demo's views are blocked. Checks are faster, as samples no longer work
-  out three smoothsteps each: on an Apple M4, 250 volumetric checks
-  through 4 of 32 clouds take 0.183 instead of 0.250 ms halfway through
-  the fade and 0.061 instead of 0.078 ms once the clouds are grown
-  (medians of 11 alternated runs). The snapshot builds a table for each
-  volumetric cloud that is growing or fading, about 0.15 µs each; a grown
-  cloud keeps its table. The determinism hash (`EXPECTED`) changed, while
-  the one for fills in a level voxelised from meshes did not: update
-  servers and clients together.
+  Now each cloud's snapshot holds a table of the density of every
+  fill-distance byte at that tick, and samples interpolate its values over
+  the open voxels. The two now agree to within 1 % halfway through the
+  fade from 0.05 m of cloud up, and to within 10 % on a grown cloud, where
+  the rest is the march stepping over the start of a cloud's edge (see the
+  roadmap). The rule counts more smoke near clouds' edges: 1–3 % more
+  along a typical line through a grown cloud, 6–16 % halfway through the
+  fade, and 1–4 % more of the lines in the demo's views are blocked.
+  Checks are faster, as samples no longer work out three smoothsteps each:
+  on an Apple M4, 250 volumetric checks through 4 of 32 clouds take 0.183
+  instead of 0.250 ms halfway through the fade and 0.061 instead of
+  0.078 ms once the clouds are grown (medians of 11 alternated runs). The
+  snapshot builds a table for each volumetric cloud that is growing or
+  fading, about 0.15 µs each; a grown cloud keeps its table. The
+  determinism hash (`EXPECTED`) changed, while the one for fills in a
+  level voxelised from meshes did not: update servers and clients
+  together.
 - **results** The volumetric rule samples a line every voxel instead of
   every half voxel: `Tuning::volume_steps` (`VolumeSteps::Voxel` by
-  default; `HalfVoxel` for the old spacing), which sets the new
-  `VolumeField::step`. Checks cost about a third less: on an Apple M4,
-  250 sight checks through 4 of 32 clouds take 0.040 instead of 0.059 ms
-  once the clouds are grown (−32 %), 0.116 instead of 0.178 ms halfway
-  through the fade (−35 %) and 0.030 instead of 0.040 ms late in it
-  (−25 %) (medians of 11 alternated runs), and `occlusion` over the same
-  lines costs 37–38 % less. The amount of cloud along a line is a little
-  less precise. Against samples 1/64 of a voxel apart, over 8,600 random
-  lines through smoke (on open ground, and in a level with walls, bullets
-  and explosions), the median line is within 0.1 % instead of 0.03 %, the
-  99th percentile of lines through at least 0.1 m of cloud within 13–17 %
-  instead of 8–9 %, and the rule counts 0.2–0.8 % less cloud on average.
-  0.31 % of the lines get a different answer from the fine count's,
-  instead of 0.19 %, every one within 10 cm of the threshold; 21 of them
-  are clear where the fine count blocks, instead of 10. The largest errors
-  are where a line crosses a wall or the ground, up to half a step of
-  full-density cloud per crossing. Against the picture nothing that
-  matters changes: without the noise the two agree as closely, and with
-  `noise_within_rule` capped or filled nothing the rule blocks shows
-  through, at the best and the cheapest dial steps. `EXPECTED` changed
-  again and now covers both settings; `EXPECTED_MESHES` did not.
-  `CloudView` gained a private field, so only a `View` makes one. The
-  demo's `SMOKE_DEMO_VOLUME_STEPS=half` samples every half voxel.
+  default; `HalfVoxel` for the old spacing). Checks cost about a third
+  less: on an Apple M4, 250 sight checks through 4 of 32 clouds take 0.040
+  instead of 0.059 ms once the clouds are grown (−32 %), 0.116 instead of
+  0.178 ms halfway through the fade (−35 %) and 0.030 instead of 0.040 ms
+  late in it (−25 %) (medians of 11 alternated runs), and `occlusion` over
+  the same lines costs 37–38 % less. The amount of cloud along a line is a
+  little less precise. Against samples 1/64 of a voxel apart, over 8,600
+  random lines through smoke (on open ground, and in a level with walls,
+  bullets and explosions), the median line is within 0.1 % instead of
+  0.03 %, the 99th percentile of lines through at least 0.1 m of cloud
+  within 13–17 % instead of 8–9 %, and the rule counts 0.2–0.8 % less
+  cloud on average. 0.31 % of the lines get a different answer from the
+  fine count's, instead of 0.19 %, every one within 10 cm of the
+  threshold; 21 of them are clear where the fine count blocks, instead
+  of 10. The largest errors are where a line crosses a wall or the ground,
+  up to half a step of full-density cloud per crossing. Against the
+  picture nothing that matters changes: without the noise the two agree as
+  closely, and with `noise_within_rule` capped or filled nothing the rule
+  blocks shows through, at the best and the cheapest dial steps.
+  `EXPECTED` changed again and now covers both settings; `EXPECTED_MESHES`
+  did not. The demo's `SMOKE_DEMO_VOLUME_STEPS=half` samples every half
+  voxel.
 - **results** `FacetRule::Core` counts every hole. With
   `Tuning::max_holes_per_cloud` above 32 it read only a cloud's first 32
   holes, which are its oldest, so the newest tunnels and blasts cleared
@@ -124,30 +150,29 @@ about drawing it. The API is unchanged.
   clouds; `EXPECTED_MESHES` did not.
 - `FacetRule::Chords`, a faceted rule between `Core` and `Exact`: the
   length of a line inside each puff's hard polyhedron, clipped to the ball
-  of its `Puff::room` (inside the fill's space, so clear of walls), minus a
+  of its room (inside the fill's space, so clear of walls), minus a
   capsule around each hole. It is the lower bound the exact rule's
-  `blocks_sight` already used, as a rule of its own (`ChordField`,
-  `CloudView::chord_field`). Like `Core` it never blocks a line the picture
-  leaves clear, and its chords are exact, with no tracing; it also counts
-  each puff's corners and edges, which `Core`'s spheres leave out. Each
-  puff's chord is worked out once per line, and what it adds to the length
-  already counted counts at once, so a line that is blocked is found early.
-  On an Apple M4, 250 sight checks through 4 of 32 clouds take 0.042 ms
-  grown, 0.131 ms halfway through the fade and 0.075 ms late in it,
-  against `Core`'s 0.044, 0.130 and 0.060 and the exact rule's 0.046, 0.73
-  and 0.36 (medians of 11 alternated runs). It counts more than `Core`,
-  though not much more: along the demo's views it counts 66–70 % of the
-  exact rule's amount in a grown cloud and 48–64 % halfway through the
-  fade, against `Core`'s 59–64 % and 47–58 %; at the 0.8 m threshold it
-  blocks 78 % of the close view's pixels that the exact rule blocks in a
-  grown cloud, against `Core`'s 73 %. Most of the rest is the blend between
-  puffs, which only the exact rule counts. `FacetRule` is now
-  `#[non_exhaustive]`: a `match` on it needs a `_` arm. The new variant
-  breaks exhaustive matches anyway, and later ones won't. The determinism
-  hashes are unchanged; the chord rule's results have a hash of their own
-  (`EXPECTED_CHORDS`). The demo's `SMOKE_DEMO_FACET_RULE=core` or `chords`
-  sets the rule its `agreement` script compares with the picture, and
-  `tools/agreement.py` names it.
+  `blocks_sight` already used, as a rule of its own. Like `Core` it never
+  blocks a line the picture leaves clear, and its chords are exact, with
+  no tracing; it also counts each puff's corners and edges, which `Core`'s
+  spheres leave out. Each puff's chord is worked out once per line, and
+  what it adds to the length already counted counts at once, so a line
+  that is blocked is found early. On an Apple M4, 250 sight checks through
+  4 of 32 clouds take 0.042 ms grown, 0.131 ms halfway through the fade
+  and 0.075 ms late in it, against `Core`'s 0.044, 0.130 and 0.060 and the
+  exact rule's 0.046, 0.73 and 0.36 (medians of 11 alternated runs). It
+  counts more than `Core`, though not much more: along the demo's views it
+  counts 66–70 % of the exact rule's amount in a grown cloud and 48–64 %
+  halfway through the fade, against `Core`'s 59–64 % and 47–58 %; at the
+  0.8 m threshold it blocks 78 % of the close view's pixels that the exact
+  rule blocks in a grown cloud, against `Core`'s 73 %. Most of the rest is
+  the blend between puffs, which only the exact rule counts. `FacetRule`
+  is now `#[non_exhaustive]`: a `match` on it needs a `_` arm. The new
+  variant breaks exhaustive matches anyway, and later ones won't. The
+  determinism hashes are unchanged; the chord rule's results have a hash
+  of their own (`EXPECTED_CHORDS`). The demo's
+  `SMOKE_DEMO_FACET_RULE=core` or `chords` sets the rule its `agreement`
+  script compares with the picture, and `tools/agreement.py` names it.
 - Volumetric checks skip the samples that read nothing. In place of the
   flags that marked the cells of eight voxels next to a wall, each cloud
   keeps a byte per cell: 0 next to a wall, else the smallest fill-distance
@@ -165,24 +190,14 @@ about drawing it. The API is unchanged.
   faster through the fade. Results are unchanged: the determinism hashes
   are the same. The cells take no more memory than the flags, and about
   6 µs per cloud to build, where the flags took 15–20 µs.
-- `Grid::sample_cells`: the byte per cell above is part of each
-  volumetric cloud's grid, and the fill builds it within its budget, as a
-  stage of its own after the bricks. In 0.1 the flags it replaces were
-  kept apart from the grid and built outside the budget on the tick the
-  fill finished. `Grid::build_sample_cells` builds them for a grid put
-  together by hand; faceted and crystal grids have none.
-  `VolumeField::amount` and `VolumeField::density` read them too, so code
-  that integrates a cloud itself through `CloudView::volume_field` takes
-  the shortcut the world's checks take, with the same amounts to the bit:
-  on an Apple M4, 250 lines through 4 of 32 volumetric clouds, every
-  cloud's amount summed this way, take 0.29 instead of 0.47 ms once the
-  clouds are grown and 0.22 instead of 0.36 ms halfway through the fade
-  (−38 %; medians of 11 alternated runs). A grid without the cells gives
-  the same answers, more slowly. The new public field breaks code that
-  builds a `Grid` with a struct literal: add `sample_cells: Vec::new()`,
-  or call `build_sample_cells`. `Smokes::insert` uses a shape's grid as it
-  is, so a server that sends shapes should send the cells too, or have
-  its clients rebuild them (`fill_cloud` builds them). Results are
+- The byte per cell above is part of each volumetric cloud's fill, and
+  the fill builds it within its budget, as a stage of its own after the
+  bricks. In 0.1 the flags it replaces were kept apart and built outside
+  the budget on the tick the fill finished. Faceted and crystal clouds
+  have none. A shape without the cells gives the same answers, more
+  slowly. `Smokes::insert` uses a shape as it is, so a server that sends
+  shapes should send the cells too, or have its clients rebuild them
+  (`fill_cloud` builds them). Results are
   unchanged: the determinism hashes are the same, and fills match in
   every other field. Sight checks cost the same. A volumetric fill all at
   once takes 0.57 instead of 0.56 ms in a voxelised level, as `fill_cloud`
@@ -207,8 +222,6 @@ about drawing it. The API is unchanged.
   re-measured (15 work units per voxel it expands, where it was 30 per
   voxel settled), so a faceted fill comes to about 660,000 units instead
   of 850,000.
-- `VolumeField` holds the cloud's `DensityTable` (`density`) instead of
-  `growth` and `dissolve`.
 - `SmokeSettings::debug_transmittance` draws volumetric smoke as how much
   of the scene shows through it. The demo's `agreement` script now runs
   volumetric smoke too (it used to switch to faceted), with its age set

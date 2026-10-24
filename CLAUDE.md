@@ -289,6 +289,16 @@ cargo run --example presets                 # every preset and look; also minima
   software rasteriser. Metal's GPU timestamp queries lose the device, so on
   macOS the demo's tier sweep times whole frames instead; NVIDIA, AMD and
   Intel GPUs are still to try (`ROADMAP.md`).
+- What is public. Each crate's API is what its docs show: the root, and
+  the plugin's `prelude` and `quality`. `#![warn(missing_docs)]` keeps it
+  documented. What the plugin or the tests need but games shouldn't call
+  is `#[doc(hidden)]` on its definition (`missing_docs` reads the
+  definition, not the re-export), and may change in any release, which is
+  why the plugin depends on the core's exact version. Anything nothing
+  outside its crate uses is `pub(crate)`. The core's modules are private
+  except `grid`, `light` and `math`, which are hidden: a type defined in a
+  hidden module escapes `missing_docs` even when the root re-exports it,
+  so documented types live in private modules.
 - Prose style in docs and comments: plain words, short sentences, British
   spelling.
 
