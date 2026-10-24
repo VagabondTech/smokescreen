@@ -5,7 +5,9 @@
 //!   starts);
 //! - queries: 250 per tick against 32 clouds, about 4 in the way of each, in
 //!   at most 0.2 ms, for every style and rule, while the clouds grow, once
-//!   they are grown and while they fade.
+//!   they are grown and while they fade;
+//! - the per-tick state (`Smokes::view`) for a game that views every tick,
+//!   and the first view of a tick into a fresh cache slot.
 //!
 //! Prints the best of several runs of each measurement.
 
@@ -26,6 +28,37 @@ fn time<T>(f: impl FnOnce() -> T) -> (T, Duration) {
 
 fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1e3
+}
+
+/// The per-tick state as a game pays it: the sight checks' 32 clouds viewed
+/// at every tick, so each tick's snapshot reuses a slot of the cache. The
+/// median over the half second up to 5 s (grown) and up to 16.5 s (halfway
+/// through the fade), in milliseconds.
+fn state_every_tick(config: &Config, style: Style) -> [f64; 2] {
+    let mut smokes = Smokes::new(config.clone(), FlatGround::default());
+    for i in 0..32 {
+        let origin = Vec3::new((i % 8) as f32 * 12.0, 0.0, (i / 8) as f32 * 12.0);
+        smokes.pop(CloudSpec::new(origin, 0, i as u32 + 1, style));
+    }
+    let mut out = [0.0; 2];
+    let mut tick = 0;
+    for (k, seconds) in [5.0f32, 16.5].into_iter().enumerate() {
+        let end = (seconds * 128.0) as u64;
+        let mut times = Vec::new();
+        while tick <= end {
+            smokes.advance(tick);
+            let (_, d) = time(|| {
+                smokes.view(tick);
+            });
+            if tick + 64 > end {
+                times.push(d);
+            }
+            tick += 1;
+        }
+        times.sort();
+        out[k] = ms(times[times.len() / 2]);
+    }
+    out
 }
 
 fn main() {
@@ -142,6 +175,7 @@ fn main() {
         cfg.tuning.facet_rule = rule;
         cfg.tuning.volume_steps = steps;
         cfg.tuning.sight_threshold = threshold;
+        let [state_grown, state_fading] = state_every_tick(&cfg, style);
         let mut smokes = Smokes::new(cfg, FlatGround::default());
         for i in 0..32 {
             let origin = Vec3::new((i % 8) as f32 * 12.0, 0.0, (i / 8) as f32 * 12.0);
@@ -174,6 +208,7 @@ fn main() {
                 smokes.advance(next);
                 next += 1;
             }
+            // Viewed at the phases only, so this view fills a fresh slot.
             let (_, state) = time(|| {
                 smokes.view(tick);
             });
@@ -193,7 +228,8 @@ fn main() {
             if seconds == 5.0 {
                 let (_, clear) = best(&|| over.iter().filter(|(a, b)| view.blocks_sight(*a, *b)).count());
                 extra = format!(
-                    "{:19}grown: per-tick state {:.3} ms, the same checks over the clouds {:.3} ms",
+                    "{:19}grown: per-tick state {state_grown:.4} ms ({:.4} ms into a fresh cache slot; \
+                     {state_fading:.4} ms halfway through the fade), the same checks over the clouds {:.3} ms",
                     "",
                     ms(state),
                     ms(clear)

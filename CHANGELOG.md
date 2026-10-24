@@ -8,6 +8,37 @@ versions) are marked **results**.
 Simulation results change in this release: a 0.2 server and a 0.1 client
 are not in lockstep.
 
+What 0.2.0 buys, against 0.1.1, on an Apple M4 (Mac mini). On the GPU, the
+demo's tier sweep at 1920×1080 with MSAA: the medians of five alternated
+runs of both versions in one batch. On the CPU, `cargo bench -p
+smokescreen`: the medians of 11 alternated runs.
+
+| | 0.1.1 | 0.2.0 |
+|---|---|---|
+| Volumetric smoke close up, the dial's best step | 5.56 ms | 0.76 ms (−86 %) |
+| The same halfway through the fade | 3.43 ms | 0.62 ms (−82 %) |
+| Volumetric smoke at mid-range, best step | 1.22 ms | 0.34 ms (−72 %) |
+| Volumetric smoke far away, best step | 0.52 ms | 0.19 ms (−64 %) |
+| Faceted smoke close up, best step | 30.7 ms | 29.6 ms (−4 %) |
+| 250 volumetric sight checks, grown | 0.070 ms | 0.033 ms (−53 %) |
+| The same halfway through the fade | 0.220 ms | 0.088 ms (−60 %) |
+| 250 crystal sight checks (0.8 m rule), grown | 0.060 ms | 0.030 ms (−50 %) |
+| A faceted or crystal fill, all at once | 1.53 / 1.48 ms | 1.14 / 1.09 ms (−25 %) |
+
+Close up, 0.2.0's best step marches at a quarter of the resolution, where
+0.1.1's marched every pixel: as coarse as the rays' depth into the smoke
+allows. `tools/fairness.py` holds every step of the dial to the same bound
+as before. Faceted sight checks, volumetric fills and the per-tick state
+of grown clouds cost what they did.
+
+**The faceted style is experimental in 0.2.0.** It costs 20–40 times what
+a volumetric smoke costs to draw (13 times far away), and bullet tunnels
+make it about three times dearer again. At the dial's cheaper steps,
+tunnel mouths you can see right through come out a few pixels wider than
+at the best, so players there see a little more through them. Its
+simulation and rule are as finished as the other styles'; the label is
+about drawing it. The API is unchanged.
+
 - **results** The volumetric rule works out density in the same order as
   the picture. A sample used to take the density of the distance
   interpolated between voxels, while the GPU bakes each voxel's density and
@@ -574,6 +605,15 @@ are not in lockstep.
   1.1 % close up), and those docs now say so.
 - The demo starts with the quality dial at low (it was medium), in every
   look; its scripted captures still start at high.
+- `cargo bench -p smokescreen` prints the per-tick state as a game pays
+  it, viewing the clouds every tick: for 32 grown clouds 0.047 ms faceted,
+  0.030 ms crystal and 0.0005 ms volumetric (0.005 ms while all 32
+  volumetric clouds fade, as each builds its density table again). It
+  used to print only the first state of a tick in a fresh slot of the
+  cache, which still follows: about twice as much, and 0.01 ms for
+  volumetric clouds, whose tables it all builds. The README's snapshot
+  column, which quoted that first figure, is gone; its figures are in the
+  text below the table.
 
 ## 0.1.1 (2026-10-18)
 

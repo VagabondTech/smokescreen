@@ -14,7 +14,7 @@ Smoke that fills rooms, pours through doorways, stops at walls and blocks sight.
 
 ![Volumetric smoke seen from a slow orbit: bullet tunnels, then an HE grenade's cleared sphere](https://raw.githubusercontent.com/VagabondTech/smokescreen/main/docs/media/volumetric.webp)
 
-**Faceted**: hard-edged, tumbling polyhedral puffs merged like metaballs.
+**Faceted** (experimental): hard-edged, tumbling polyhedral puffs merged like metaballs. It costs many times more to draw than the other two looks; see [Looks](#looks).
 
 ![Faceted smoke: hexagonal bullet tunnels, then an HE grenade's cavity](https://raw.githubusercontent.com/VagabondTech/smokescreen/main/docs/media/faceted.webp)
 
@@ -32,7 +32,7 @@ Smoke that fills rooms, pours through doorways, stops at walls and blocks sight.
 - Lit by the sun with self-shadowing, darker indoors, lit from inside by muzzle flashes and explosions (any Bevy `PointLight`).
 - **Gameplay sees the same smoke.** `blocks_sight(a, b)` and `occlusion(a, b)` for AI, server-side visibility and audio; `density_at(p)` for gas damage.
 - **Level setup without collision code:** mark your level's meshes with `SmokeObstacle`.
-- **One performance dial per camera**, or a GPU millisecond budget that turns it for you. No dial step changes a cloud's shape, so a cheaper setting doesn't show through smoke a better one hides; volumetric smoke's noise falls a little differently from step to step (in the demo's views, at most 0.7 % of a smoke's pixels let more than 30 % more of the scene through than at the best step).
+- **One performance dial per camera**, or a GPU millisecond budget that turns it for you. No dial step changes a cloud's shape, so a cheaper setting doesn't show through smoke a better one hides (one exception: the experimental faceted look's bullet tunnels, see [Limitations](#limitations)); volumetric smoke's noise falls a little differently from step to step (in the demo's views, at most 0.65 % of a smoke's pixels let more than 30 % more of the scene through than at the best step).
 - **Deterministic core for multiplayer** (`smokescreen`): engine-free, runs on your ticks and in your units, bit-identical on x86-64 and ARM, with a per-tick CPU budget.
 
 | Round walls and down corridors | Indoors, through a doorway | Off a ledge |
@@ -107,17 +107,19 @@ The API is documented on docs.rs: [`bevy_smokescreen`](https://docs.rs/bevy_smok
 
 Pick a default with `SmokeSettings::style`, or per smoke with `Smoke::with_style`.
 
-| | Volumetric | Faceted | Crystal |
+| | Volumetric | Faceted (experimental) | Crystal |
 |---|---|---|---|
 | Look | soft, light-scattering | hard facets, merged like metaballs | hard, separate tumbling crystals |
 | Drawn by | raymarching at reduced resolution | sphere tracing a distance field | plain meshes (Bevy's PBR) |
-| GPU cost² | low: 0.44 ms at mid-range, 1.5 ms filling the screen; one dial per camera | about 15–20× volumetric: 6.6 ms at mid-range, 30 ms filling the screen | about 0.2 ms: a few thousand triangles per cloud |
-| 250 sight checks through 4 of 32 clouds¹ | 0.04 ms | 0.04 ms, with any `FacetRule` | 0.03 ms (any contact blocks), 0.06 ms (0.8 m rule) |
+| GPU cost² | low: 0.32 ms at mid-range, 0.75 ms filling the screen; one dial per camera | 20–40× volumetric: 6.6 ms at mid-range, 30 ms filling the screen, about 3× that with bullet tunnels | about 0.1 ms: a few thousand triangles per cloud |
+| 250 sight checks through 4 of 32 clouds¹ | 0.03 ms | 0.04 ms, with any `FacetRule` | 0.02 ms (any contact blocks), 0.03 ms (0.8 m rule) |
 | Bullets and explosions | tunnels and cleared spheres | hexagonal tunnels, cavities | knock crystals out of the way |
 | Picture against the rule | the same density, but the noise thins some smoke the rule counts, most while it fades; `SmokeSettings::noise_within_rule` (`Capped` or `Filled`) stops that | never shows through what the rule blocks; thin edges drawn solid | exact with `sight_threshold = 0` |
 
 ¹ Fully grown clouds, on an Apple M4; the 2-core 2.1 GHz VM this was built on takes about 3× as long. Halfway through a cloud's fade, when many lines are only partly blocked, they cost more: 3× for volumetric smoke, 0.7 ms for the exact faceted rule, which traces more of them then (0.13 ms with `FacetRule::Chords`); see [Performance](#performance). `cargo bench -p smokescreen` measures it on your CPU.
-² At the best step of the dial, at 1920×1080 on an Apple M4. Close up, the cheapest step costs a quarter (faceted) to 60 % (volumetric, whose best step marches coarser close up too) of that. See [Performance](#performance).
+² At the best step of the dial, at 1920×1080 on an Apple M4. Close up, the cheapest step costs a quarter of that for faceted smoke, and nearly as much for volumetric smoke, which marches at a quarter of the resolution there at every step. See [Performance](#performance).
+
+**Faceted is experimental in 0.2.** It costs 20–40 times what a volumetric smoke costs to draw, and bullet tunnels make it about three times dearer again. At the dial's cheaper steps, tunnels you can see right through come out a few pixels wider than at the best, so players there see a little more through them (see [Limitations](#limitations)). Its simulation and rule are as finished as the others'; the label goes once tunnels cost less and every step draws them alike.
 
 How each look works, and why faceted costs more than volumetric despite its hard edges, is in [docs/design.md](https://github.com/VagabondTech/smokescreen/blob/main/docs/design.md).
 
@@ -204,37 +206,37 @@ Measured on an Apple M4 (Mac mini) at 128 ticks a second. Run `cargo bench -p sm
 
 | | Volumetric | Faceted | Crystal |
 |---|---|---|---|
-| All at once | 0.55 ms | 1.1 ms | 1.1 ms |
-| Default timeline (the cloud starts 0.1 s after the pop): per tick, until it starts | median 0.06 ms, worst 0.08 ms, for 14 ticks | median 0.10 ms, worst 0.16 ms, for 13 ticks | median 0.09 ms, worst 0.15 ms, for 13 ticks |
+| All at once | 0.54 ms | 1.1 ms | 1.1 ms |
+| Default timeline (the cloud starts 0.1 s after the pop): per tick, until it starts | median 0.05 ms, worst 0.07 ms, for 14 ticks | median 0.10 ms, worst 0.16 ms, for 13 ticks | median 0.09 ms, worst 0.16 ms, for 13 ticks |
 | A start of 0.4 s or later: per tick | as above | median 0.04 ms, worst 0.08 ms, for 29–33 ticks | median 0.03 ms, worst 0.07 ms, for 29–33 ticks |
 
 The fill budget (`Config::fill_budget`, about 0.2 ms a tick on the VM, under 0.1 ms on the M4: it counts work, not time) grows only when a fill would otherwise not be ready by the time its cloud starts. Faceted and crystal fills need about 0.26 s of ticks, so give those clouds a later `Timeline::start` to keep to the budget.
 
 **Sight checks**: 250 a tick, each through 4 of 32 clouds, in milliseconds (the median of 11 runs):
 
-| | Growing | Grown | Halfway through the fade | Per-tick snapshot |
-|---|---|---|---|---|
-| Volumetric | 0.04 | 0.04 | 0.10 | 0.01 |
-| Volumetric, `VolumeSteps::HalfVoxel` | 0.05 | 0.05 | 0.15 | 0.01 |
-| Faceted, `FacetRule::Exact` | 0.04 | 0.04 | 0.70 | 0.09 |
-| Faceted, `FacetRule::Core` | 0.04 | 0.04 | 0.12 | 0.08 |
-| Faceted, `FacetRule::Chords` | 0.04 | 0.04 | 0.13 | 0.08 |
-| Crystal, 0.8 m rule | 0.03 | 0.03 | 0.05 | 0.06 |
-| Crystal, any contact blocks | 0.02 | 0.02 | 0.04 | 0.05 |
+| | Growing | Grown | Halfway through the fade |
+|---|---|---|---|
+| Volumetric | 0.03 | 0.03 | 0.09 |
+| Volumetric, `VolumeSteps::HalfVoxel` | 0.05 | 0.05 | 0.14 |
+| Faceted, `FacetRule::Exact` | 0.04 | 0.04 | 0.67 |
+| Faceted, `FacetRule::Core` | 0.04 | 0.04 | 0.15 |
+| Faceted, `FacetRule::Chords` | 0.04 | 0.04 | 0.13 |
+| Crystal, 0.8 m rule | 0.03 | 0.03 | 0.05 |
+| Crystal, any contact blocks | 0.02 | 0.02 | 0.04 |
 
-Halfway through the fade the clouds are thin, so many lines never reach the threshold and are integrated all the way through. The volumetric rule samples a line every voxel; with `Tuning::volume_steps` set to `HalfVoxel` it samples every half voxel, which counts a little more precisely and costs about 1.5 times as much. The exact faceted rule settles most lines from exact chord bounds (the puffs' hard polyhedra lie inside the cloud, and the polyhedra grown by the blend radius contain it) and traces only lines within 2 cm of the threshold, which are commoner in the fade. `FacetRule::Chords` counts only the inner of those bounds, each puff's hard polyhedron, and never traces, so halfway through the fade it costs what the core rule costs. The snapshot is the clouds' state at a tick (puff positions, holes), computed once per tick before the first check. For volumetric clouds it holds each cloud's density table too: the bench times the first snapshot in a new cache slot, which builds them all, while from tick to tick only clouds that are growing or fading build theirs again (about 0.15 µs each).
+Halfway through the fade the clouds are thin, so many lines never reach the threshold and are integrated all the way through. The volumetric rule samples a line every voxel; with `Tuning::volume_steps` set to `HalfVoxel` it samples every half voxel, which counts a little more precisely and costs about 1.5 times as much. The exact faceted rule settles most lines from exact chord bounds (the puffs' hard polyhedra lie inside the cloud, and the polyhedra grown by the blend radius contain it) and traces only lines within 2 cm of the threshold, which are commoner in the fade. `FacetRule::Chords` counts only the inner of those bounds, each puff's hard polyhedron, and never traces, so halfway through the fade it costs what the core rule costs. Before the first check of a tick, the clouds' state at that tick (puff positions, holes) is computed once. For these 32 clouds, viewed every tick, that costs 0.047 ms a tick for faceted clouds and 0.030 ms for crystal ones. For volumetric clouds it costs 0.0005 ms once they are grown, and 0.005 ms while all 32 fade, as each then builds its density table again (about 0.15 µs each). The first state of a tick in a fresh slot of the cache costs about twice as much (0.01 ms for volumetric clouds, whose tables it all builds); the bench prints both.
 
 **On the GPU**: what the smoke adds to a 1920×1080 frame with MSAA on an Apple M4 (10-core GPU), at the best and the cheapest step of the quality dial:
 
-| The smoke | Volumetric | Faceted | Crystal |
+| The smoke | Volumetric | Faceted (experimental) | Crystal |
 |---|---|---|---|
-| far away (27 m) | 0.21 → 0.07 ms | 2.8 → 1.05 ms | 0.05 ms |
-| mid-range (14 m) | 0.44 → 0.20 ms | 6.6 → 3.1 ms | 0.13 ms |
-| close, covering two-thirds of the screen | 1.45 → 0.88 ms | 30 → 7.5 ms | 0.2 ms |
+| far away (27 m) | 0.20 → 0.07 ms | 2.7 → 1.06 ms | 0.07 ms |
+| mid-range (14 m) | 0.32 → 0.16 ms | 6.6 → 3.1 ms | 0.06 ms |
+| close, covering two-thirds of the screen | 0.75 → 0.66 ms | 30 → 7.5 ms | 0.1 ms |
 
-These come from the demo's tier sweep (`SMOKE_DEMO_SCRIPT=tiers`): frame time with the smoke minus the same view without, every frame waiting for the GPU, the median of four to eight alternated runs. With MSAA they hold while nothing transparent is on screen: the smoke then draws straight into the resolved image. While something transparent is drawn, the smoke draws into the multisampled target for Bevy's transparent pass to continue from, which adds about 0.2 ms a frame, at any distance. (Metal's GPU timestamp queries lose the device, so the sweep times whole frames on macOS; with GPU timestamps, on Vulkan or DX12, it and the demo's HUD report each pass's GPU time.) The dial is per camera (`SmokeCamera::quality`, or `SmokeCamera::budget(ms)` to fit a GPU time budget); [docs/design.md](https://github.com/VagabondTech/smokescreen/blob/main/docs/design.md#the-performance-dial) has every step. Crystal smoke is ordinary geometry, with no dial. Volumetric smokes that overlap on screen are marched together: two grenades side by side take 2.75 ms close up at the best step and 1.11 ms at mid-range (`SMOKE_DEMO_SWEEP_SMOKES=2`).
+These come from the demo's tier sweep (`SMOKE_DEMO_SCRIPT=tiers`): frame time with the smoke minus the same view without, every frame waiting for the GPU, the median of five alternated runs (ten, in two batches, for volumetric smoke). Close up, every volumetric step marches at a quarter of the resolution, as the rays there see smoke no farther than a quarter allows (`SmokeCamera::measured_depth`), so the dial saves little: 0.62–0.66 ms at the three cheapest steps. With MSAA they hold while nothing transparent is on screen: the smoke then draws straight into the resolved image. While something transparent is drawn, the smoke draws into the multisampled target for Bevy's transparent pass to continue from, which adds about 0.2 ms a frame, at any distance. (Metal's GPU timestamp queries lose the device, so the sweep times whole frames on macOS; with GPU timestamps, on Vulkan or DX12, it and the demo's HUD report each pass's GPU time.) The dial is per camera (`SmokeCamera::quality`, or `SmokeCamera::budget(ms)` to fit a GPU time budget); [docs/design.md](https://github.com/VagabondTech/smokescreen/blob/main/docs/design.md#the-performance-dial) has every step. Crystal smoke is ordinary geometry, with no dial. Volumetric smokes that overlap on screen are marched together: two grenades side by side take 1.08 ms close up at the best step and 0.70 ms at mid-range (`SMOKE_DEMO_SWEEP_SMOKES=2`).
 
-Point lights near volumetric smoke cost extra, as every sample within a light's range adds its light: close up at the best step, one muzzle flash inside a grown cloud costs about 15 % more (1.67 against 1.44 ms), and eight cost 1.8 times as much (2.65 ms). Faceted smoke, lit once per pixel, costs about the same with eight lights as with none.
+Point lights near volumetric smoke cost extra, as every sample within a light's range adds its light: close up at the best step, one muzzle flash inside a grown cloud costs about 12 % more (0.83 against 0.74 ms), and eight cost 1.8 times as much (1.33 ms). Faceted smoke, lit once per pixel, costs about the same with eight lights as with none.
 
 ## Tuning
 
@@ -307,6 +309,7 @@ From a clone of the repository, run one with `cargo run --release --example pres
 - Orthographic cameras aren't supported.
 - Clouds don't drift with wind, and doors closing on a smoke don't re-shape it.
 - Smoke fills right up to walls and floors at least a voxel thick (0.3 m by default), wherever they sit on the voxel grid. Against thinner walls it stops at the middle of the first voxel they reach into, so up to about half a voxel can stay clear in front of them, and as much can show past them; picture and rule agree. Level meshes (`SmokeObstacle`) need triangles facing outwards for this, as Bevy's shapes do; against a mesh facing inwards, or a wall made of a single vertical sheet, smoke stops up to half a voxel short. A single sheet facing up (a `Plane3d`, say) counts as ground, solid underneath, so up to a voxel of smoke can show beneath a raised floor made of one: use a box for floors with open air below.
+- Faceted smoke is experimental. It costs 20–40 times what volumetric smoke costs to draw (13 times far away), and bullet tunnels make it about three times dearer again: one faceted smoke with 16 tunnels takes about 83 ms close up at the best step on an Apple M4. At the dial's cheaper steps, tunnel mouths you can see right through come out a few pixels wider than at the best step, so a player there sees slightly more through them than one at the best.
 - Faceted and crystal smoke can still stop up to about a voxel short of walls (see [ROADMAP.md](https://github.com/VagabondTech/smokescreen/blob/main/ROADMAP.md)).
 - With the default 0.8 m rule, faceted and crystal pictures draw thin edges solid where the rule sees through.
 - Tested on an Apple M4 (Metal) and a software rasteriser, and used in a game on an AMD RX 6700 XT (Windows 10); NVIDIA and Intel GPUs haven't been tried yet. The browser demo runs in Chrome on the M4 and in Safari 26 on an iPhone 15 Pro, touch controls included; Firefox, Edge and Android haven't been tried yet.

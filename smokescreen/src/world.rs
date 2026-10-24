@@ -184,6 +184,14 @@ pub enum Style {
     /// Hard-edged tumbling polyhedral puffs merged like metaballs. The amount
     /// of cloud along a segment is the length of it inside the puffs (or
     /// their cores, see [`FacetRule`]).
+    ///
+    /// Experimental: `bevy_smokescreen` draws it by sphere tracing, which
+    /// costs 10 to 40 times what a volumetric smoke costs on the GPU, and
+    /// bullet tunnels make it about three times dearer again. At the cheaper
+    /// steps of the plugin's quality dial, tunnels you can see right through
+    /// come out a few pixels wider than at the best. The label is about
+    /// drawing it: its simulation and rule are no less finished than the
+    /// other styles'.
     Faceted,
     /// Hard-edged tumbling polyhedra that don't merge: cheap to draw as plain
     /// meshes and to check exactly. Holes shrink whole puffs out of the way.
