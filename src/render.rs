@@ -2534,6 +2534,12 @@ mod tests {
         ] {
             assert!(depth.contains(&line), "smoke_depth.wesl should say `{line}`");
         }
+        // The composite's tolerance grows with the march's step past the
+        // medium step's.
+        let composite = include_str!("shaders/smoke_composite.wesl");
+        let medium = crate::quality::VolumetricQuality::TIERS[3].step_size;
+        let line = format!("const AGREE_STEP: f32 = {medium:?};");
+        assert!(composite.contains(&line), "smoke_composite.wesl should say `{line}`");
         // One uniform buffer: WebGPU allows 64 KiB.
         let size = GpuGlobals::min_size().get();
         assert!(size <= 64 << 10, "GpuGlobals is {size} bytes");

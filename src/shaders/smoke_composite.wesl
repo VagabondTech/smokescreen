@@ -6,20 +6,28 @@
 // smoke texels around it and weight them by bilinear position and by how
 // close their representative depth is to this pixel's depth, so smoke doesn't
 // bleed across the silhouettes of objects in front of it. Where the four
-// texels agree within `AGREE` anyway, any blend of them does too, so they are
-// blended by position alone and the depth buffer is left unread. At full
+// texels agree within `AGREE` anyway (more at the dial's cheapest steps, whose
+// longer march steps leave them noisier), any blend of them does too, so they
+// are blended by position alone and the depth buffer is left unread. At full
 // resolution a pixel's own texel is all it needs.
 
 import package::shaders::smoke_common::{SmokeView, FLAG_DEBUG_TRANSMITTANCE};
 
 // How far apart, in every channel, the four texels around a pixel may be for
 // it to skip the depth weights: no weights could then move the pixel by more.
-// Close up at the best dial step about nine pixels in ten skip them, which on
+// Close up at the best dial step about four pixels in five skip them, which on
 // an Apple M4 at 1080p saved 0.25 of the 0.33 ms the depth reads cost there.
 // At 0.03 no pixel of the demo's sweep changed by more than 5 levels out of
 // 255. At 0.01 none changed by more than 1, but at the two cheapest steps,
 // whose texels lie 4 pixels apart, about a tenth as many pixels skipped.
 const AGREE: f32 = 0.03;
+// The march's step (metres) beyond which the tolerance grows with it: the
+// medium dial step's. Longer steps leave neighbouring texels noisier, so at
+// 0.03 close up only 29 % of the pixels skipped at the cheapest step's 0.26 m,
+// and the cheapest steps cost more than the best. Grown to 0.071 there (a
+// pixel may move by up to 18 levels), 81 % skip, and they cost no more than
+// low.
+const AGREE_STEP: f32 = 0.11;
 
 @group(0) @binding(0) var<uniform> view: SmokeView;
 @if(MULTISAMPLED)
@@ -87,7 +95,8 @@ fn fragment(in: FullscreenOutput) -> @location(0) vec4<f32> {
     // Four texels that agree: blend them by position, without the depth.
     let lo = min(min(texels[0], texels[1]), min(texels[2], texels[3]));
     let hi = max(max(texels[0], texels[1]), max(texels[2], texels[3]));
-    if (all(hi - lo <= vec4<f32>(AGREE))) {
+    let agree = AGREE * max(1.0, view.march.y / AGREE_STEP);
+    if (all(hi - lo <= vec4<f32>(agree))) {
         let smoke = mix(mix(texels[0], texels[1], f.x), mix(texels[2], texels[3], f.x), f.y);
         if (smoke.a > 0.999) {
             discard;

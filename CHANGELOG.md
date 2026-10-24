@@ -379,6 +379,23 @@ are not in lockstep.
   costs much the same, so the budget controller's per-step cost ratios are
   measured again. Code that builds `SmokeCamera` or `SmokeQuality` with a
   struct literal needs the new fields.
+- Close up, the volumetric dial's two cheapest steps no longer cost more
+  than its best. With the composite's shortcut and the march at a quarter
+  close up (the two entries above) they had: their march takes
+  longer steps, which leaves neighbouring smoke texels noisier, so fewer of
+  them agreed within the 0.03 that lets the composite blend them without
+  reading depth (close up, 29 % of the smoke's pixels at the cheapest step
+  against 82 % at the best). Past the medium step's 0.11 m the tolerance
+  now grows with the march's step, to 0.071 at the cheapest step, and close
+  up 81–83 % of the pixels skip the depth reads at every step. On an Apple
+  M4 at 1920×1080 with MSAA (medians of five alternated runs), a grown cloud
+  close up takes 0.61 instead of 0.73 ms at the lower step (−17 %) and 0.64
+  instead of 0.82 at the cheapest (−22 %); the other steps and views cost
+  what they did. The top three steps draw the same pixels; at the three
+  cheapest a pixel changes by at most 12 levels out of 255, on at most
+  0.02 % of a frame by more than 2. `tools/fairness.py --volumetric` gives
+  the same report, and with `noise_within_rule` capped or filled nothing
+  the rule blocks shows through.
 - Point lights light volumetric and faceted smoke. They never did: the
   plugin read each `PointLight`'s `ViewVisibility` while Bevy had it
   cleared (after `VisibilitySystems::VisibilityPropagate` resets it and
