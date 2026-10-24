@@ -90,7 +90,7 @@ A smoke that is fully grown and untouched (no holes, not fading, sun not moving)
 
 ## 5. Composite (full resolution, scissored)
 
-For each pixel, the composite reads the 2×2 smoke texels. If all four are clear it discards before touching depth, which is most pixels. At the best dial step, which marches every pixel, a pixel's own texel was marched against its own depth, so the composite takes that texel alone and reads no depth.
+For each pixel, the composite reads the 2×2 smoke texels. If all four are clear it discards before touching depth, which is most pixels. If they agree within 0.03 in every channel, any blend of them agrees too, so no depth weights could move the pixel by more: it blends them by position alone, again without reading depth. Close up at the best dial step that is about nine pixels in ten, and on an Apple M4 at 1080p it saved 0.25 of the 0.33 ms the depth reads cost there; no pixel of the demo's sweep changed by more than 5 levels out of 255. At the best dial step, which marches every pixel unless the smoke is close, a pixel's own texel was marched against its own depth, so the composite takes that texel alone and reads no depth.
 
 Otherwise it weights them by bilinear position and by depth similarity to the full-resolution depth, so smoke doesn't bleed across the silhouette of a crate in front of it. The fixed-function blender applies `scene × transmittance + light`, so the scene is never copied.
 
