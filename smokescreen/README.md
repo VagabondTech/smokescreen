@@ -32,7 +32,7 @@ It needs Rust 1.88 or newer, and depends only on `glam` and `libm`:
 
 ```toml
 [dependencies]
-smokescreen = "0.1"
+smokescreen = "0.2"
 ```
 
 ## What it does
@@ -42,8 +42,8 @@ smokescreen = "0.1"
   (anything behind the `Level` trait) once it reaches the cloud's volume. It
   runs a little each tick within a CPU budget (`Config::fill_budget`, about
   0.2 ms), and the finished cloud is the same however the work was split.
-- **Three styles.** Volumetric (a soft density), faceted (tumbling
-  polyhedral puffs merged like metaballs) and crystal (separate polyhedra).
+- **Three styles.** Volumetric (a soft density), crystal (separate
+  polyhedra) and faceted (tumbling polyhedral puffs merged like metaballs).
 - **Holes.** Bullets carve tunnels and explosions clear spheres, as events
   with ticks; they close and refill over time.
 - **The rule.** `occlusion(a, b)` is the amount of cloud along a segment,
@@ -94,11 +94,11 @@ Positions, lengths, volumes and results are in your units;
 
 ## Cost
 
-On an Apple M4: a volumetric fill is about 0.55 ms of work and a faceted or
-crystal one about 1.1 ms, spread over ticks. 250 sight checks through 4 of
+On an Apple M4: a volumetric fill is about 0.54 ms of work and a crystal or
+faceted one about 1.1 ms, spread over ticks. 250 sight checks through 4 of
 32 grown clouds take 0.02 ms (crystal, blocking on any contact), 0.03 ms
-(crystal at the default 0.8 m) or 0.04 ms (faceted, with any `FacetRule`,
-and volumetric). Halfway through a cloud's
+(volumetric, and crystal at the default 0.8 m) or 0.04 ms (faceted, with
+any `FacetRule`). Halfway through a cloud's
 fade they cost more: up to 3× as much, and 0.7 ms with the exact faceted
 rule, which then traces more of the lines (0.13 ms with
 `FacetRule::Chords`). A 2-core 2.1 GHz cloud VM takes 2.5 to 3.5 times as

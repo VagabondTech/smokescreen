@@ -1,6 +1,6 @@
 [package]
 name = "bevy_smokescreen"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 # Bevy 0.20's minimum.
 rust-version = "1.97.1"
@@ -25,7 +25,9 @@ resolver = "2"
 webgpu = ["bevy/webgpu"]
 
 [dependencies]
-smokescreen = { path = "smokescreen", version = "0.1.1" }
+# Exactly this version: the plugin reads what the core hides from its docs,
+# which may change in any release.
+smokescreen = { path = "smokescreen", version = "=0.2.0" }
 bevy = { version = "0.20.0", default-features = false, features = [
     "std",
     "multi_threaded",

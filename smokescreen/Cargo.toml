@@ -1,6 +1,6 @@
 [package]
 name = "smokescreen"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 # Let chains. Std APIs are checked against this by clippy's `incompatible_msrv`.
 rust-version = "1.88"

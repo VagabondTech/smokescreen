@@ -11,9 +11,9 @@
 //!   and flowing through doorways. It runs a little each tick
 //!   ([`Config::fill_budget`]) and is the same however it is split.
 //! - **Shape.** [`Style::Volumetric`] clouds are a soft density grown from
-//!   the fill; [`Style::Faceted`] clouds are tumbling polyhedral puffs merged
-//!   like metaballs; [`Style::Crystal`] clouds are tumbling polyhedra that
-//!   don't merge.
+//!   the fill; [`Style::Crystal`] clouds are tumbling polyhedra that don't
+//!   merge; [`Style::Faceted`] clouds are tumbling polyhedral puffs merged
+//!   like metaballs.
 //! - **Time.** The caller supplies ticks. A cloud at tick `t` is a pure
 //!   function of its [`CloudSpec`] (origin, pop tick, seed, style, source,
 //!   volume, timeline), the [`Level`], the [`Tuning`] and `t`.

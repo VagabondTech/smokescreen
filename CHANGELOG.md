@@ -3,7 +3,7 @@
 Changes that alter simulation results (and so break lockstep with older
 versions) are marked **results**.
 
-## Unreleased (0.2.0)
+## 0.2.0 (2026-10-24)
 
 Simulation results change in this release: a 0.2 server and a 0.1 client
 are not in lockstep.
