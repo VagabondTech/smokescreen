@@ -59,15 +59,24 @@ pub(crate) struct FillSpec {
 
 /// A finished fill: everything about a cloud that doesn't change over its
 /// life. Internal frame (metres, Y up). Immutable and cheap to share.
+///
+/// [`fill_cloud`](crate::fill_cloud) makes one,
+/// [`Smokes::insert`](crate::Smokes::insert) takes one, and
+/// [`CloudInfo::shape`](crate::CloudInfo::shape) shows a world's. What is
+/// inside is for renderers and isn't part of the API: it may change in any
+/// release.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CloudShape {
+    #[doc(hidden)]
     pub grid: Grid,
     /// Faceted clouds only.
+    #[doc(hidden)]
     pub facets: Option<Facets>,
 }
 
 /// The puffs of a faceted cloud.
 #[derive(Clone, Debug, PartialEq)]
+#[doc(hidden)]
 pub struct Facets {
     pub puffs: Vec<Puff>,
     pub bins: Bins,
@@ -78,6 +87,7 @@ pub struct Facets {
 
 impl CloudShape {
     /// Box containing every point the cloud can ever occupy.
+    #[doc(hidden)]
     pub fn bounds(&self) -> (Vec3, Vec3) {
         match &self.facets {
             Some(f) => (f.bins.min, f.bins.max()),
@@ -87,6 +97,7 @@ impl CloudShape {
 
     /// No smoke at all: the grenade found no open space (or, faceted, no
     /// puff fitted).
+    #[doc(hidden)]
     pub fn is_empty(&self) -> bool {
         self.grid.is_empty() || self.facets.as_ref().is_some_and(|f| f.puffs.is_empty())
     }

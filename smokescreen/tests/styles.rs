@@ -61,7 +61,7 @@ fn crystals_never_poke_through_walls() {
             continue;
         };
         for p in &f.puffs {
-            let reach = p.radius * p.shape.corner_ratio() * facets::POP_OVERSHOOT;
+            let reach = p.radius * p.shape.corner_ratio() * POP_OVERSHOOT;
             // Points on the sphere that holds the puff in any orientation.
             for i in 0..64 {
                 let z = 1.0 - 2.0 * (i as f32 + 0.5) / 64.0;

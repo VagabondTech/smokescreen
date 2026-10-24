@@ -79,9 +79,11 @@ pub struct FacetQuality {
     /// steps down automatically for smokes whose puffs span fewer than about
     /// 30 pixels per divisor step (distant smokes trace at full resolution).
     pub divisor: u32,
+    /// How sunlight is shaded.
     pub shadows: FacetShadows,
     /// Step budget of a traced shadow ray.
     pub shadow_steps: u32,
+    /// How creases and the cloud's underside are darkened.
     pub occlusion: FacetOcclusion,
     /// Step budget of a camera ray per smoke. Running out draws smoke.
     pub max_steps: u32,
@@ -149,6 +151,7 @@ impl FacetQuality {
         }
     }
 
+    /// The knobs at a step of the dial, 0 (cheapest) to 5; higher means 5.
     pub fn tier(tier: usize) -> Self {
         Self::TIERS[tier.min(TIERS - 1)]
     }
@@ -175,6 +178,7 @@ impl VolumetricQuality {
         }
     }
 
+    /// The knobs at a step of the dial, 0 (cheapest) to 5; higher means 5.
     pub fn tier(tier: usize) -> Self {
         Self::TIERS[tier.min(TIERS - 1)]
     }
@@ -188,8 +192,8 @@ impl VolumetricQuality {
 /// quarter there, where the rays see smoke no farther than a quarter allows
 /// ([`SmokeCamera::measured_depth`]), and the composite costs the same at
 /// every tier. The controller learns the absolute scale on the player's GPU.
-pub const FACET_RELATIVE_COST: [f32; TIERS] = [0.25, 0.26, 0.33, 0.36, 0.49, 1.0];
-pub const VOLUMETRIC_RELATIVE_COST: [f32; TIERS] = [0.85, 0.85, 0.90, 0.93, 0.95, 1.0];
+pub(crate) const FACET_RELATIVE_COST: [f32; TIERS] = [0.25, 0.26, 0.33, 0.36, 0.49, 1.0];
+pub(crate) const VOLUMETRIC_RELATIVE_COST: [f32; TIERS] = [0.85, 0.85, 0.90, 0.93, 0.95, 1.0];
 
 /// What the dial is doing on a camera this frame. Added automatically with
 /// [`SmokeCamera`]; read it for HUDs and logs.
@@ -235,6 +239,7 @@ pub(crate) struct DepthState {
 }
 
 impl SmokeQuality {
+    /// The step's name, from [`TIER_NAMES`].
     pub fn tier_name(&self) -> &'static str {
         TIER_NAMES[self.tier.min(TIERS - 1)]
     }
@@ -276,7 +281,7 @@ const BASE_MS: f32 = 0.03;
 /// and climbs back one tier at a time once the next tier has fit with room
 /// to spare for a while, so it doesn't oscillate.
 #[derive(Clone, Debug)]
-pub struct BudgetController {
+pub(crate) struct BudgetController {
     /// Learned milliseconds for full-screen coverage at the top tier.
     pub scale_volumetric: f32,
     pub scale_facets: f32,
@@ -311,7 +316,7 @@ impl Default for BudgetController {
 
 /// One frame of input to [`BudgetController::update`].
 #[derive(Clone, Copy, Debug, Default)]
-pub struct BudgetInputs {
+pub(crate) struct BudgetInputs {
     pub budget_ms: f32,
     /// The highest tier allowed (from `SmokeCamera::quality`).
     pub max_tier: usize,

@@ -59,6 +59,7 @@ impl Timeline {
         age < self.start + self.grow_time + 0.05
     }
 
+    /// Gone (past its lifetime)?
     pub fn is_finished(&self, age: f32) -> bool {
         age >= self.lifetime
     }
@@ -71,7 +72,7 @@ impl Timeline {
 /// [`Timeline::dissolve`]. The core is solid, the outer shell feathers, the
 /// growth front sweeps out from the grenade along the fill's paths, and the
 /// dissolve eats the cloud from the outside in. Renderers mirror this exactly.
-pub fn shape_density(d: f32, growth: f32, dissolve: f32) -> f32 {
+pub(crate) fn shape_density(d: f32, growth: f32, dissolve: f32) -> f32 {
     if d >= 0.999 {
         return 0.0;
     }
@@ -96,7 +97,7 @@ pub fn shape_density(d: f32, growth: f32, dissolve: f32) -> f32 {
 /// front and the fade): this way the rule counts the density the picture
 /// draws.
 #[derive(Clone, PartialEq)]
-pub struct DensityTable {
+pub(crate) struct DensityTable {
     values: [f32; 256],
     growth: f32,
     dissolve: f32,
@@ -128,7 +129,8 @@ impl core::fmt::Debug for DensityTable {
 impl DensityTable {
     /// The table of a cloud at the age with this [`Timeline::growth`] and
     /// [`Timeline::dissolve`].
-    pub fn new(growth: f32, dissolve: f32) -> Self {
+    #[cfg(test)]
+    pub(crate) fn new(growth: f32, dissolve: f32) -> Self {
         let mut table = Self::default();
         table.set(growth, dissolve);
         table
@@ -155,30 +157,22 @@ impl DensityTable {
     }
 
     /// The density at a voxel with this fill-distance byte.
-    #[inline]
-    pub fn get(&self, byte: u8) -> f32 {
+    #[cfg(test)]
+    pub(crate) fn get(&self, byte: u8) -> f32 {
         self.values[byte as usize]
     }
 
     /// Every byte's density, by byte.
     #[inline]
-    pub fn values(&self) -> &[f32; 256] {
+    pub(crate) fn values(&self) -> &[f32; 256] {
         &self.values
-    }
-
-    pub fn growth(&self) -> f32 {
-        self.growth
-    }
-
-    pub fn dissolve(&self) -> f32 {
-        self.dissolve
     }
 
     /// Every byte from this one on has density 0: the growth front hasn't
     /// reached its distance yet, or the fade has eaten it. 0 when the cloud
     /// has no density at all.
     #[inline]
-    pub fn empty_from(&self) -> u8 {
+    pub(crate) fn empty_from(&self) -> u8 {
         self.empty_from
     }
 }
