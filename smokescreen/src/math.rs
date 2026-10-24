@@ -9,7 +9,7 @@
 use glam::{IVec3, Mat3, Vec3};
 
 #[inline]
-pub fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+pub(crate) fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
@@ -22,7 +22,7 @@ pub fn sin_cos(x: f32) -> (f32, f32) {
 
 /// Cube root, from `libm`: the same bits on every platform.
 #[inline]
-pub fn cbrt(x: f32) -> f32 {
+pub(crate) fn cbrt(x: f32) -> f32 {
     libm::cbrtf(x)
 }
 
@@ -54,12 +54,6 @@ fn hash3(c: IVec3, seed: u32) -> f32 {
     (h >> 8) as f32 / (1u32 << 24) as f32
 }
 
-/// Smooth 3D value noise in 0..1, seeded.
-pub fn value_noise(p: Vec3, seed: u32) -> f32 {
-    let i = p.floor();
-    value_noise_lerp(&value_noise_corners(i.as_ivec3(), seed), p - i)
-}
-
 /// The eight corner values of the lattice cell at `i` (x fastest).
 #[inline]
 pub(crate) fn value_noise_corners(i: IVec3, seed: u32) -> [f32; 8] {
@@ -85,7 +79,7 @@ pub(crate) fn value_noise_lerp(c: &[f32; 8], f: Vec3) -> f32 {
 }
 
 /// Rotation by `angle` radians about the unit vector `axis` (Rodrigues).
-pub fn rotation(axis: Vec3, angle: f32) -> Mat3 {
+pub(crate) fn rotation(axis: Vec3, angle: f32) -> Mat3 {
     let (s, c) = sin_cos(angle);
     let t = 1.0 - c;
     let a = axis;
@@ -122,7 +116,7 @@ pub(crate) fn safe_recip(d: Vec3) -> Vec3 {
 }
 
 /// Clip the segment `a..b` against a box. Returns `(t0, t1)` in 0..1.
-pub fn clip_segment(a: Vec3, b: Vec3, min: Vec3, max: Vec3) -> Option<(f32, f32)> {
+pub(crate) fn clip_segment(a: Vec3, b: Vec3, min: Vec3, max: Vec3) -> Option<(f32, f32)> {
     let (near, far) = slab(a, safe_recip(b - a), min, max);
     let near = near.max(0.0);
     let far = far.min(1.0);
@@ -131,7 +125,7 @@ pub fn clip_segment(a: Vec3, b: Vec3, min: Vec3, max: Vec3) -> Option<(f32, f32)
 
 /// Distance from `p` to the segment `a..b`.
 #[inline]
-pub fn distance_to_segment(p: Vec3, a: Vec3, b: Vec3) -> f32 {
+pub(crate) fn distance_to_segment(p: Vec3, a: Vec3, b: Vec3) -> f32 {
     let ab = b - a;
     let len2 = ab.length_squared();
     let t = if len2 > 1e-12 {

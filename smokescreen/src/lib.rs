@@ -27,6 +27,9 @@
 //! - **Units.** Positions, lengths and results are in the caller's units with
 //!   the caller's up axis ([`Units`]). Internally everything is metres, Y up,
 //!   which is also the frame renderers draw in.
+//! - **Renderers.** What a renderer reads (each cloud's state and shape at a
+//!   tick, in that internal frame) is public but left out of these docs:
+//!   it follows how `bevy_smokescreen` draws, and may change in any release.
 //!
 //! ## Determinism
 //!
@@ -65,32 +68,48 @@
 //! assert!(view.blocks_sight(eye, enemy));
 //! ```
 
-pub mod chords;
-pub mod facets;
-pub mod fill;
+#![warn(missing_docs)]
+
+// `grid`, `light` and `math` are hidden rather than private: the renderer
+// and the tests use their paths.
+mod chords;
+mod facets;
+mod fill;
+#[doc(hidden)]
 pub mod grid;
-pub mod holes;
-pub mod level;
+mod holes;
+mod level;
+#[doc(hidden)]
 pub mod light;
+#[doc(hidden)]
 pub mod math;
-pub mod timeline;
-pub mod units;
-pub mod volume;
+mod timeline;
+mod units;
+mod volume;
 mod world;
 
-pub use chords::{ChordField, CoreField, CrystalField};
-pub use facets::{FacetField, FacetLimits, FacetRule, FacetSettings, LivePuff, Polyhedron, Puff, ShapeMix};
-pub use fill::{CloudShape, Facets};
-pub use grid::Grid;
-pub use holes::{HoleKind, HoleSettings, HoleShape};
+pub use facets::{FacetLimits, FacetRule, FacetSettings, Polyhedron, ShapeMix};
+pub use fill::CloudShape;
+pub use holes::HoleSettings;
 pub use level::{BoxObstacles, FlatGround, Level, ObstacleBox, VoxelObstacles};
-pub use timeline::{DensityTable, Timeline};
+pub use timeline::Timeline;
 pub use units::{Units, UpAxis};
-pub use volume::{VolumeField, VolumeSteps};
-pub use world::{
-    CloudId, CloudInfo, CloudSource, CloudSpec, CloudState, CloudView, Config, Smokes, Style, Tuning, View, fill_cloud,
-};
+pub use volume::VolumeSteps;
+pub use world::{CloudId, CloudInfo, CloudSource, CloudSpec, Config, Smokes, Style, Tuning, View, fill_cloud};
 
+// What bevy_smokescreen reads to draw, and the tests to check: public, but
+// not part of the API. Each definition is `#[doc(hidden)]` too, as
+// `missing_docs` looks there, not at the re-export.
+#[doc(hidden)]
+pub use facets::{LivePuff, POP_OVERSHOOT};
+#[doc(hidden)]
+pub use fill::Facets;
+#[doc(hidden)]
+pub use holes::HoleShape;
+#[doc(hidden)]
+pub use world::{CloudState, CloudView};
+
+/// The glam this crate's API takes and returns vectors from.
 pub use glam;
 
 /// Runs the README's example as a doc test.

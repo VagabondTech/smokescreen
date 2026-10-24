@@ -286,7 +286,7 @@ fn walk_bins(
 /// polyhedron, if anywhere. Always inlined: it is the inner loop of the
 /// crystal rule, which called out of line runs 40 % slower in thin clouds.
 #[inline(always)]
-pub fn polyhedron_interval(p: &LivePuff, ro: Vec3, rd: Vec3) -> Option<(f32, f32)> {
+pub(crate) fn polyhedron_interval(p: &LivePuff, ro: Vec3, rd: Vec3) -> Option<(f32, f32)> {
     let r = p.radius;
     if r <= 0.0 {
         return None;
@@ -321,7 +321,7 @@ pub fn polyhedron_interval(p: &LivePuff, ro: Vec3, rd: Vec3) -> Option<(f32, f32
 
 /// Is `x` inside the puff's polyhedron?
 #[inline]
-pub fn inside_polyhedron(p: &LivePuff, x: Vec3) -> bool {
+pub(crate) fn inside_polyhedron(p: &LivePuff, x: Vec3) -> bool {
     if p.radius <= 0.0 {
         return false;
     }
@@ -403,14 +403,14 @@ fn capsule_interval(a: Vec3, b: Vec3, radius: f32, ro: Vec3, rd: Vec3) -> Option
 /// A crystal cloud at one tick: unblended polyhedra, holes already applied
 /// (they shrink whole puffs). Internal frame.
 #[derive(Clone, Copy, Debug)]
-pub struct CrystalField<'a> {
-    pub bins: &'a Bins,
-    pub live: &'a [LivePuff],
+pub(crate) struct CrystalField<'a> {
+    pub(crate) bins: &'a Bins,
+    pub(crate) live: &'a [LivePuff],
 }
 
 impl CrystalField<'_> {
     /// Is `p` inside any puff?
-    pub fn inside(&self, p: Vec3) -> bool {
+    pub(crate) fn inside(&self, p: Vec3) -> bool {
         let Some(c) = self.bins.cell_of(p) else {
             return false;
         };
@@ -425,7 +425,15 @@ impl CrystalField<'_> {
     /// than 64 separate stretches of the cloud, when it leaves the rest out:
     /// less, never more). Stops (and returns `true`) as soon as `stop(*acc)`
     /// holds.
-    pub fn amount(&self, ro: Vec3, rd: Vec3, t0: f32, t1: f32, acc: &mut f32, stop: &dyn Fn(f32) -> bool) -> bool {
+    pub(crate) fn amount(
+        &self,
+        ro: Vec3,
+        rd: Vec3,
+        t0: f32,
+        t1: f32,
+        acc: &mut f32,
+        stop: &dyn Fn(f32) -> bool,
+    ) -> bool {
         // Each puff's chord is one interval along the whole ray (polyhedra
         // are convex), found the first time a cell lists the puff, rather
         // than worked out again in every cell that lists it (three times as
@@ -458,15 +466,15 @@ impl CrystalField<'_> {
 /// every hole. Everything it counts is inside the drawn surface, so it never
 /// blocks a line the picture leaves clear. Internal frame.
 #[derive(Clone, Copy, Debug)]
-pub struct CoreField<'a> {
-    pub bins: &'a Bins,
-    pub live: &'a [LivePuff],
-    pub holes: &'a [HoleShape],
+pub(crate) struct CoreField<'a> {
+    pub(crate) bins: &'a Bins,
+    pub(crate) live: &'a [LivePuff],
+    pub(crate) holes: &'a [HoleShape],
 }
 
 impl CoreField<'_> {
     /// Is `p` inside any puff's core (and outside every hole)?
-    pub fn inside(&self, p: Vec3) -> bool {
+    pub(crate) fn inside(&self, p: Vec3) -> bool {
         let Some(c) = self.bins.cell_of(p) else {
             return false;
         };
@@ -484,7 +492,15 @@ impl CoreField<'_> {
     /// Add the length of `ro + rd·t`, `t0 ≤ t ≤ t1`, inside the cores to
     /// `acc`, a bin cell at a time. Stops (and returns `true`) as soon as
     /// `stop(*acc)` holds.
-    pub fn amount(&self, ro: Vec3, rd: Vec3, t0: f32, t1: f32, acc: &mut f32, stop: &dyn Fn(f32) -> bool) -> bool {
+    pub(crate) fn amount(
+        &self,
+        ro: Vec3,
+        rd: Vec3,
+        t0: f32,
+        t1: f32,
+        acc: &mut f32,
+        stop: &dyn Fn(f32) -> bool,
+    ) -> bool {
         let mut spans = [(0.0_f32, 0.0_f32); HOLE_BUFFER];
         let holes = hole_spans(self.holes, ro, rd, &mut spans);
         let mut iv = Intervals::new(holes);
@@ -519,11 +535,11 @@ impl CoreField<'_> {
 /// frame.
 #[derive(Clone, Copy, Debug)]
 pub struct ChordField<'a> {
-    pub bins: &'a Bins,
-    pub live: &'a [LivePuff],
+    pub(crate) bins: &'a Bins,
+    pub(crate) live: &'a [LivePuff],
     /// The puffs `live` was made from, in the same order (for their room).
-    pub puffs: &'a [Puff],
-    pub holes: &'a [HoleShape],
+    pub(crate) puffs: &'a [Puff],
+    pub(crate) holes: &'a [HoleShape],
 }
 
 impl ChordField<'_> {
@@ -557,7 +573,15 @@ impl ChordField<'_> {
 
     /// Add the length of `ro + rd·t`, `t0 ≤ t ≤ t1`, inside the cloud to
     /// `acc`. Stops (and returns `true`) as soon as `stop(*acc)` holds.
-    pub fn amount(&self, ro: Vec3, rd: Vec3, t0: f32, t1: f32, acc: &mut f32, stop: &dyn Fn(f32) -> bool) -> bool {
+    pub(crate) fn amount(
+        &self,
+        ro: Vec3,
+        rd: Vec3,
+        t0: f32,
+        t1: f32,
+        acc: &mut f32,
+        stop: &dyn Fn(f32) -> bool,
+    ) -> bool {
         let mut spans = [(0.0_f32, 0.0_f32); HOLE_BUFFER];
         let holes = hole_spans(self.holes, ro, rd, &mut spans);
         // Each puff's chord is one interval along the whole ray (the

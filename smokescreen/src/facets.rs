@@ -1,6 +1,6 @@
 //! The faceted and crystal styles: hard-edged, tumbling polyhedral puffs
 //! grown on the flood fill. Faceted puffs merge like metaballs; crystal puffs
-//! don't merge at all (see [`crate::chords`]).
+//! don't merge at all (see the `chords` module).
 //!
 //! The fill decides where smoke goes and when it gets there. Instead of a
 //! soft density, the cloud is a signed distance field (SDF) built from puffs:
@@ -63,13 +63,18 @@ const ICOSAHEDRON: [Vec3; 10] = [
 /// pair of opposite faces. The discriminants are the ids renderers use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Polyhedron {
+    /// Six square faces.
     Cube = 0,
+    /// Eight triangular faces.
     Octahedron = 1,
+    /// Twelve pentagonal faces.
     Dodecahedron = 2,
+    /// Twenty triangular faces.
     Icosahedron = 3,
 }
 
 impl Polyhedron {
+    #[doc(hidden)]
     pub fn face_normals(self) -> &'static [Vec3] {
         match self {
             Self::Cube => &CUBE,
@@ -80,6 +85,7 @@ impl Polyhedron {
     }
 
     /// Circumradius divided by inradius (how far corners stick out).
+    #[doc(hidden)]
     pub fn corner_ratio(self) -> f32 {
         match self {
             Self::Cube | Self::Octahedron => 1.732_051,
@@ -90,7 +96,7 @@ impl Polyhedron {
     /// Signed distance (exact inside, a tight lower bound near edges and
     /// corners) from local point `q` to the polyhedron with inradius `r`.
     #[inline]
-    pub fn sdf(self, q: Vec3, r: f32) -> f32 {
+    pub(crate) fn sdf(self, q: Vec3, r: f32) -> f32 {
         let mut g = 0.0_f32;
         for n in self.face_normals() {
             g = g.max(n.dot(q).abs());
@@ -112,8 +118,12 @@ pub enum ShapeMix {
 /// is built from fewer, bigger ones. Renderers size their buffers from it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FacetLimits {
+    /// Puffs per cloud.
     pub max_puffs: usize,
+    /// Cells of the grid that lists which puffs are near each point; the
+    /// cells grow if a cloud would need more.
     pub max_cells: usize,
+    /// Entries in those lists, every cell's added up.
     pub max_indices: usize,
 }
 
@@ -141,6 +151,7 @@ pub struct FacetSettings {
     pub taper: f32,
     /// Smooth-union radius. 0 = hard creases, ~0.3 m = metaballs.
     pub blend: f32,
+    /// Which polyhedra the puffs are.
     pub shapes: ShapeMix,
     /// Typical tumbling speed, radians per second.
     pub spin: f32,
@@ -149,6 +160,7 @@ pub struct FacetSettings {
     /// How far puffs may bulge past the filled voxels into open air. Keep it
     /// small: it is also how far smoke could reach around a door jamb.
     pub overhang: f32,
+    /// How many puffs a cloud may have, and how big their lookup may grow.
     pub limits: FacetLimits,
 }
 
@@ -166,12 +178,12 @@ pub enum FacetRule {
     /// see-through.
     Core,
     /// Between the two: each puff's hard polyhedron, kept clear of walls,
-    /// minus a generous bound on every hole ([`crate::ChordField`]). Exact
-    /// chords, with no tracing, at about the core rule's cost. Everything it
-    /// counts lies inside the drawn surface, so it never blocks a line the
-    /// picture leaves clear. Along a line through a grown cloud it counts
-    /// about two thirds of what the exact rule counts (the core rule about
-    /// three fifths); most of the rest is the blend between puffs.
+    /// minus a generous bound on every hole. Exact chords, with no tracing,
+    /// at about the core rule's cost. Everything it counts lies inside the
+    /// drawn surface, so it never blocks a line the picture leaves clear.
+    /// Along a line through a grown cloud it counts about two thirds of what
+    /// the exact rule counts (the core rule about three fifths); most of the
+    /// rest is the blend between puffs.
     Chords,
 }
 
@@ -202,7 +214,7 @@ impl FacetSettings {
 
     /// The same settings with every length passed through `f` (for unit
     /// conversions).
-    pub fn map_lengths(&self, f: impl Fn(f32) -> f32) -> Self {
+    pub(crate) fn map_lengths(&self, f: impl Fn(f32) -> f32) -> Self {
         Self {
             spacing: f(self.spacing),
             size: f(self.size),
@@ -213,7 +225,7 @@ impl FacetSettings {
     }
 
     /// Furthest any part of a puff can reach from its centre.
-    pub fn max_reach(&self) -> f32 {
+    pub(crate) fn max_reach(&self) -> f32 {
         let corner = match self.shapes {
             ShapeMix::Single(p) => p.corner_ratio(),
             // Octahedra in a mix are shrunk to the same reach as the others.
@@ -231,6 +243,7 @@ impl FacetSettings {
 }
 
 /// Peak scale of the pop-in animation.
+#[doc(hidden)]
 pub const POP_OVERSHOOT: f32 = 1.12;
 
 /// One puff, fixed for the cloud's lifetime. Internal frame (metres, Y up).
@@ -264,7 +277,7 @@ fn ease_out_back(x: f32) -> f32 {
 impl Puff {
     /// Seconds after the pop when this puff starts to pop in: when the
     /// volumetric style's growth front reaches it.
-    pub fn arrival_time(&self, timeline: &Timeline) -> f32 {
+    pub(crate) fn arrival_time(&self, timeline: &Timeline) -> f32 {
         let a = (self.arrival * crate::grid::FILLED_MAX / 1.2).clamp(0.0, 0.999);
         timeline.start + timeline.grow_time * (1.0 - crate::math::cbrt(1.0 - a))
     }
@@ -272,7 +285,7 @@ impl Puff {
     /// Inradius `age` seconds after the pop, given [`Self::arrival_time`]:
     /// pops in, then pops out (outer puffs first) during the fade. 0 when
     /// absent.
-    pub fn radius_at(&self, t_in: f32, age: f32, timeline: &Timeline, settings: &FacetSettings) -> f32 {
+    pub(crate) fn radius_at(&self, t_in: f32, age: f32, timeline: &Timeline, settings: &FacetSettings) -> f32 {
         let pop = settings.pop_time.max(1e-3);
         let x = (age - t_in) / pop;
         if x <= 0.0 {
@@ -287,12 +300,12 @@ impl Puff {
     }
 
     /// Orientation `age` seconds after the pop, as a world-to-local rotation.
-    pub fn to_local_at(&self, age: f32) -> Mat3 {
+    pub(crate) fn to_local_at(self, age: f32) -> Mat3 {
         rotation(self.axis, self.phase + self.spin * age).transpose()
     }
 
     /// The puff at one moment.
-    pub fn live(&self, t_in: f32, age: f32, timeline: &Timeline, settings: &FacetSettings) -> LivePuff {
+    pub(crate) fn live(&self, t_in: f32, age: f32, timeline: &Timeline, settings: &FacetSettings) -> LivePuff {
         let radius = self.radius_at(t_in, age, timeline, settings);
         LivePuff {
             center: self.center,
@@ -307,6 +320,7 @@ impl Puff {
 
 /// A puff as it is at one tick: what the SDF evaluates.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[doc(hidden)]
 pub struct LivePuff {
     pub center: Vec3,
     /// Inradius; 0 when absent. Crystal puffs also shrink out of the way of
@@ -319,7 +333,7 @@ pub struct LivePuff {
     pub ratio: f32,
     /// Radius of the core the faceted core rule counts: the inscribed sphere,
     /// kept clear of walls.
-    pub core: f32,
+    pub(crate) core: f32,
 }
 
 /// Uniform grid of puff lists, so an SDF evaluation only visits nearby puffs.
@@ -337,18 +351,18 @@ impl Bins {
     /// Bin puffs by their maximum reach (so bins stay valid while puffs grow,
     /// spin and shrink). Lists are in puff order, which keeps the smooth
     /// union identical across cell boundaries.
-    pub fn build(puffs: &[Puff], blend: f32, cell: f32) -> Self {
+    pub(crate) fn build(puffs: &[Puff], blend: f32, cell: f32) -> Self {
         let mut builder = BinBuilder::new(cell);
         while !builder.step(puffs, blend, usize::MAX) {}
         builder.finish()
     }
 
-    pub fn max(&self) -> Vec3 {
+    pub(crate) fn max(&self) -> Vec3 {
         self.min + self.dims.as_vec3() * self.cell
     }
 
     #[inline]
-    pub fn cell_of(&self, p: Vec3) -> Option<IVec3> {
+    pub(crate) fn cell_of(&self, p: Vec3) -> Option<IVec3> {
         let g = (p - self.min) / self.cell;
         if g.cmplt(Vec3::ZERO).any() {
             return None;
@@ -359,7 +373,7 @@ impl Bins {
     }
 
     #[inline]
-    pub fn list(&self, c: IVec3) -> &[u32] {
+    pub(crate) fn list(&self, c: IVec3) -> &[u32] {
         let (start, count) = self.ranges[(c.x + self.dims.x * (c.y + self.dims.y * c.z)) as usize];
         &self.indices[start as usize..(start + count) as usize]
     }
@@ -500,7 +514,7 @@ impl BinBuilder {
 /// Polynomial smooth minimum (exactly `min` when `a` and `b` differ by more
 /// than `k`). 1-Lipschitz, so the union stays a valid distance bound.
 #[inline]
-pub fn smin(a: f32, b: f32, k: f32) -> f32 {
+pub(crate) fn smin(a: f32, b: f32, k: f32) -> f32 {
     if k <= 0.0 {
         return a.min(b);
     }
@@ -509,7 +523,7 @@ pub fn smin(a: f32, b: f32, k: f32) -> f32 {
 }
 
 /// Hexagonal prism around the segment `a..b`, open at the ends.
-pub fn tunnel_sdf(p: Vec3, a: Vec3, b: Vec3, radius: f32) -> f32 {
+pub(crate) fn tunnel_sdf(p: Vec3, a: Vec3, b: Vec3, radius: f32) -> f32 {
     let ab = b - a;
     let len = ab.length().max(1e-6);
     let u = ab / len;
@@ -528,7 +542,7 @@ pub fn tunnel_sdf(p: Vec3, a: Vec3, b: Vec3, radius: f32) -> f32 {
 
 /// The hole's own SDF (negative inside the hole).
 #[inline]
-pub fn hole_sdf(p: Vec3, h: &HoleShape) -> f32 {
+pub(crate) fn hole_sdf(p: Vec3, h: &HoleShape) -> f32 {
     let r = h.radius * (h.strength * 1.5).min(1.0);
     if h.a == h.b {
         // Explosion: an icosahedral cavity.
@@ -539,7 +553,7 @@ pub fn hole_sdf(p: Vec3, h: &HoleShape) -> f32 {
 }
 
 /// Value returned for points with no puffs nearby.
-pub const FAR: f32 = 1e3;
+pub(crate) const FAR: f32 = 1e3;
 
 /// Below this distance (metres) from the surface the integrator evaluates real
 /// polyhedra; further away bounding spheres decide.
@@ -548,18 +562,18 @@ const NEAR_SURFACE: f32 = 0.2;
 const DEEP_INSIDE: f32 = 0.1;
 /// Smallest step of the integrator (metres): a boundary crossing is located
 /// to about this much.
-pub const MIN_STEP: f32 = 5e-3;
+pub(crate) const MIN_STEP: f32 = 5e-3;
 /// Iterations after which a segment is given up on and counted as cloud.
 const MAX_ITERATIONS: u32 = 4096;
 
 /// A faceted cloud at one tick, ready for SDF queries. Internal frame.
 #[derive(Clone, Copy, Debug)]
 pub struct FacetField<'a> {
-    pub grid: &'a Grid,
-    pub bins: &'a Bins,
-    pub live: &'a [LivePuff],
-    pub blend: f32,
-    pub holes: &'a [HoleShape],
+    pub(crate) grid: &'a Grid,
+    pub(crate) bins: &'a Bins,
+    pub(crate) live: &'a [LivePuff],
+    pub(crate) blend: f32,
+    pub(crate) holes: &'a [HoleShape],
 }
 
 impl FacetField<'_> {
@@ -684,22 +698,21 @@ impl FacetField<'_> {
         hop
     }
 
-    /// Outward surface normal at `p` (flat on facets).
-    pub fn normal(&self, p: Vec3) -> Vec3 {
-        let e = 0.004;
-        let dx = self.sdf(p + Vec3::X * e) - self.sdf(p - Vec3::X * e);
-        let dy = self.sdf(p + Vec3::Y * e) - self.sdf(p - Vec3::Y * e);
-        let dz = self.sdf(p + Vec3::Z * e) - self.sdf(p - Vec3::Z * e);
-        Vec3::new(dx, dy, dz).normalize_or(Vec3::Y)
-    }
-
     /// Add the length of the ray `ro + rd·t`, `t0 ≤ t ≤ t1`, that lies inside
     /// the cloud to `acc`, one interval at a time. Stops (and returns `true`)
     /// as soon as `stop(*acc)` holds. `rd` must be a unit vector.
     ///
     /// Each step is certified by the SDF (it is 1-Lipschitz), so no part of
     /// the cloud is skipped; boundaries are located to about [`MIN_STEP`].
-    pub fn amount(&self, ro: Vec3, rd: Vec3, t0: f32, t1: f32, acc: &mut f32, stop: &dyn Fn(f32) -> bool) -> bool {
+    pub(crate) fn amount(
+        &self,
+        ro: Vec3,
+        rd: Vec3,
+        t0: f32,
+        t1: f32,
+        acc: &mut f32,
+        stop: &dyn Fn(f32) -> bool,
+    ) -> bool {
         let inv = safe_recip(rd);
         let (b0, b1) = slab(ro, inv, self.bins.min, self.bins.max());
         let mut t = t0.max(b0);

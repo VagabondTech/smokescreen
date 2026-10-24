@@ -70,11 +70,10 @@ smokescreen = "0.2"
   can't test a point, answer with `is_blocked(point, half a voxel)`: smoke
   then stops up to half a voxel short of such walls.
 - Or fill on the server only (`fill_cloud`) and send the result to clients
-  (`Smokes::insert`). A shape sent field by field needs its grid's bricks
-  rebuilt on arrival if they weren't sent (`Grid::build_bricks`); its
-  front bounds and, for volumetric clouds, its sample cells
-  (`build_front_bounds`, `build_sample_cells`) make checks faster without
-  changing an answer.
+  (`Smokes::insert`). What a `CloudShape` holds is not part of the API yet,
+  so the server and its clients must run the same version of this crate
+  (as they must to agree anyway). `Smokes::insert` says what a shape sent
+  field by field needs rebuilt on arrival.
 
 ## Determinism
 

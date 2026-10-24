@@ -10,20 +10,20 @@ pub const EMPTY_VOXEL: u8 = 255;
 /// Filled voxels store their normalised fill distance in `0..=FILLED_MAX` (as
 /// a fraction of 255). The gap up to 1 (empty) gives trilinear filtering room
 /// to fade the boundary out.
-pub const FILLED_MAX: f32 = 0.8;
+pub(crate) const FILLED_MAX: f32 = 0.8;
 
 /// Region distances are stored in ±this many metres.
-pub const REGION_RANGE: f32 = 1.6;
+pub(crate) const REGION_RANGE: f32 = 1.6;
 
 /// Encode a signed distance (metres, negative inside) for the region channel.
 #[inline]
-pub fn encode_region(sdf: f32) -> u8 {
+pub(crate) fn encode_region(sdf: f32) -> u8 {
     ((sdf / REGION_RANGE).clamp(-1.0, 1.0) * 127.5 + 127.5).round() as u8
 }
 
 /// Decode a region value (0..1, as a renderer samples it) to metres.
 #[inline]
-pub fn decode_region(v: f32) -> f32 {
+pub(crate) fn decode_region(v: f32) -> f32 {
     (v * 2.0 - 1.0) * REGION_RANGE
 }
 
@@ -51,10 +51,10 @@ pub struct Grid {
     pub voxel_size: f32,
     pub dims: UVec3,
     /// Per voxel, x fastest then y then z: normalised fill distance × 255
-    /// (see [`FILLED_MAX`]), or [`EMPTY_VOXEL`].
+    /// (see `FILLED_MAX`), or [`EMPTY_VOXEL`].
     pub distance: Vec<u8>,
     /// Per voxel: signed distance to the fill plus its halo, encoded with
-    /// [`encode_region`]; 255 ("far outside") when no halo was requested.
+    /// `encode_region`; 255 ("far outside") when no halo was requested.
     /// Faceted puffs are clipped to it so they never poke through walls.
     pub region: Vec<u8>,
     /// Per voxel: [`occupancy`] values. Known for every voxel next to a
@@ -66,7 +66,7 @@ pub struct Grid {
     /// Bounds of the filled voxels, padded by one voxel.
     pub bounds_min: Vec3,
     pub bounds_max: Vec3,
-    /// Per brick of [`BRICK`]³ voxels: the smallest distance value in the
+    /// Per brick of `BRICK`³ voxels: the smallest distance value in the
     /// brick and one voxel around it, which is everything a trilinear sample
     /// inside the brick reads. [`EMPTY_VOXEL`] means the brick is empty, so
     /// queries skip it. Built by [`Grid::build_bricks`].
@@ -90,7 +90,7 @@ pub struct Grid {
 }
 
 /// Edge length of a brick, in voxels.
-pub const BRICK: u32 = 4;
+pub(crate) const BRICK: u32 = 4;
 
 /// Trilinearly filtered value (0..1) of a byte channel of a voxel grid, like a
 /// GPU's linear sampler with clamp-to-edge addressing.
@@ -362,12 +362,6 @@ impl Grid {
         (c.x + self.dims.x * (c.y + self.dims.y * c.z)) as usize
     }
 
-    /// Normalised distance at a voxel (1 = empty).
-    #[inline]
-    pub fn distance_at(&self, c: UVec3) -> f32 {
-        BYTE_TO_UNIT[self.distance[self.index(c)] as usize]
-    }
-
     /// Trilinearly filtered normalised distance, like a GPU's linear sampler
     /// with clamp-to-edge addressing, over the open voxels only: solid
     /// voxels don't take part, so smoke pressed against a wall or floor stays
@@ -405,7 +399,7 @@ impl Grid {
     /// Signed distance (metres) to the fill plus its halo, trilinearly
     /// filtered. Only meaningful when the fill had a halo.
     #[inline]
-    pub fn sample_region(&self, p: Vec3) -> f32 {
+    pub(crate) fn sample_region(&self, p: Vec3) -> f32 {
         decode_region(self.sample(&self.region, p))
     }
 
@@ -415,7 +409,7 @@ impl Grid {
     }
 
     /// Bricks per axis.
-    pub fn brick_dims(&self) -> UVec3 {
+    pub(crate) fn brick_dims(&self) -> UVec3 {
         (self.dims + BRICK - 1) / BRICK
     }
 
@@ -446,7 +440,7 @@ impl Grid {
 
     /// The brick a point falls in (clamped to the grid), with its bounds.
     #[inline]
-    pub fn brick_at(&self, p: Vec3) -> (usize, Vec3, Vec3) {
+    pub(crate) fn brick_at(&self, p: Vec3) -> (usize, Vec3, Vec3) {
         let size = self.voxel_size * BRICK as f32;
         let bd = self.brick_dims();
         let c = ((p - self.min) * (1.0 / size)).max(Vec3::ZERO).as_uvec3().min(bd - 1);

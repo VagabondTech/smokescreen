@@ -97,7 +97,9 @@ fn up_component(p: Vec3, up: UpAxis) -> f32 {
 /// An infinite ground plane: everything below `height` along the up axis.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FlatGround {
+    /// The plane's height along the up axis, in your units.
     pub height: f32,
+    /// Which axis is up.
     pub up: UpAxis,
 }
 
@@ -111,6 +113,7 @@ impl Default for FlatGround {
 }
 
 impl FlatGround {
+    /// Ground at `height` along the `up` axis.
     pub fn new(height: f32, up: UpAxis) -> Self {
         Self { height, up }
     }
@@ -143,11 +146,14 @@ impl Level for FlatGround {
 /// An axis-aligned box, stored as min/max corners.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ObstacleBox {
+    /// The corner with the smallest coordinates, in your units.
     pub min: Vec3,
+    /// The corner with the largest coordinates.
     pub max: Vec3,
 }
 
 impl ObstacleBox {
+    /// The box of size `size` centred on `center`.
     pub fn from_center_size(center: Vec3, size: Vec3) -> Self {
         Self {
             min: center - size * 0.5,
@@ -181,7 +187,9 @@ impl ObstacleBox {
 /// blockout levels with up to a few hundred boxes.
 #[derive(Clone, Debug, Default)]
 pub struct BoxObstacles {
+    /// The boxes, all solid.
     pub boxes: Vec<ObstacleBox>,
+    /// A ground plane under them, if any.
     pub ground: Option<FlatGround>,
 }
 
@@ -661,6 +669,7 @@ impl VoxelObstacles {
         })
     }
 
+    /// The size of its voxels, in the units it was built in.
     pub fn voxel_size(&self) -> f32 {
         self.voxel_size
     }
@@ -688,7 +697,7 @@ impl VoxelObstacles {
 /// Does the triangle touch the axis-aligned box? Separating axis test
 /// (Akenine-Möller): the box's three axes, the triangle's normal, and the
 /// nine cross products of their edges.
-pub fn triangle_overlaps_box(t: &[Vec3; 3], center: Vec3, half: Vec3) -> bool {
+pub(crate) fn triangle_overlaps_box(t: &[Vec3; 3], center: Vec3, half: Vec3) -> bool {
     let v = [t[0] - center, t[1] - center, t[2] - center];
     let edges = [v[1] - v[0], v[2] - v[1], v[0] - v[2]];
     let separated = |axis: Vec3| {

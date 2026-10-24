@@ -24,7 +24,7 @@ pub enum VolumeSteps {
 
 impl VolumeSteps {
     /// The distance between samples, for voxels `voxel_size` long.
-    pub fn step(self, voxel_size: f32) -> f32 {
+    pub(crate) fn step(self, voxel_size: f32) -> f32 {
         match self {
             Self::HalfVoxel => voxel_size * 0.5,
             Self::Voxel => voxel_size,
@@ -34,15 +34,15 @@ impl VolumeSteps {
 
 /// A volumetric cloud at one tick. Internal frame.
 #[derive(Clone, Copy, Debug)]
-pub struct VolumeField<'a> {
-    pub grid: &'a Grid,
+pub(crate) struct VolumeField<'a> {
+    pub(crate) grid: &'a Grid,
     /// The density of each fill-distance byte at this tick (the cloud's
     /// [`crate::CloudState::density`]).
-    pub density: &'a DensityTable,
-    pub holes: &'a [HoleShape],
+    pub(crate) density: &'a DensityTable,
+    pub(crate) holes: &'a [HoleShape],
     /// Distance between samples along a line, metres
     /// ([`VolumeSteps::step`] of the grid's voxel size).
-    pub step: f32,
+    pub(crate) step: f32,
 }
 
 impl VolumeField<'_> {
@@ -50,7 +50,7 @@ impl VolumeField<'_> {
     /// minus holes. The voxels' densities are interpolated, open voxels
     /// only (see [`Grid::sample_distance`]), as a renderer's sampler does
     /// with densities baked per voxel.
-    pub fn density(&self, p: Vec3) -> f32 {
+    pub(crate) fn density(&self, p: Vec3) -> f32 {
         self.density_near(&self.grid.sample_cells, self.density.empty_from().max(2), p)
     }
 
@@ -86,7 +86,15 @@ impl VolumeField<'_> {
     /// holds. Skips what reads nothing: the parts of the line outside the
     /// grid's front bounds, its empty bricks and, from the grid's sample
     /// cells, the samples whose eight voxels all have density 0.
-    pub fn amount(&self, ro: Vec3, rd: Vec3, t0: f32, t1: f32, acc: &mut f32, stop: &dyn Fn(f32) -> bool) -> bool {
+    pub(crate) fn amount(
+        &self,
+        ro: Vec3,
+        rd: Vec3,
+        t0: f32,
+        t1: f32,
+        acc: &mut f32,
+        stop: &dyn Fn(f32) -> bool,
+    ) -> bool {
         // Every byte from `empty_from` on has density 0. The cells store
         // bytes 0 and 1 alike, so only cells from 2 on read nothing.
         let zero_from = self.density.empty_from().max(2);
