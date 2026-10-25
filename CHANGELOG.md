@@ -108,6 +108,20 @@ so gas damage counted plain smoke too. `density_of(cloud, p)`, on `View`,
 the bit; in Bevy, `Smoke::cloud()` gives a smoke's `CloudId`. `llms.txt`'s
 gas damage recipe uses it. No results change.
 
+**Networked pops in Bevy.** A `Smoke` always popped on the current tick,
+so a cloud a client heard of late ran behind the server's all its life;
+clouds popped on `SmokeWorld` with the server's tick were drawn untinted,
+with no entity. `Smoke::from_spec(spec)` spawns exactly the cloud a server
+announced (its origin, pop tick and every rule, whatever the entity's
+position or the clock), with the entity's look and lifecycle.
+`Smoke::with_pop_tick(tick)` (the field `pop_tick`) pops a smoke at the
+tick of the event that threw it, for games where every machine spawns the
+same smoke. A smoke whose entity despawns when it is done now leaves its
+cloud in `SmokeWorld` for `Config::history_ticks` more, as the core keeps
+every cloud, so views of past ticks (lag compensation) still see it;
+despawning the entity sooner still removes the cloud at once. `llms.txt`'s
+multiplayer recipe uses `from_spec`. No results change.
+
 - **results** The volumetric rule works out density in the same order as
   the picture. A sample used to take the density of the distance
   interpolated between voxels, while the GPU bakes each voxel's density
