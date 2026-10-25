@@ -72,11 +72,12 @@ mod noise;
 mod obstacles;
 pub mod quality;
 mod render;
+mod setup;
 
 use std::sync::Arc;
 
 use bevy::{
-    asset::AssetEventSystems,
+    asset::{AssetEventSystems, AssetPlugin},
     camera::visibility::VisibilitySystems,
     ecs::system::SystemParam,
     light::{DirectionalLight, GlobalAmbientLight, PointLight},
@@ -102,6 +103,7 @@ pub use smokescreen::{
 };
 
 use render::{FrameFacet, FrameLight, FrameSlot, SlotUpload, SmokeFrame, SmokeUploads};
+use setup::{Mistake, SetupWarnings, shown};
 use smokescreen::light::{LightRays, visibility};
 
 /// What most apps use: `use bevy_smokescreen::prelude::*;`.
@@ -169,6 +171,12 @@ pub enum SmokeSystems {
 
 impl Plugin for SmokePlugin {
     fn build(&self, app: &mut App) {
+        // Without it the shaders can't be registered, and Bevy's own panic
+        // doesn't say why.
+        assert!(
+            app.is_plugin_added::<AssetPlugin>(),
+            "SmokePlugin needs Bevy's AssetPlugin, part of DefaultPlugins: add SmokePlugin after them, as in .add_plugins((DefaultPlugins, SmokePlugin::default()))."
+        );
         let world = Smokes::new(
             self.config.clone(),
             Arc::new(FlatGround::new(0.0, self.config.units.up)) as SharedLevel,
@@ -201,6 +209,7 @@ impl Plugin for SmokePlugin {
             .init_resource::<SmokeLighting>()
             .init_resource::<SmokeEntities>()
             .init_resource::<SmokeFrame>()
+            .init_resource::<SetupWarnings>()
             .init_resource::<crystal::CrystalClouds>()
             .init_resource::<obstacles::ObstacleBuild>()
             .add_message::<SmokeBullet>()
@@ -883,7 +892,6 @@ enum Light {
 #[derive(Resource, Default)]
 struct SlotTable {
     owners: Vec<Option<SlotOwner>>,
-    warned_full: bool,
 }
 
 struct SlotOwner {
@@ -919,13 +927,27 @@ impl SlotTable {
     }
 }
 
-/// Direction towards the smoke's sun, plus its colour times illuminance.
-fn find_sun(lights: &Query<(&DirectionalLight, &GlobalTransform, Has<SmokeSun>)>) -> Option<(Vec3, Vec3)> {
+/// The directional lights, and whether each is marked [`SmokeSun`].
+type DirectionalLights<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static DirectionalLight,
+        &'static GlobalTransform,
+        Has<SmokeSun>,
+    ),
+>;
+
+/// The smoke's sun: its entity, the direction towards it, and its colour
+/// times illuminance.
+fn find_sun(lights: &DirectionalLights) -> Option<(Entity, Vec3, Vec3)> {
     lights
         .iter()
-        .max_by_key(|(_, _, marked)| *marked)
-        .map(|(light, transform, _)| {
+        .max_by_key(|(_, _, _, marked)| *marked)
+        .map(|(entity, light, transform, _)| {
             (
+                entity,
                 transform.back().as_vec3(),
                 light.color.to_linear().to_vec3() * light.illuminance,
             )
@@ -976,7 +998,7 @@ fn pop_smokes(
     settings: Res<SmokeSettings>,
     level: Option<Res<SmokeLevel>>,
     obstacles: Res<obstacles::ObstacleBuild>,
-    mut warned: Local<bool>,
+    mut warnings: ResMut<SetupWarnings>,
 ) {
     // The first level built from marked meshes is on its way: wait for it.
     if level.is_none() && obstacles.pending() {
@@ -986,11 +1008,11 @@ fn pop_smokes(
         if smoke.cloud.is_some() {
             continue;
         }
-        if level.is_none() && !*warned {
-            *warned = true;
-            warn!(
-                "No SmokeLevel resource: smoke only knows a flat ground at height 0 and will pass through walls. Insert SmokeLevel with your level geometry before smokes pop."
-            );
+        if level.is_none() {
+            warnings.warn(Mistake::NoLevel, || {
+                "A smoke popped with no level: smoke only knows a flat ground at height 0 and passes through walls. Mark the level's meshes, floor included, with SmokeObstacle, or insert a SmokeLevel before smokes pop. For open ground on purpose, insert SmokeLevel(Arc::new(FlatGround::new(height, UpAxis::Y)))."
+                    .into()
+            });
         }
         let origin = transform.translation();
         let seed = smoke.seed.unwrap_or_else(|| CloudSpec::seed_from_origin(origin));
@@ -1008,6 +1030,11 @@ fn pop_smokes(
                 grow_time: smoke.grow_time.unwrap_or(base.grow_time),
                 ..base
             });
+        }
+        if !warnings.warned(Mistake::TooBig)
+            && let Some(message) = setup::misfit(&spec, &world)
+        {
+            warnings.warn(Mistake::TooBig, || message);
         }
         let id = world.pop(spec);
         smoke.cloud = Some(id);
@@ -1063,10 +1090,11 @@ fn retire_smokes(
 fn light_clouds(
     world: Res<SmokeWorld>,
     mut lighting: ResMut<SmokeLighting>,
-    lights: Query<(&DirectionalLight, &GlobalTransform, Has<SmokeSun>)>,
+    lights: DirectionalLights,
+    mut warnings: ResMut<SetupWarnings>,
 ) {
     let units = *world.units();
-    let sun = find_sun(&lights).map(|(dir, _)| dir);
+    let sun = find_sun(&lights).map(|(_, dir, _)| dir);
     let rays = LightRays {
         sun,
         sun_length: units.length_from_internal(60.0),
@@ -1076,6 +1104,15 @@ fn light_clouds(
         let Some(shape) = cloud.shape() else {
             continue;
         };
+        // The fill found nothing open to spread from.
+        if shape.grid.is_empty() {
+            warnings.warn(Mistake::InsideSolid, || {
+                format!(
+                    "A smoke popped inside solid level geometry at {}: nothing next to it is open, so its cloud is empty, isn't drawn and blocks nothing. Pop smokes in open air, on or just above the floor. If every smoke does this, check that the level's meshes face outwards (see SmokeObstacle).",
+                    shown(cloud.spec().origin)
+                )
+            });
+        }
         // Crystals are lit by Bevy's own renderer.
         if lighting.0.contains_key(&cloud.id()) || shape.is_empty() || cloud.spec().style == SmokeStyle::Crystal {
             continue;
@@ -1123,10 +1160,10 @@ fn build_frame(
     clock: Res<SmokeClock>,
     settings: Res<SmokeSettings>,
     config: Res<SmokeConfig>,
-    dir_lights: Query<(&DirectionalLight, &GlobalTransform, Has<SmokeSun>)>,
+    dir_lights: DirectionalLights,
     ambient: Option<Res<GlobalAmbientLight>>,
     mut last: Local<Option<(Vec3, u64)>>,
-    mut warned_holes: Local<bool>,
+    mut warnings: ResMut<SetupWarnings>,
 ) {
     let frame = frame.as_mut();
     frame.slots.clear();
@@ -1137,7 +1174,7 @@ fn build_frame(
     let units = config.units;
     let sun = find_sun(&dir_lights);
     frame.has_sun = sun.is_some();
-    if let Some((dir, color)) = sun {
+    if let Some((_, dir, color)) = sun {
         frame.sun_direction = units.dir_to_internal(dir);
         frame.sun_color = color * settings.sun_intensity;
     } else {
@@ -1179,7 +1216,15 @@ fn build_frame(
         .filter_map(|s| s.cloud.map(|id| (id, (s.tint.to_linear().to_vec3(), s.density))))
         .collect();
 
+    let max_clouds = world.config().tuning.max_clouds;
     let view = world.view(clock.drawn());
+    if view.uncounted() > 0 {
+        warnings.warn(Mistake::TooManyClouds, || {
+            format!(
+                "More smokes are alive than Tuning::max_clouds ({max_clouds}): the oldest stop counting, so they neither block sight nor are drawn until fewer are alive (a long-lived fog bank goes first). Raise max_clouds in SmokePlugin's Config if you need more at once: up to 32 volumetric or faceted smokes are drawn, crystal ones without a limit."
+            )
+        });
+    }
     // Free the slots of clouds no longer drawn.
     for owner in slots.owners.iter_mut() {
         if owner
@@ -1215,13 +1260,14 @@ fn build_frame(
                     layer
                 }
                 None => {
-                    if !slots.warned_full {
-                        slots.warned_full = true;
-                        warn!(
-                            "All {} smoke slots are in use; extra smokes are simulated but not drawn until a slot frees up. Raise Tuning::max_clouds (at most 32) if this is expected.",
-                            config.max_smokes
-                        );
-                    }
+                    // Only past 32: up to that, `max_clouds` keeps every
+                    // cloud that counts within the slots.
+                    warnings.warn(Mistake::SlotsFull, || {
+                        format!(
+                            "More than {} volumetric or faceted smokes count at once (Tuning::max_clouds is {max_clouds}): one that pops while all {} slots are taken isn't drawn until a slot frees, though it blocks sight. Keep max_clouds at {} or less, or use the crystal style for the rest.",
+                            config.max_smokes, config.max_smokes, config.max_smokes
+                        )
+                    });
                     continue;
                 }
             },
@@ -1246,13 +1292,14 @@ fn build_frame(
         // Every drawn smoke's holes share one array, oldest smoke first.
         let hole_start = frame.holes.len() as u32;
         let room = render::MAX_HOLES - frame.holes.len();
-        if state.holes.len() > room && !*warned_holes {
-            *warned_holes = true;
-            warn!(
-                "More than {} holes are open in the smokes drawn: the newest smokes' holes past that aren't drawn, though the rule counts them. Keep Tuning::max_holes_per_cloud × the smokes drawn at once (Tuning::max_clouds, at most 32) within {}.",
-                render::MAX_HOLES,
-                render::MAX_HOLES
-            );
+        if state.holes.len() > room {
+            warnings.warn(Mistake::TooManyHoles, || {
+                format!(
+                    "More than {} holes are open in the smokes drawn: the newest smokes' holes past that aren't drawn, though the rule counts them. Keep Tuning::max_holes_per_cloud × the smokes drawn at once (Tuning::max_clouds, at most 32) within {}.",
+                    render::MAX_HOLES,
+                    render::MAX_HOLES
+                )
+            });
         }
         frame.holes.extend(state.holes.iter().take(room));
         let hole_count = frame.holes.len() as u32 - hole_start;
@@ -1305,8 +1352,27 @@ fn build_frame(
             facet,
         });
     }
-    if slots.owners.iter().any(Option::is_none) {
-        slots.warned_full = false;
+
+    // Only volumetric and faceted smoke is lit by the sun picked here.
+    if !frame.slots.is_empty()
+        && !warnings.warned(Mistake::Sun)
+        && let Some((sun, ..)) = sun
+    {
+        let lights = dir_lights.iter().len();
+        let marked = dir_lights.iter().filter(|(.., marked)| *marked).count();
+        if marked > 1 {
+            warnings.warn(Mistake::Sun, || {
+                format!(
+                    "{marked} directional lights have SmokeSun; the smoke is lit by one of them ({sun}). Keep SmokeSun on one."
+                )
+            });
+        } else if marked == 0 && lights > 1 {
+            warnings.warn(Mistake::Sun, || {
+                format!(
+                    "{lights} directional lights and none has SmokeSun, so volumetric and faceted smoke is lit by one of them ({sun}), and which one can change. Add SmokeSun to the light that should light the smoke."
+                )
+            });
+        }
     }
 }
 
@@ -1398,6 +1464,11 @@ mod tests {
 
     /// A headless app with Bevy's own visibility systems: no window, no GPU.
     fn headless_app() -> App {
+        headless_app_with(SmokePlugin::default())
+    }
+
+    /// The same, with this plugin.
+    fn headless_app_with(plugin: SmokePlugin) -> App {
         use bevy::{
             log::LogPlugin,
             render::{RenderPlugin, settings::WgpuSettings},
@@ -1424,7 +1495,7 @@ mod tests {
                     exit_condition: ExitCondition::DontExit,
                     ..default()
                 }),
-            SmokePlugin::default(),
+            plugin,
         ))
         .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(50)));
         app.finish();
@@ -1712,5 +1783,216 @@ mod tests {
         assert_eq!(faults, Faults::default(), "over {counted} puff-frames the rule counted");
         let mut puffs = app.world_mut().query::<&CrystalPuff>();
         assert_eq!(puffs.iter(app.world()).count(), 0, "puffs left once the cloud is gone");
+    }
+
+    fn warned(app: &App, mistake: Mistake) -> bool {
+        app.world().resource::<SetupWarnings>().warned(mistake)
+    }
+
+    /// Run until volumetric or faceted smoke is ready to draw (a level from
+    /// meshes may still be on its way), then a few frames more.
+    fn run_until_drawn(app: &mut App) {
+        for _ in 0..1000 {
+            app.update();
+            if !app.world().resource::<SmokeFrame>().slots.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            !app.world().resource::<SmokeFrame>().slots.is_empty(),
+            "the smoke never popped"
+        );
+        for _ in 0..5 {
+            app.update();
+        }
+    }
+
+    /// Run until `mistake` is warned about, or a while.
+    fn run_until_warned(app: &mut App, mistake: Mistake) -> bool {
+        for _ in 0..500 {
+            app.update();
+            if warned(app, mistake) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        false
+    }
+
+    #[test]
+    fn the_quick_start_warns_of_nothing() {
+        let mut app = headless_app();
+        let world = app.world_mut();
+        world.spawn((
+            Camera3d::default(),
+            SmokeCamera::HIGH,
+            Transform::from_xyz(0.0, 1.7, -10.0).looking_at(Vec3::new(0.0, 1.0, 0.0), Vec3::Y),
+        ));
+        world.spawn((
+            DirectionalLight::default(),
+            SmokeSun,
+            Transform::from_xyz(-4.0, 10.0, -6.0).looking_at(Vec3::ZERO, Vec3::Y),
+        ));
+        let floor = world
+            .resource_mut::<Assets<Mesh>>()
+            .add(Plane3d::default().mesh().size(50.0, 50.0));
+        world.spawn((Mesh3d(floor), SmokeObstacle));
+        world.spawn((Smoke::grenade(), Transform::from_xyz(0.0, 0.0, 0.0)));
+        run_until_drawn(&mut app);
+        assert!(app.world().contains_resource::<SmokeLevel>());
+        assert!(app.world().resource::<SetupWarnings>().none());
+    }
+
+    #[test]
+    fn a_missing_smoke_camera_is_warned() {
+        let mut app = headless_app();
+        app.world_mut().spawn(Camera3d::default());
+        app.world_mut().spawn((Smoke::grenade(), Transform::default()));
+        run_until_drawn(&mut app);
+        assert!(warned(&app, Mistake::NoSmokeCamera));
+    }
+
+    #[test]
+    fn an_orthographic_smoke_camera_is_warned() {
+        let mut app = headless_app();
+        app.world_mut().spawn((
+            Camera3d::default(),
+            SmokeCamera::default(),
+            Projection::Orthographic(OrthographicProjection::default_3d()),
+        ));
+        app.world_mut().spawn((Smoke::grenade(), Transform::default()));
+        run_until_drawn(&mut app);
+        assert!(warned(&app, Mistake::Orthographic));
+        assert!(!warned(&app, Mistake::NoSmokeCamera));
+    }
+
+    /// Whether a smoke camera with `light` is warned about its ambient light.
+    fn ambient_warned(light: impl Bundle, ambient_override: Option<LinearRgba>) -> bool {
+        let mut app = headless_app();
+        app.world_mut().resource_mut::<SmokeSettings>().ambient_override = ambient_override;
+        app.world_mut()
+            .spawn((Camera3d::default(), SmokeCamera::default(), light));
+        app.world_mut().spawn((Smoke::grenade(), Transform::default()));
+        run_until_drawn(&mut app);
+        warned(&app, Mistake::CameraAmbient)
+    }
+
+    #[test]
+    fn a_smoke_camera_with_its_own_ambient_light_is_warned() {
+        use bevy::light::{AmbientLight, GeneratedEnvironmentMapLight};
+        assert!(ambient_warned(AmbientLight::default(), None));
+        assert!(ambient_warned(GeneratedEnvironmentMapLight::default(), None));
+        assert!(!ambient_warned(AmbientLight::default(), Some(LinearRgba::gray(0.2))));
+        assert!(!ambient_warned((), None));
+    }
+
+    /// Whether directional lights, marked or not, are warned about.
+    fn sun_warned(marked: &[bool]) -> bool {
+        let mut app = headless_app();
+        for &marked in marked {
+            let mut light = app.world_mut().spawn(DirectionalLight::default());
+            if marked {
+                light.insert(SmokeSun);
+            }
+        }
+        app.world_mut().spawn((Smoke::grenade(), Transform::default()));
+        run_until_drawn(&mut app);
+        warned(&app, Mistake::Sun)
+    }
+
+    #[test]
+    fn an_unclear_sun_is_warned() {
+        assert!(sun_warned(&[false, false]));
+        assert!(sun_warned(&[true, true]));
+        assert!(!sun_warned(&[false, true]));
+        assert!(!sun_warned(&[false]));
+        assert!(!sun_warned(&[]));
+    }
+
+    #[test]
+    fn a_smoke_with_no_level_is_warned() {
+        let mut app = headless_app();
+        app.world_mut().spawn((Smoke::grenade(), Transform::default()));
+        app.update();
+        assert!(warned(&app, Mistake::NoLevel));
+    }
+
+    #[test]
+    fn a_source_bigger_than_the_fill_grid_is_warned() {
+        // The fill grid is 14.4 × 14.4 across and 7.2 high by default, with
+        // 1.8 below the source.
+        for (smoke, too_big) in [
+            (Smoke::grenade(), false),
+            (Smoke::grenade().with_volume(2000.0), true),
+            (Smoke::fog_bank(Vec3::new(6.0, 1.5, 4.0)), false),
+            (Smoke::fog_bank(Vec3::new(8.0, 1.5, 4.0)), true),
+            (Smoke::fog_bank(Vec3::new(6.0, 2.0, 4.0)), true),
+            (Smoke::wall(Vec3::new(10.0, 0.0, 0.0)), false),
+            (Smoke::wall(Vec3::new(10.0, 0.0, 10.0)), false),
+            (Smoke::wall(Vec3::new(16.0, 0.0, 0.0)), true),
+        ] {
+            let mut app = headless_app();
+            let source = smoke.source;
+            app.world_mut().spawn((smoke, Transform::from_xyz(0.0, 1.5, 0.0)));
+            app.update();
+            assert_eq!(warned(&app, Mistake::TooBig), too_big, "{source:?}");
+        }
+    }
+
+    #[test]
+    fn a_smoke_inside_solid_geometry_is_warned() {
+        let mut app = headless_app();
+        let solid = BoxObstacles::new(vec![ObstacleBox::from_center_size(Vec3::ZERO, Vec3::splat(10.0))]);
+        app.insert_resource(SmokeLevel(Arc::new(solid)));
+        app.world_mut().spawn((Smoke::grenade(), Transform::default()));
+        assert!(run_until_warned(&mut app, Mistake::InsideSolid));
+        assert!(!warned(&app, Mistake::NoLevel));
+    }
+
+    #[test]
+    fn more_smokes_than_max_clouds_are_warned() {
+        let mut plugin = SmokePlugin::default();
+        plugin.config.tuning.max_clouds = 2;
+        let mut app = headless_app_with(plugin);
+        for k in 0..2 {
+            app.world_mut().spawn((
+                Smoke::grenade().with_seed(k + 1),
+                Transform::from_xyz(10.0 * k as f32, 0.0, 0.0),
+            ));
+        }
+        run_until_drawn(&mut app);
+        assert!(!warned(&app, Mistake::TooManyClouds));
+        app.world_mut()
+            .spawn((Smoke::grenade().with_seed(3), Transform::from_xyz(20.0, 0.0, 0.0)));
+        assert!(run_until_warned(&mut app, Mistake::TooManyClouds));
+    }
+
+    #[test]
+    fn obstacles_without_a_mesh_are_warned() {
+        let mut app = headless_app();
+        app.world_mut().spawn((SmokeObstacle, Transform::default()));
+        app.update();
+        assert!(warned(&app, Mistake::ObstacleWithoutMesh));
+    }
+
+    #[test]
+    fn an_obstacle_mesh_that_fails_to_load_is_warned() {
+        let mut app = headless_app();
+        let missing = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<Mesh>("missing.glb#Mesh0/Primitive0");
+        app.world_mut().spawn((Mesh3d(missing), SmokeObstacle));
+        app.world_mut().spawn((Smoke::grenade(), Transform::default()));
+        assert!(run_until_warned(&mut app, Mistake::MeshFailed));
+        // The smoke waits for the level.
+        assert!(app.world().resource::<SmokeFrame>().slots.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "SmokePlugin needs Bevy's AssetPlugin")]
+    fn smoke_plugin_needs_the_asset_plugin() {
+        App::new().add_plugins((MinimalPlugins, SmokePlugin::default()));
     }
 }

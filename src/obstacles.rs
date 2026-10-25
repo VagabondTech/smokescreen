@@ -12,12 +12,19 @@ use bevy::{
 };
 use smokescreen::VoxelObstacles;
 
-use crate::{SmokeConfig, SmokeLevel};
+use crate::{
+    SmokeConfig, SmokeLevel,
+    setup::{Mistake, SetupWarnings},
+};
 
 /// Marks static level geometry smoke flows around: walls, floors, crates.
 /// Put it on entities with a `Mesh3d` (the mesh data must stay in the main
 /// world, which is the default). The plugin voxelises every marked mesh into
 /// the [`SmokeLevel`](crate::SmokeLevel), so no collision code is needed.
+///
+/// It marks the entity's own mesh, not its children's. For a glTF level,
+/// add it to the scene's mesh entities once the scene has spawned (an
+/// observer for `WorldInstanceReady` on its `WorldAssetRoot`).
 ///
 /// Include the floor: without it smoke has nothing to rest on. For
 /// multiplayer, voxelise once and ship the result
@@ -37,7 +44,6 @@ pub struct SmokeObstacle;
 pub(crate) struct ObstacleBuild {
     task: Option<Task<Option<VoxelObstacles>>>,
     dirty: bool,
-    warned: bool,
 }
 
 impl ObstacleBuild {
@@ -50,15 +56,18 @@ impl ObstacleBuild {
 }
 
 /// Rebuild the level when marked meshes change; install it when done.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(crate) fn voxelise_obstacles(
     mut commands: Commands,
     mut build: ResMut<ObstacleBuild>,
     changed: Query<(), (With<SmokeObstacle>, Or<(Changed<GlobalTransform>, Changed<Mesh3d>)>)>,
     mut removed: RemovedComponents<SmokeObstacle>,
-    obstacles: Query<(&Mesh3d, &GlobalTransform), With<SmokeObstacle>>,
+    obstacles: Query<(Entity, &Mesh3d, &GlobalTransform), With<SmokeObstacle>>,
+    unmeshed: Query<Entity, (With<SmokeObstacle>, Without<Mesh3d>)>,
     meshes: Option<Res<Assets<Mesh>>>,
+    asset_server: Res<AssetServer>,
     config: Res<SmokeConfig>,
+    mut warnings: ResMut<SetupWarnings>,
 ) {
     if !changed.is_empty() || removed.read().count() > 0 {
         build.dirty = true;
@@ -75,20 +84,47 @@ pub(crate) fn voxelise_obstacles(
     if !build.dirty {
         return;
     }
+    if !warnings.warned(Mistake::ObstacleWithoutMesh)
+        && let Some(first) = unmeshed.iter().next()
+    {
+        let n = unmeshed.iter().len();
+        warnings.warn(Mistake::ObstacleWithoutMesh, || {
+            let which = if n == 1 {
+                format!("an entity without a Mesh3d ({first}), so it adds")
+            } else {
+                format!("{n} entities without a Mesh3d (the first: {first}), so they add")
+            };
+            format!(
+                "SmokeObstacle is on {which} nothing to the level. It marks an entity's own mesh, not its children's: for a glTF level, add it to the scene's mesh entities once the scene has spawned (an observer for WorldInstanceReady on its WorldAssetRoot)."
+            )
+        });
+    }
     let Some(meshes) = meshes else {
         return;
     };
     let mut triangles: Vec<[Vec3; 3]> = Vec::new();
-    for (mesh, transform) in &obstacles {
-        let Some(mesh) = meshes.get(&mesh.0) else {
-            // Still loading: try again next frame.
+    for (entity, handle, transform) in &obstacles {
+        let Some(mesh) = meshes.get(&handle.0) else {
+            // Still loading: try again next frame. One that failed never
+            // will, and keeps the level from being built.
+            if asset_server.load_state(handle.id()).is_failed() {
+                warnings.warn(Mistake::MeshFailed, || {
+                    let path = asset_server
+                        .get_path(handle.id())
+                        .map_or_else(|| "no path".into(), |p| p.to_string());
+                    format!(
+                        "A SmokeObstacle mesh failed to load ({path}, on {entity}), and the level is built only once every marked mesh has loaded: until then smokes wait for it (or keep the last level). Fix the asset, or take SmokeObstacle off that entity."
+                    )
+                });
+            }
             return;
         };
-        if !append_triangles(mesh, &transform.affine(), &mut triangles) && !build.warned {
-            build.warned = true;
-            warn!(
-                "A SmokeObstacle mesh has no triangle data in the main world (is it a triangle list, loaded with RenderAssetUsages::MAIN_WORLD?); smoke ignores it."
-            );
+        if !append_triangles(mesh, &transform.affine(), &mut triangles) {
+            warnings.warn(Mistake::MeshWithoutTriangles, || {
+                format!(
+                    "A SmokeObstacle mesh (on {entity}) has no triangle data in the main world (is it a triangle list, loaded with RenderAssetUsages::MAIN_WORLD?); smoke ignores it."
+                )
+            });
         }
     }
     build.dirty = false;
