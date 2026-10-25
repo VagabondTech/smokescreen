@@ -62,6 +62,10 @@
 //! }
 //! ```
 //!
+//! If a setup step is missing (no [`SmokeCamera`], no level, [`SmokeObstacle`]
+//! on an entity without a mesh, and so on), the plugin says so in the log,
+//! once, with the fix.
+//!
 //! The README in the repository root has a longer guide: presets, level
 //! setup, gameplay queries, networking and tuning.
 
@@ -372,7 +376,9 @@ pub struct SmokeSettings {
     /// Multiplier on ambient light.
     pub ambient_intensity: f32,
     /// Ambient radiance to use instead of [`GlobalAmbientLight`]. Set this when
-    /// your scene is lit by an environment map.
+    /// a smoke camera is lit by an environment map or its own
+    /// [`AmbientLight`] (the plugin warns): the smoke's lighting is the same
+    /// for every camera.
     pub ambient_override: Option<LinearRgba>,
     /// Strength of the multiple-scattering approximation. 0 is single
     /// scattering only, which looks too dark; around 1 the sunlit side reads
@@ -503,8 +509,9 @@ pub struct SmokeLevel(
     pub SharedLevel,
 );
 
-/// Marks the directional light that lights smoke. Without it the first
-/// directional light found is used.
+/// Marks the directional light that lights volumetric and faceted smoke.
+/// Without it, the only directional light is used; with several, mark one
+/// (the plugin warns if none or more than one is marked).
 #[derive(Component, Default, Clone, Copy, Debug)]
 pub struct SmokeSun;
 
@@ -530,6 +537,10 @@ pub struct SmokeExplosion {
 
 /// Add to any `Camera3d` that should see smoke. Holds the camera's
 /// performance dial.
+///
+/// Volumetric and faceted smoke is drawn only through cameras with it, and
+/// only perspective ones; the plugin warns if no active camera has it, or if
+/// one is orthographic. Crystal smoke is plain meshes, drawn by any camera.
 ///
 /// ```no_run
 /// # use bevy_smokescreen::prelude::*;

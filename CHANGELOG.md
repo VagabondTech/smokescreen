@@ -66,6 +66,31 @@ Hidden items are not part of the API and may change in any release, so
   VOLUMETRIC_RELATIVE_COST}`, and `SmokeWorld`'s field (it derefs to
   `Smokes`, as before).
 
+**The plugin names common setup mistakes.** Each is logged once, with
+what to do, and costs nothing per frame:
+
+- no active camera has `SmokeCamera`, so volumetric and faceted smoke
+  isn't drawn; or a `SmokeCamera` is orthographic;
+- `SmokeObstacle` on an entity without a mesh, such as a glTF scene's
+  root (it marks only an entity's own mesh); a marked mesh that failed to
+  load, which keeps smokes waiting for the level;
+- several directional lights and none marked `SmokeSun` (or more than
+  one); a smoke camera lit by its own `AmbientLight` or an environment
+  map while `SmokeSettings::ambient_override` is unset;
+- a smoke popped inside solid level geometry, whose cloud is empty; a
+  `Line` or `Box` source, or a volume, bigger than the fill grid; more
+  smokes alive than `Tuning::max_clouds`, which leaves the oldest out;
+- `SmokePlugin` added before Bevy's `DefaultPlugins`: a panic that says
+  so, where Bevy's own panic named a missing resource.
+
+The warning for a smoke popped with no level now names `SmokeObstacle`
+first, and `FlatGround` for open ground on purpose; those for full slots
+and for `budget_ms` without GPU timings fire once per app and say more
+about the fix. On a device without compute shaders (WebGL2) the game now
+keeps running, with crystal smoke and the simulation, and the log says
+why volumetric and faceted smoke isn't drawn; before, the smoke's GPU
+setup failed wgpu's validation and Bevy quit. No results change.
+
 - **results** The volumetric rule works out density in the same order as
   the picture. A sample used to take the density of the distance
   interpolated between voxels, while the GPU bakes each voxel's density
