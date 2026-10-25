@@ -55,7 +55,7 @@ bevy_smokescreen = "0.1"
 |---|---|---|
 | 0.1 | 0.20 | 1.97.1 |
 
-Smoke needs compute shaders: native (Vulkan, Metal, DX12) or WebGPU, not WebGL2.
+Smoke needs compute shaders: native (Vulkan, Metal, DX12) or WebGPU, not WebGL2. On WebGL2 the game still runs, with crystal smoke only, and the log says why.
 
 ```rust,no_run
 use bevy::prelude::*;
@@ -100,6 +100,8 @@ fn bot_vision(mut vision: SmokeVision) {
 ```
 
 `examples/minimal.rs` is the same with bullets, explosions and a level made of boxes instead of meshes.
+
+If a setup step is missing, the plugin says so in the log, once, with the fix: no camera with `SmokeCamera`, no level, `SmokeObstacle` on an entity without a mesh (a glTF scene's root: put it on the scene's meshes), several directional lights and no `SmokeSun`, an orthographic camera, more smokes than `Tuning::max_clouds`, a source bigger than the fill grid, and a few more.
 
 The API is documented on docs.rs: [`bevy_smokescreen`](https://docs.rs/bevy_smokescreen), and [`smokescreen`](https://docs.rs/smokescreen) for the engine-free core.
 
@@ -306,7 +308,7 @@ From a clone of the repository, run one with `cargo run --release --example pres
 - A first-person weapon needs its own camera to stay visible inside smoke (see `viewmodel`).
 - Transparent (alpha-blended) objects behind or inside volumetric or faceted smoke draw over it at full strength, so a tracer, a muzzle-flash sprite or particles behind a smoke show through it: Bevy draws them after the smoke, which writes no depth. Opaque and alpha-masked (`AlphaMode::Mask`) objects are hidden as they should be, crystal smoke hides everything behind it, and transparent objects in front of a smoke draw over it as they should. For effects that must stay hidden, use one of those, or hide them where the rule blocks the line from the camera (`SmokeVision::blocks_sight`).
 - Volumetric and faceted smoke are lit by one directional light and up to eight point lights at a time (unshadowed; the brightest of those whose range reaches both a smoke and a camera's view); spot lights don't light them yet. Crystal smoke takes any Bevy light.
-- Orthographic cameras aren't supported.
+- Orthographic cameras aren't supported: volumetric and faceted smoke aren't drawn through them (the log says so); crystal smoke is.
 - Clouds don't drift with wind, and doors closing on a smoke don't re-shape it.
 - Smoke fills right up to walls and floors at least a voxel thick (0.3 m by default), wherever they sit on the voxel grid. Against thinner walls it stops at the middle of the first voxel they reach into, so up to about half a voxel can stay clear in front of them, and as much can show past them; picture and rule agree. Level meshes (`SmokeObstacle`) need triangles facing outwards for this, as Bevy's shapes do; against a mesh facing inwards, or a wall made of a single vertical sheet, smoke stops up to half a voxel short. A single sheet facing up (a `Plane3d`, say) counts as ground, solid underneath, so up to a voxel of smoke can show beneath a raised floor made of one: use a box for floors with open air below.
 - Faceted smoke is experimental. It costs 20–40 times what volumetric smoke costs to draw (13 times far away), and bullet tunnels make it about three times dearer again: one faceted smoke with 16 tunnels takes about 83 ms close up at the best step on an Apple M4. At the dial's cheaper steps, tunnel mouths you can see right through come out a few pixels wider than at the best step, so a player there sees slightly more through them than one at the best.
