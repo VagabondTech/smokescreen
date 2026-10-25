@@ -22,6 +22,7 @@
 
 use bevy::{
     diagnostic::{DiagnosticPath, DiagnosticsStore},
+    light::{AmbientLight, AtmosphereEnvironmentMapLight, EnvironmentMapLight, GeneratedEnvironmentMapLight},
     platform::time::Instant,
     prelude::*,
     render::{RenderApp, extract_component::ExtractComponent},
@@ -31,6 +32,7 @@ use crate::{
     SmokeCamera, SmokeResolution,
     noise::NOISE_SIZE,
     render::{MeasuredDepths, SmokeFrame},
+    setup::{Mistake, SetupWarnings},
 };
 
 /// Number of steps on the dial.
@@ -293,7 +295,6 @@ pub(crate) struct BudgetController {
     tier: Option<usize>,
     climb_frames: u32,
     last_seen: [Option<Instant>; PASS_COUNT],
-    pub(crate) warned: bool,
 }
 
 impl Default for BudgetController {
@@ -309,7 +310,6 @@ impl Default for BudgetController {
             tier: None,
             climb_frames: 0,
             last_seen: [None; PASS_COUNT],
-            warned: false,
         }
     }
 }
@@ -648,19 +648,76 @@ pub(crate) fn depth_percentile(histogram: &[u32], bin: f32) -> Option<f32> {
     Some(histogram.len() as f32 * bin)
 }
 
+/// A smoke camera's own ambient light: an [`AmbientLight`], or an
+/// environment map.
+type CameraAmbient = Or<(
+    With<AmbientLight>,
+    With<EnvironmentMapLight>,
+    With<GeneratedEnvironmentMapLight>,
+    With<AtmosphereEnvironmentMapLight>,
+)>;
+
 /// Picks every smoke camera's tier for this frame.
+#[allow(clippy::type_complexity)]
 pub(crate) fn update_smoke_quality(
-    mut cameras: Query<(Entity, &SmokeCamera, &mut SmokeQuality, &Camera, &GlobalTransform)>,
+    mut cameras: Query<(
+        Entity,
+        &SmokeCamera,
+        &mut SmokeQuality,
+        &Camera,
+        &GlobalTransform,
+        Option<&Projection>,
+    )>,
+    other_cameras: Query<&Camera, (With<Camera3d>, Without<SmokeCamera>)>,
+    lit_cameras: Query<(Entity, Has<AmbientLight>), (With<SmokeCamera>, CameraAmbient)>,
     frame: Res<SmokeFrame>,
     diagnostics: Option<Res<DiagnosticsStore>>,
     depths: Option<Res<MeasuredDepths>>,
+    mut warnings: ResMut<SetupWarnings>,
 ) {
+    // Volumetric or faceted smoke is ready to draw: what only those need.
+    let drawn = !frame.slots.is_empty();
+    if drawn
+        && !warnings.warned(Mistake::NoSmokeCamera)
+        && !cameras.iter().any(|(.., camera, _, _)| camera.is_active)
+        && other_cameras.iter().any(|camera| camera.is_active)
+    {
+        warnings.warn(Mistake::NoSmokeCamera, || {
+            "No active camera has SmokeCamera, so volumetric and faceted smoke isn't drawn. Add SmokeCamera to the Camera3d that should see smoke: commands.spawn((Camera3d::default(), SmokeCamera::default())). Crystal smoke is plain meshes and needs nothing."
+                .into()
+        });
+    }
+    if drawn
+        && frame.settings.ambient_override.is_none()
+        && !warnings.warned(Mistake::CameraAmbient)
+        && let Some((camera, own)) = lit_cameras.iter().next()
+    {
+        warnings.warn(Mistake::CameraAmbient, || {
+            if own {
+                format!(
+                    "The camera {camera} has its own AmbientLight, but volumetric and faceted smoke are lit by GlobalAmbientLight, the same for every camera. Set SmokeSettings::ambient_override to the camera's ambient (its colour times its brightness) to match."
+                )
+            } else {
+                format!(
+                    "The camera {camera} is lit by an environment map, but volumetric and faceted smoke take their ambient light from GlobalAmbientLight, so they can look much darker or brighter than the scene. Set SmokeSettings::ambient_override to about the environment map's average radiance."
+                )
+            }
+        });
+    }
+
     let mut depth_logs = depths.as_ref().map(|d| d.0.lock().unwrap());
     // The internal frame's metres per world unit.
     let scale = frame.internal_from_world.x_axis.truncate().length();
-    for (entity, settings, mut quality, camera, transform) in &mut cameras {
+    for (entity, settings, mut quality, camera, transform, projection) in &mut cameras {
         let quality = quality.as_mut();
         let max_tier = tier_from_quality(settings.quality);
+        if drawn && matches!(projection, Some(Projection::Orthographic(_))) {
+            warnings.warn(Mistake::Orthographic, || {
+                format!(
+                    "SmokeCamera is on an orthographic camera ({entity}), and volumetric and faceted smoke is drawn only through perspective cameras. Use a perspective projection there, or the crystal style, which any camera draws."
+                )
+            });
+        }
 
         // Coverage of each style on this camera (smoke data is in the core's
         // internal frame).
@@ -738,11 +795,11 @@ pub(crate) fn update_smoke_quality(
                 quality.predicted_ms = quality.controller.predict(coverage, max_tier);
             }
             Some(budget) => {
-                if !any_path && quality.coverage > 0.0 && !quality.controller.warned {
-                    quality.controller.warned = true;
-                    warn!(
-                        "SmokeCamera::budget_ms needs GPU timings: add bevy::render::diagnostic::RenderDiagnosticsPlugin (and a GPU with timestamp queries). Until timings arrive the dial holds a cautious tier."
-                    );
+                if !any_path && quality.coverage > 0.0 {
+                    warnings.warn(Mistake::NoTimings, || {
+                        "SmokeCamera::budget_ms needs GPU timings: add bevy::render::diagnostic::RenderDiagnosticsPlugin, on a backend with timestamp queries (Vulkan or DX12; Bevy can't read them through WebGPU, and they have lost the Metal device on an Apple M4). Until timings arrive the dial holds a cautious step."
+                            .into()
+                    });
                 }
                 quality.tier = quality.controller.update(&BudgetInputs {
                     budget_ms: budget,

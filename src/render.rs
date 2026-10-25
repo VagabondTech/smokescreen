@@ -49,7 +49,7 @@ use bevy::{
             },
             *,
         },
-        renderer::{RenderContext, RenderDevice, RenderGraph, RenderQueue, ViewQuery},
+        renderer::{RenderAdapter, RenderContext, RenderDevice, RenderGraph, RenderQueue, ViewQuery},
         sync_world::MainEntity,
         texture::{CachedTexture, TextureCache},
         view::{ExtractedView, Msaa, ViewDepthStencilTexture, ViewTarget},
@@ -803,7 +803,8 @@ pub(crate) fn build(app: &mut App, config: SmokeConfig, uploads: SmokeUploads) {
             (
                 enable_depth_sampling
                     .in_set(RenderSystems::Prepare)
-                    .before(prepare_core_3d_depth_textures),
+                    .before(prepare_core_3d_depth_textures)
+                    .run_if(resource_exists::<SmokeGpu>),
                 (prepare_smoke, prepare_smoke_views)
                     .chain()
                     .in_set(RenderSystems::PrepareResources),
@@ -821,16 +822,61 @@ pub(crate) fn build(app: &mut App, config: SmokeConfig, uploads: SmokeUploads) {
         );
 }
 
-pub(crate) fn finish(_app: &mut App) {}
+pub(crate) fn finish(app: &mut App) {
+    // `build` found no render world: Bevy's RenderPlugin came later.
+    if app
+        .get_sub_app(RenderApp)
+        .is_some_and(|render_app| !render_app.world().contains_resource::<SmokeRenderState>())
+    {
+        warn!(
+            "SmokePlugin was added before Bevy's RenderPlugin, so smoke is simulated but never drawn. Add SmokePlugin after DefaultPlugins."
+        );
+    }
+}
 
+/// The most storage textures and storage buffers one of the smoke's
+/// shaders binds (the march, and the faceted passes).
+const STORAGE_TEXTURES: u32 = 2;
+const STORAGE_BUFFERS: u32 = 4;
+
+/// Whether a device can run the smoke's compute shaders: WebGL2 can't, nor
+/// can Bevy's `WgpuSettingsPriority::WebGL2` limits, which zero the
+/// compute limits on any GPU (Bevy's own test).
+fn compute_supported(flags: DownlevelFlags, limits: &WgpuLimits) -> bool {
+    flags.contains(DownlevelFlags::COMPUTE_SHADERS)
+        && limits.max_compute_workgroup_size_x > 0
+        && limits.max_storage_textures_per_shader_stage >= STORAGE_TEXTURES
+        && limits.max_storage_buffers_per_shader_stage >= STORAGE_BUFFERS
+}
+
+/// The device can't run the smoke's compute shaders: there are no smoke
+/// passes, and what the main world uploads is dropped.
+#[derive(Resource)]
+struct NoCompute;
+
+#[allow(clippy::too_many_arguments)]
 fn init_smoke_gpu(
     mut commands: Commands,
+    adapter: Res<RenderAdapter>,
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
     config: Res<SmokeConfig>,
     noise: Res<NoiseData>,
     mut generation: Local<u32>,
+    mut warned: Local<bool>,
 ) {
+    if !compute_supported(adapter.get_downlevel_capabilities().flags, &device.limits()) {
+        if !*warned {
+            *warned = true;
+            warn!(
+                "The GPU device ({:?}) offers no compute shaders, so volumetric and faceted smoke isn't drawn; crystal smoke and the simulation still work. WebGL2 has none: in a browser, build with WebGPU (bevy_smokescreen's \"webgpu\" feature).",
+                adapter.get_info().backend
+            );
+        }
+        commands.insert_resource(NoCompute);
+        return;
+    }
+    commands.remove_resource::<NoCompute>();
     let dims = config.grid_dims;
     let atlas_size = Extent3d {
         width: dims.x,
@@ -950,7 +996,17 @@ fn init_smoke_gpu(
     });
 }
 
-fn init_smoke_pipelines(mut commands: Commands, asset_server: Res<AssetServer>, pipeline_cache: Res<PipelineCache>) {
+fn init_smoke_pipelines(
+    mut commands: Commands,
+    adapter: Res<RenderAdapter>,
+    device: Res<RenderDevice>,
+    asset_server: Res<AssetServer>,
+    pipeline_cache: Res<PipelineCache>,
+) {
+    // Creating them would fail validation, which makes Bevy quit.
+    if !compute_supported(adapter.get_downlevel_capabilities().flags, &device.limits()) {
+        return;
+    }
     let bake_density_layout = BindGroupLayoutDescriptor::new(
         "smoke_bake_density_layout",
         &BindGroupLayoutEntries::with_indices(
@@ -1272,8 +1328,16 @@ fn upload_grid(
 ) {
     let dims = config.grid_dims;
     let grid = &shape.grid;
-    if grid.dims != dims || layer >= config.max_smokes {
-        warn!("Smoke grid {:?} doesn't fit atlas layer {layer}", grid.dims);
+    if grid.dims != dims {
+        warn_once!(
+            "A cloud's grid ({}) isn't the size this plugin's Tuning::grid_dims gives ({}), so it isn't drawn, though it blocks sight: it was filled with another Tuning (SmokeWorld::insert?). Fill clouds with the plugin's Config.",
+            grid.dims,
+            dims
+        );
+        return;
+    }
+    if layer >= config.max_smokes {
+        warn!("Smoke grid doesn't fit atlas layer {layer}");
         return;
     }
     let write = |texture: &Texture, texels: &[u8], bytes_per_texel: u32| {
@@ -1311,7 +1375,9 @@ fn upload_facets(queue: &RenderQueue, gpu: &SmokeGpu, config: &SmokeConfig, laye
     let bins = &facets.bins;
     let limits = config.facet_limits;
     if bins.ranges.len() > limits.max_cells || bins.indices.len() > limits.max_indices {
-        warn!("Faceted smoke bins don't fit slot {layer}");
+        warn_once!(
+            "A faceted cloud's puff bins don't fit this plugin's buffers, so it isn't drawn, though it blocks sight: it was filled with another Tuning (SmokeWorld::insert?). Fill clouds with the plugin's Config."
+        );
         return;
     }
     let cells: Vec<u32> = bins.ranges.iter().flat_map(|&(start, count)| [start, count]).collect();
@@ -1340,12 +1406,17 @@ fn upload_layer(queue: &RenderQueue, gpu: &SmokeGpu, config: &SmokeConfig, layer
 fn prepare_smoke(
     frame: Res<SmokeFrame>,
     gpu: Option<ResMut<SmokeGpu>>,
+    no_compute: Option<Res<NoCompute>>,
     mut state: ResMut<SmokeRenderState>,
     config: Res<SmokeConfig>,
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
 ) {
     let Some(mut gpu) = gpu else {
+        // Nothing is ever drawn, so nothing is kept.
+        if no_compute.is_some() {
+            state.pending_uploads.clear();
+        }
         return;
     };
     let state = state.as_mut();
@@ -2436,6 +2507,16 @@ fn read_back_depths(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn webgl2_has_no_compute_for_smoke() {
+        let all = DownlevelFlags::all();
+        assert!(!compute_supported(all, &WgpuLimits::downlevel_webgl2_defaults()));
+        assert!(!compute_supported(DownlevelFlags::empty(), &WgpuLimits::default()));
+        // WebGPU's limits, and the lowest wgpu has with compute shaders.
+        assert!(compute_supported(all, &WgpuLimits::default()));
+        assert!(compute_supported(all, &WgpuLimits::downlevel_defaults()));
+    }
 
     fn rect(r: [f32; 4]) -> (Vec2, Vec2) {
         (Vec2::new(r[0], r[1]), Vec2::new(r[2], r[3]))

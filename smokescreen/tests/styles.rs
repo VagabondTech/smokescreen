@@ -400,11 +400,14 @@ fn max_clouds_keeps_the_newest() {
     let view = smokes.view(5 * 128);
     let counted: Vec<CloudId> = view.clouds().map(|c| c.state.id).collect();
     assert_eq!(counted, ids[2..].to_vec());
+    assert_eq!(view.uncounted(), 2);
     // The oldest is there, but no longer blocks.
     let (a, b) = (Vec3::new(0.0, 1.0, -9.0), Vec3::new(0.0, 1.0, 9.0));
     assert_eq!(view.occlusion(a, b), 0.0);
     let (a, b) = (Vec3::new(80.0, 1.0, -9.0), Vec3::new(80.0, 1.0, 9.0));
     assert!(view.occlusion(a, b) > 1.0);
+    // Before the third pop, every cloud counts.
+    assert_eq!(smokes.view(20).uncounted(), 0);
 }
 
 /// Clouds popped on the same tick give the same answers whatever order the

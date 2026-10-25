@@ -404,6 +404,8 @@ struct Snapshot {
     stamp: u64,
     len: usize,
     states: Vec<CloudState>,
+    /// Clouds present past [`Tuning::max_clouds`], left out (the oldest).
+    uncounted: usize,
     /// A faceted cloud is present whose puffs are big enough for the chord
     /// bounds to be worth trying (see `View::facet_bounds`).
     facets_to_bound: bool,
@@ -872,6 +874,7 @@ impl<L: Level> Smokes<L> {
                 stamp: 0,
                 len: 0,
                 states: Vec::new(),
+                uncounted: 0,
                 facets_to_bound: false,
                 broad: BroadPhase::default(),
             });
@@ -958,6 +961,7 @@ impl<L: Level> Smokes<L> {
                 c.id,
             )
         });
+        snap.uncounted = snap.len.saturating_sub(max_clouds);
         if snap.len > max_clouds {
             states.rotate_left(snap.len - max_clouds);
             snap.len = max_clouds;
@@ -978,6 +982,7 @@ impl<L: Level> Smokes<L> {
         View {
             tick,
             states: &snap.states[..snap.len],
+            uncounted: snap.uncounted,
             clouds: &self.clouds,
             config: &self.config,
             facets_to_bound: snap.facets_to_bound,
@@ -1256,6 +1261,7 @@ impl<'a> CloudInfo<'a> {
 pub struct View<'a> {
     tick: u64,
     states: &'a [CloudState],
+    uncounted: usize,
     clouds: &'a [Cloud],
     config: &'a Config,
     facets_to_bound: bool,
@@ -1348,6 +1354,13 @@ impl<'a> View<'a> {
     /// The tick it shows.
     pub fn tick(&self) -> u64 {
         self.tick
+    }
+
+    /// How many clouds present at this tick it leaves out, past
+    /// [`Tuning::max_clouds`]: the oldest, which neither count nor are drawn.
+    #[doc(hidden)]
+    pub fn uncounted(&self) -> usize {
+        self.uncounted
     }
 
     /// The clouds present at this tick (started and not yet gone).
