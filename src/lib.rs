@@ -67,7 +67,9 @@
 //! once, with the fix.
 //!
 //! The README in the repository root has a longer guide: presets, level
-//! setup, gameplay queries, networking and tuning.
+//! setup, gameplay queries, networking and tuning. For coding assistants,
+//! `llms.txt` (in the repository, and at the root of this crate's package)
+//! maps the API on one page, with recipes.
 
 #![warn(missing_docs)]
 
@@ -124,6 +126,11 @@ pub mod prelude {
 #[cfg(doctest)]
 #[doc = include_str!("../README.md")]
 pub struct ReadmeDoctests;
+
+/// Compiles llms.txt's recipes as doc tests, so they keep up with the API.
+#[cfg(doctest)]
+#[doc = include_str!("../llms.txt")]
+pub struct LlmsTxtDoctests;
 
 /// Adds smoke simulation and rendering.
 ///
