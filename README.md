@@ -105,6 +105,8 @@ If a setup step is missing, the plugin says so in the log, once, with the fix: n
 
 The API is documented on docs.rs: [`bevy_smokescreen`](https://docs.rs/bevy_smokescreen), and [`smokescreen`](https://docs.rs/smokescreen) for the engine-free core.
 
+**With a coding assistant?** Point it at [`llms.txt`](https://raw.githubusercontent.com/VagabondTech/smokescreen/main/llms.txt): the API of both crates on one page, with recipes whose code is compiled as doc tests. The crate's package carries the copy for its version.
+
 ## Looks
 
 Pick a default with `SmokeSettings::style`, or per smoke with `Smoke::with_style`.

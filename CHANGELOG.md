@@ -91,6 +91,17 @@ keeps running, with crystal smoke and the simulation, and the log says
 why volumetric and faceted smoke isn't drawn; before, the smoke's GPU
 setup failed wgpu's validation and Bevy quit. No results change.
 
+**`llms.txt`, for coding assistants.** The API of both crates on one page,
+in the llmstxt.org layout, with recipes: grenades, walls, gas, fog and
+steam; bullets and explosions; bot vision, gas damage and sound; levels
+from meshes, boxes, physics engines and glTF scenes; the quality dial and
+budget mode; the looks; other units; multiplayer in Bevy; a first-person
+weapon; a server on the core alone. It also lists the gotchas and every
+setup warning with its fix. Its Rust code is compiled as doc tests, like
+the README's, and `bevy_smokescreen`'s package carries it (and no longer
+carries `CLAUDE.md`, the notes for sessions working on this repository).
+The browser demo's site serves it too.
+
 - **results** The volumetric rule works out density in the same order as
   the picture. A sample used to take the density of the distance
   interpolated between voxels, while the GPU bakes each voxel's density

@@ -29,7 +29,7 @@ The three looks (`Style` in the core, `SmokeStyle` in Bevy):
 
 ```sh
 cargo test -p smokescreen --release         # core tests, ~10 s
-cargo test -p bevy_smokescreen              # builds every example, runs the README's examples as doc tests
+cargo test -p bevy_smokescreen              # builds every example, runs the README's and llms.txt's examples as doc tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all                             # rustfmt.toml: max_width = 120
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
@@ -45,6 +45,15 @@ cargo run --example presets                 # every preset and look; also minima
 - The README's and `smokescreen/README.md`'s Rust code blocks are compiled as
   doc tests (`ReadmeDoctests` in each `lib.rs`): keep them compiling, and
   mark blocks that can't stand alone `ignore`.
+- `llms.txt` maps both crates' API for coding assistants, with recipes;
+  its Rust blocks are doc tests too (`LlmsTxtDoctests` in `src/lib.rs`).
+  Change it with the public API. Its blocks stay complete and runnable as
+  they are: full `use` lines and no `#`-hidden lines (the raw file shows
+  them), and every non-Rust block tagged (`toml`, `text`), as rustdoc
+  compiles untagged ones as Rust. Its glTF recipe needs Bevy's scene types,
+  which the dev-dependencies enable for native targets only. Its docs.rs
+  links name items' pages: check them against `cargo doc`'s output when
+  items move. The plugin's package ships it; `CLAUDE.md` stays out.
 - The browser build of the demo: `web/README.md` and
   `.github/workflows/web.yml` (`--features webgpu`, `--profile web`).
 - Scripted captures (screenshots, measurements) are driven by environment
@@ -174,6 +183,7 @@ cargo run --example presets                 # every preset and look; also minima
 | `docs/design.md` | How it works, measurements; keep it in step with the code |
 | `docs/media/` | The README's clips: recorded by the demo's `video` script, encoded by `tools/encode_clips.sh`; remake them when the look changes |
 | `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `ROADMAP.md` | For users and contributors; record user-visible changes in the changelog |
+| `llms.txt` | The API on one page with recipes, for coding assistants; compiled as doc tests, shipped in the plugin's package, served on the demo's site |
 
 ## Gotchas
 

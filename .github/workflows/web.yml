@@ -59,6 +59,11 @@ jobs:
           files=$(ls demo_bg.wasm.gz.[0-9][0-9] | sed 's/.*/"&"/' | paste -sd, -)
           echo "{\"size\": $(stat -c %s demo_bg.wasm.gz), \"files\": [$files]}" > demo_bg.wasm.gz.json
           cat demo_bg.wasm.gz.json
+      # The API map for coding assistants, at the site's root like the
+      # crates' homepage: https://vagabondtech.github.io/smokescreen/llms.txt.
+      - name: llms.txt
+        if: github.ref == 'refs/heads/main'
+        run: cp llms.txt web/
       - uses: actions/upload-pages-artifact@v4
         if: github.ref == 'refs/heads/main'
         with:
