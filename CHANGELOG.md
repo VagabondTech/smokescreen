@@ -102,6 +102,12 @@ the README's, and `bevy_smokescreen`'s package carries it (and no longer
 carries `CLAUDE.md`, the notes for sessions working on this repository).
 The browser demo's site serves it too.
 
+**One smoke's density at a point.** `density_at(p)` adds up every smoke,
+so gas damage counted plain smoke too. `density_of(cloud, p)`, on `View`,
+`Smokes` (at a tick) and `SmokeVision`, gives one cloud's share of it, to
+the bit; in Bevy, `Smoke::cloud()` gives a smoke's `CloudId`. `llms.txt`'s
+gas damage recipe uses it. No results change.
+
 - **results** The volumetric rule works out density in the same order as
   the picture. A sample used to take the density of the distance
   interpolated between voxels, while the GPU bakes each voxel's density

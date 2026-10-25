@@ -216,7 +216,7 @@ fn muffle(mut vision: SmokeVision, listeners: Query<&GlobalTransform, With<Camer
 }
 ```
 
-`SmokeVision` answers for the current tick, in world units: `blocks_sight(a, b)`, `occlusion(a, b)` (the amount of cloud between two points), `transmittance(a, b)` and `density_at(p)`. A server without Bevy asks `smokescreen::Smokes` the same questions and gets the same answers.
+`SmokeVision` answers for the current tick, in world units: `blocks_sight(a, b)`, `occlusion(a, b)` (the amount of cloud between two points), `transmittance(a, b)`, `density_at(p)` (every smoke added up) and `density_of(cloud, p)` (one smoke's). A server without Bevy asks `smokescreen::Smokes` the same questions and gets the same answers.
 
 ### Gas damage
 
@@ -234,27 +234,24 @@ struct Health(f32);
 
 fn gas_damage(
     mut vision: SmokeVision,
-    gas: Query<&GlobalTransform, With<Gas>>,
+    gas: Query<&Smoke, With<Gas>>,
     mut players: Query<(&GlobalTransform, &mut Health)>,
     time: Res<Time>,
 ) {
     for (player, mut health) in &mut players {
         let chest = player.translation() + Vec3::new(0.0, 1.2, 0.0);
-        // density_at adds up every smoke at the point, gas or not. A cloud stays within
-        // its fill grid, 7.2 m across from its source with the default tuning, so in a
-        // game with plain smoke too, count only points that close to a gas smoke.
-        let near_gas = gas.iter().any(|g| {
-            let d = g.translation() - chest;
-            Vec2::new(d.x, d.z).length() <= 7.2
-        });
-        if near_gas {
-            health.0 -= 25.0 * vision.density_at(chest) * time.delta_secs();
-        }
+        // Only the gas smokes' density: plain smoke at the same spot does no harm.
+        let density: f32 = gas
+            .iter()
+            .filter_map(Smoke::cloud) // a smoke's CloudId, once it has popped
+            .map(|cloud| vision.density_of(cloud, chest))
+            .sum();
+        health.0 -= 25.0 * density * time.delta_secs();
     }
 }
 ```
 
-`density_at` is 0..1 per smoke, added up: volumetric smoke's density, and 1 inside a crystal or faceted puff.
+`density_of(cloud, p)` is one smoke's density at a point, 0..1: volumetric smoke's density, and 1 inside a crystal or faceted puff. `density_at(p)` adds up every smoke's, gas or not. Asked per smoke, damage can also say whose gas it was. A server on the core alone asks `view.density_of(id, p)`, with the `CloudId` that `Smokes::pop` returned.
 
 ### The level from meshes, boxes or your own physics
 
@@ -630,7 +627,7 @@ Each is logged once per app, with what to do. If a log shows one:
 In `bevy_smokescreen::prelude` unless marked "root".
 
 - [SmokePlugin](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokePlugin.html): the plugin. `SmokePlugin::default()` or `SmokePlugin { config }`; add it after `DefaultPlugins`.
-- [Smoke](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.Smoke.html): component, a cloud popping where its entity is. Presets `grenade()`, `wall(offset)`, `gas()`, `fog_bank(half_extents)`, `steam_vent()`; builders `with_style`, `with_volume`, `with_lifetime`, `with_grow_time`, `with_tint`, `with_seed`, `with_source`; fields `density`, `despawn_when_done`; `cloud()` gives its `CloudId` once popped.
+- [Smoke](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.Smoke.html): component, a cloud popping where its entity is. Presets `grenade()`, `wall(offset)`, `gas()`, `fog_bank(half_extents)`, `steam_vent()`; builders `with_style`, `with_volume`, `with_lifetime`, `with_grow_time`, `with_tint`, `with_seed`, `with_source`; fields `density`, `despawn_when_done`; `cloud()` gives its `CloudId` once popped (for `SmokeVision::density_of`).
 - [SmokeSource](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/enum.SmokeSource.html): `Point`, `Line { offset }`, `Box { half_extents }`.
 - [SmokeStyle](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/enum.SmokeStyle.html): `Volumetric` (the default), `Crystal`, `Faceted` (experimental). The core's `Style`.
 - [SmokeCamera](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokeCamera.html): component for each `Camera3d` that should see smoke, with its quality dial. `MINIMUM`, `LOWER`, `LOW`, `MEDIUM`, `HIGH` (the default), `ULTRA`, `with_quality(q)`, `budget(ms)`; fields `quality`, `budget_ms`, `temporal_jitter` (on with TAA), `measured_depth`, and `volumetric` and `facets` to pin the dial's knobs.
@@ -639,7 +636,7 @@ In `bevy_smokescreen::prelude` unless marked "root".
 - [SmokeObstacle](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokeObstacle.html): marks level meshes the smoke flows around.
 - [SmokeLevel](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokeLevel.html): resource, the level as any `Level`: `SmokeLevel(Arc::new(level))`. `SmokeObstacle` builds it, or insert your own.
 - [SmokeBullet](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokeBullet.html) and [SmokeExplosion](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokeExplosion.html): messages, a tunnel along a shot (`start`, `end`) and a cleared sphere (`center`, `radius`).
-- [SmokeVision](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokeVision.html): system parameter for gameplay queries at the current tick: `blocks_sight(a, b)`, `occlusion(a, b)`, `transmittance(a, b)`, `density_at(p)`, `tick()`.
+- [SmokeVision](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokeVision.html): system parameter for gameplay queries at the current tick: `blocks_sight(a, b)`, `occlusion(a, b)`, `transmittance(a, b)`, `density_at(p)`, `density_of(cloud, p)`, `tick()`.
 - [SmokeSettings](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokeSettings.html): resource, the look, which can change at any time: `style`, `extinction`, `albedo`, `noise_within_rule`, `ambient_override`, `wind`, `crystal_shadows`, the noise, and debug views.
 - [NoiseWithinRule](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/enum.NoiseWithinRule.html): `Off` (the default), `Capped`, `Filled`.
 - [SmokeClock](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokeClock.html): resource, the tick: `tick`, `draw_tick`, `draw_fraction`, `auto`.
@@ -651,8 +648,8 @@ In `bevy_smokescreen::prelude` unless marked "root".
 
 ## API: smokescreen
 
-- [Smokes](https://docs.rs/smokescreen/0.2/smokescreen/struct.Smokes.html): the world of clouds. `new(config, level)`, `pop(spec)`, `bullet(start, end, tick)`, `explosion(center, radius, tick)`, `advance(tick)`, `view(tick)`, and `blocks_sight`, `occlusion`, `density_at` at a tick; `insert(spec, shape)`, `remove(id)`, `clear()`, `set_level(level)`, `clouds()`, `cloud(id)`, `pending_fills()`.
-- [View](https://docs.rs/smokescreen/0.2/smokescreen/struct.View.html): every cloud at one tick, `Copy + Sync`: `blocks_sight`, `occlusion`, `density_at`, `tick`. Allocates nothing.
+- [Smokes](https://docs.rs/smokescreen/0.2/smokescreen/struct.Smokes.html): the world of clouds. `new(config, level)`, `pop(spec)`, `bullet(start, end, tick)`, `explosion(center, radius, tick)`, `advance(tick)`, `view(tick)`, and `blocks_sight`, `occlusion`, `density_at`, `density_of` at a tick; `insert(spec, shape)`, `remove(id)`, `clear()`, `set_level(level)`, `clouds()`, `cloud(id)`, `pending_fills()`.
+- [View](https://docs.rs/smokescreen/0.2/smokescreen/struct.View.html): every cloud at one tick, `Copy + Sync`: `blocks_sight`, `occlusion`, `density_at`, `density_of`, `tick`. Allocates nothing.
 - [Config](https://docs.rs/smokescreen/0.2/smokescreen/struct.Config.html): `Config::new(units, tick_rate)`; `tuning`, `fill_budget`, `level_query_units`, `history_ticks`, `cached_ticks`.
 - [Tuning](https://docs.rs/smokescreen/0.2/smokescreen/struct.Tuning.html): the rules, the same on every machine. `Tuning::new(&units)`; `grid_dims`, `voxel_size`, `volume`, `up_cost`, `down_cost`, `lumpiness`, `lump_size`, `floor_fraction`, `timeline`, `facets`, `crystals`, `facet_rule`, `volume_steps`, `holes`, `max_holes_per_cloud`, `max_clouds`, `sight_threshold`.
 - [CloudSpec](https://docs.rs/smokescreen/0.2/smokescreen/struct.CloudSpec.html): a pop, all a server has to send. `new(origin, pop_tick, seed, style)`, `with_source(source)`, `seed_from_origin(origin)`; fields `source`, `volume`, `timeline`.

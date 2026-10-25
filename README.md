@@ -30,7 +30,7 @@ Smoke that fills rooms, pours through doorways, stops at walls and blocks sight.
 - Presets: smoke grenades, smoke walls, poison gas, fog banks and steam vents, or your own mix of volume, lifetime, colour and look.
 - Bullets carve tunnels that close again; explosions clear a sphere that refills from the edges.
 - Lit by the sun with self-shadowing, darker indoors, lit from inside by muzzle flashes and explosions (any Bevy `PointLight`).
-- **Gameplay sees the same smoke.** `blocks_sight(a, b)` and `occlusion(a, b)` for AI, server-side visibility and audio; `density_at(p)` for gas damage.
+- **Gameplay sees the same smoke.** `blocks_sight(a, b)` and `occlusion(a, b)` for AI, server-side visibility and audio; `density_of(cloud, p)` for gas damage.
 - **Level setup without collision code:** mark your level's meshes with `SmokeObstacle`.
 - **One performance dial per camera**, or a GPU millisecond budget that turns it for you. No dial step changes a cloud's shape, so a cheaper setting doesn't show through smoke a better one hides (one exception: the experimental faceted look's bullet tunnels, see [Limitations](#limitations)); volumetric smoke's noise falls a little differently from step to step (in the demo's views, at most 0.65 % of a smoke's pixels let more than 30 % more of the scene through than at the best step).
 - **Deterministic core for multiplayer** (`smokescreen`): engine-free, runs on your ticks and in your units, bit-identical on x86-64 and ARM, with a per-tick CPU budget.
@@ -149,7 +149,7 @@ fn spawn_smokes(mut commands: Commands) {
 |---|---|
 | `Smoke::grenade()` | Spreads from where it lands to a 90 m³ cloud, lasts 18 s (the default `Smoke`) |
 | `Smoke::wall(offset)` | Spreads from every point between the entity and `offset` from it, lasts 25 s |
-| `Smoke::gas()` | Greenish, thinner-looking, spreads over 4 s, lasts 25 s; hurt players with `SmokeVision::density_at` |
+| `Smoke::gas()` | Greenish, thinner-looking, spreads over 4 s, lasts 25 s; hurt players in it with `SmokeVision::density_of` |
 | `Smoke::fog_bank(half_extents)` | Fills a box, feathered at the edges, for as long as the entity lives |
 | `Smoke::steam_vent()` | White, thin, spreads slowly over 8 s, clears after 15 s |
 
@@ -162,7 +162,8 @@ All of them take the builders `with_style`, `with_volume`, `with_lifetime`, `wit
 - `blocks_sight(a, b)`: does smoke hide `b` from `a`? True once the segment passes through `Tuning::sight_threshold` of cloud (0.8 m by default; 0 blocks on any contact).
 - `occlusion(a, b)`: how much cloud lies between them, every smoke added up.
 - `transmittance(a, b)`: fraction of light that gets through, for audio and other soft effects.
-- `density_at(p)`: how dense the smoke is at a point, for gas damage.
+- `density_at(p)`: how dense the smoke is at a point, every smoke added up.
+- `density_of(cloud, p)`: how dense one smoke is there, for gas damage that plain smoke doesn't do (`Smoke::cloud()` gives its id).
 
 ![Five bots look at a target across open ground; their sight lines turn red as a smoke grows between them, and a bullet fired along one line briefly turns it green again](https://raw.githubusercontent.com/VagabondTech/smokescreen/main/docs/media/sightlines.webp)
 

@@ -51,9 +51,10 @@ smokescreen = "0.1"
   with ticks; they close and refill over time.
 - **The rule.** `occlusion(a, b)` is the amount of cloud along a segment,
   every cloud added up; `blocks_sight(a, b)` is whether that reaches
-  `Tuning::sight_threshold`; `density_at(p)` is for gas damage. Queries
-  allocate nothing, skip clouds the segment doesn't come near, and a `View`
-  of one tick can be shared between threads.
+  `Tuning::sight_threshold`. `density_at(p)` is the density at a point,
+  every cloud added up, and `density_of(cloud, p)` one cloud's, for gas
+  damage. Queries allocate nothing, skip clouds the segment doesn't come
+  near, and a `View` of one tick can be shared between threads.
 
 ## Multiplayer
 
