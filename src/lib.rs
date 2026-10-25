@@ -761,8 +761,9 @@ impl Smoke {
         }
     }
 
-    /// A drifting cloud of greenish poison gas. Use [`SmokeVision::density_at`]
-    /// to hurt whoever stands in it.
+    /// A drifting cloud of greenish poison gas. Use [`SmokeVision::density_of`]
+    /// with its [`Smoke::cloud`] to hurt whoever stands in it:
+    /// [`SmokeVision::density_at`] adds up every smoke, gas or not.
     pub fn gas() -> Self {
         Self {
             lifetime: Some(25.0),
@@ -841,15 +842,16 @@ impl Smoke {
         self
     }
 
-    /// The cloud in [`SmokeWorld`], once popped.
+    /// The cloud in [`SmokeWorld`], once popped: for
+    /// [`SmokeVision::density_of`], for example.
     pub fn cloud(&self) -> Option<CloudId> {
         self.cloud
     }
 }
 
 /// Gameplay queries against every smoke at the current [`SmokeClock::tick`]:
-/// bot vision, server-side visibility, audio occlusion. The same answers the
-/// core gives anywhere else, in world units.
+/// bot vision, server-side visibility, audio occlusion, gas damage. The same
+/// answers the core gives anywhere else, in world units.
 #[derive(SystemParam)]
 pub struct SmokeVision<'w> {
     world: ResMut<'w, SmokeWorld>,
@@ -886,10 +888,21 @@ impl SmokeVision<'_> {
         (-metres * self.settings.extinction).exp()
     }
 
-    /// Density (0..1 per smoke, summed) at a point.
+    /// Density (0..1 per smoke, summed) at a point: every smoke, gas or not.
+    /// [`Self::density_of`] gives one smoke's.
     pub fn density_at(&mut self, p: Vec3) -> f32 {
         let tick = self.clock.tick;
         self.world.density_at(p, tick)
+    }
+
+    /// One smoke's density (0..1) at a point: its share of
+    /// [`Self::density_at`], to the bit, with the id from [`Smoke::cloud`].
+    /// For gas damage that plain smoke doesn't do (see
+    /// [`Smokes::density_of`]). [`Smoke::density`] is a look and doesn't
+    /// change it.
+    pub fn density_of(&mut self, cloud: CloudId, p: Vec3) -> f32 {
+        let tick = self.clock.tick;
+        self.world.density_of(cloud, p, tick)
     }
 }
 
@@ -1611,6 +1624,36 @@ mod tests {
             let holes = &frame.holes[slot.hole_start as usize..][..slot.hole_count as usize];
             assert_eq!(holes, cloud.state.holes, "smoke {k}'s holes drawn");
         }
+    }
+
+    /// `SmokeVision::density_of` tells gas from plain smoke: inside the gas
+    /// it is all of `density_at`, and inside a grenade's smoke it is 0,
+    /// where `density_at` counts that smoke too.
+    #[test]
+    fn density_of_tells_gas_from_smoke() {
+        use bevy::ecs::system::SystemState;
+
+        let mut app = headless_app();
+        let gas = app.world_mut().spawn((Smoke::gas(), Transform::default())).id();
+        app.world_mut()
+            .spawn((Smoke::grenade(), Transform::from_xyz(30.0, 0.0, 0.0)));
+        // Five seconds at 50 ms a frame: both have grown.
+        for _ in 0..100 {
+            app.update();
+        }
+        let cloud = app
+            .world()
+            .get::<Smoke>(gas)
+            .and_then(Smoke::cloud)
+            .expect("the gas never popped");
+        let mut state = SystemState::<SmokeVision>::new(app.world_mut());
+        let mut vision = state.get_mut(app.world_mut()).expect("the plugin's resources");
+        let (in_gas, in_smoke) = (Vec3::new(0.0, 1.0, 0.0), Vec3::new(30.0, 1.0, 0.0));
+        let gassed = vision.density_of(cloud, in_gas);
+        assert!(gassed > 0.0, "no gas at {in_gas}");
+        assert_eq!(gassed.to_bits(), vision.density_at(in_gas).to_bits());
+        assert!(vision.density_at(in_smoke) > 0.0, "no smoke at {in_smoke}");
+        assert_eq!(vision.density_of(cloud, in_smoke), 0.0);
     }
 
     #[test]
