@@ -26,7 +26,10 @@ let view = smokes.view(tick);
 assert!(view.blocks_sight(Vec3::new(-400.0, 0.0, 64.0), Vec3::new(400.0, 0.0, 64.0)));
 ```
 
-`examples/server.rs` is a complete headless loop with 250 bots.
+`examples/server.rs` is a complete headless loop with 250 bots. For coding
+assistants, [`llms.txt`](https://raw.githubusercontent.com/VagabondTech/smokescreen/main/llms.txt)
+maps the API of this crate and of `bevy_smokescreen` on one page, with
+recipes, a server on this crate alone among them.
 
 It needs Rust 1.88 or newer, and depends only on `glam` and `libm`:
 

@@ -31,9 +31,12 @@ rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test -p smokescreen --release      # includes the determinism hash
-cargo test -p bevy_smokescreen           # builds the examples, runs the README's examples
+cargo test -p bevy_smokescreen           # builds the examples, runs the README's and llms.txt's examples
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 ```
+
+If you change the public API, change `llms.txt` with it: it maps the API
+for coding assistants, and its recipes are compiled as doc tests.
 
 CI runs the same (`.github/workflows/`): the core on macOS (ARM), Linux and
 Windows, the plugin on Linux, and the browser build of the demo.
