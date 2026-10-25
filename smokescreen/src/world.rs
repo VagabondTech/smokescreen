@@ -1010,10 +1010,23 @@ impl<L: Level> Smokes<L> {
         self.view(tick).blocks_sight(from, to)
     }
 
-    /// Density (0..1 per cloud, summed) at a point at `tick`. Faceted clouds
-    /// count 1 inside, 0 outside.
+    /// Density (0..1 per cloud, summed) at a point at `tick`: a volumetric
+    /// cloud's density, and 1 inside a faceted or crystal cloud, 0 outside.
+    /// [`Self::density_of`] gives one cloud's.
     pub fn density_at(&mut self, p: Vec3, tick: u64) -> f32 {
         self.view(tick).density_at(p)
+    }
+
+    /// One cloud's density (0..1) at a point at `tick`: what
+    /// [`Self::density_at`] adds for it, to the bit, so that gas can hurt
+    /// where plain smoke doesn't. 0 where it adds nothing: outside the
+    /// cloud, before it starts or once it is gone, past
+    /// [`Tuning::max_clouds`], and for a handle the world doesn't have.
+    /// Added up over every cloud, the densities give `density_at`: to the
+    /// bit where at most two clouds hold the point, and to within rounding
+    /// where more do (the order of adding counts then).
+    pub fn density_of(&mut self, cloud: CloudId, p: Vec3, tick: u64) -> f32 {
+        self.view(tick).density_of(cloud, p)
     }
 }
 
@@ -1531,41 +1544,60 @@ impl<'a> View<'a> {
     /// See [`Smokes::density_at`].
     pub fn density_at(&self, p: Vec3) -> f32 {
         let p = self.config.units.to_internal(p);
-        let core_rule = self.config.tuning.facet_rule == FacetRule::Core;
-        let chord_rule = self.config.tuning.facet_rule == FacetRule::Chords;
         let mut sum = 0.0;
         let candidates = self.broad.candidates(p - BROAD_PAD, p + BROAD_PAD);
         visit_candidates(self.states, candidates, |state| {
-            let (lo, hi) = state.bounds;
-            if p.cmplt(lo).any() || p.cmpgt(hi).any() {
-                return None;
+            if let Some(term) = self.density_term(state, p) {
+                sum += term;
             }
-            let c = &self.clouds[state.cloud];
-            let ready = c.ready()?;
-            let cloud = CloudView {
-                state,
-                shape: &ready.shape,
-                spec: &c.spec,
-                timeline: &c.timeline,
-                volume_steps: self.config.tuning.volume_steps,
-            };
-            let inside = |yes: bool| if yes { 1.0 } else { 0.0 };
-            sum += if let Some(c) = cloud.crystal_field() {
-                inside(c.inside(p))
-            } else if let (true, Some(c)) = (core_rule, cloud.core_field()) {
-                inside(c.inside(p))
-            } else if let (true, Some(c)) = (chord_rule, cloud.chord_field()) {
-                inside(c.inside(p))
-            } else if let Some(f) = cloud.facet_field() {
-                inside(f.sdf(p) < 0.0)
-            } else if let Some(v) = cloud.volume_field() {
-                v.density(p)
-            } else {
-                0.0
-            };
             None::<()>
         });
         sum
+    }
+
+    /// See [`Smokes::density_of`].
+    pub fn density_of(&self, cloud: CloudId, p: Vec3) -> f32 {
+        let p = self.config.units.to_internal(p);
+        self.states
+            .iter()
+            .find(|state| state.id == cloud)
+            .and_then(|state| self.density_term(state, p))
+            .unwrap_or(0.0)
+    }
+
+    /// One cloud's term of [`Self::density_at`] at `p` (internal frame), or
+    /// `None` where it adds nothing. [`Self::density_of`] gives the same, so
+    /// the two agree to the bit.
+    fn density_term(&self, state: &CloudState, p: Vec3) -> Option<f32> {
+        let (lo, hi) = state.bounds;
+        if p.cmplt(lo).any() || p.cmpgt(hi).any() {
+            return None;
+        }
+        let c = &self.clouds[state.cloud];
+        let ready = c.ready()?;
+        let cloud = CloudView {
+            state,
+            shape: &ready.shape,
+            spec: &c.spec,
+            timeline: &c.timeline,
+            volume_steps: self.config.tuning.volume_steps,
+        };
+        let core_rule = self.config.tuning.facet_rule == FacetRule::Core;
+        let chord_rule = self.config.tuning.facet_rule == FacetRule::Chords;
+        let inside = |yes: bool| if yes { 1.0 } else { 0.0 };
+        Some(if let Some(c) = cloud.crystal_field() {
+            inside(c.inside(p))
+        } else if let (true, Some(c)) = (core_rule, cloud.core_field()) {
+            inside(c.inside(p))
+        } else if let (true, Some(c)) = (chord_rule, cloud.chord_field()) {
+            inside(c.inside(p))
+        } else if let Some(f) = cloud.facet_field() {
+            inside(f.sdf(p) < 0.0)
+        } else if let Some(v) = cloud.volume_field() {
+            v.density(p)
+        } else {
+            0.0
+        })
     }
 
     fn integrate(&self, from: Vec3, to: Vec3, acc: &mut f32, stop: &dyn Fn(f32) -> bool) -> bool {
