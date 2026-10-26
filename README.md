@@ -153,7 +153,7 @@ fn spawn_smokes(mut commands: Commands) {
 | `Smoke::fog_bank(half_extents)` | Fills a box, feathered at the edges, for as long as the entity lives |
 | `Smoke::steam_vent()` | White, thin, spreads slowly over 8 s, clears after 15 s |
 
-All of them take the builders `with_style`, `with_volume`, `with_lifetime`, `with_grow_time`, `with_tint`, `with_seed` and `with_source` (`SmokeSource::Point`, `Line` or `Box`). Style, volume, lifetime, grow time, seed and source are part of the rules: they change what blocks, so in a multiplayer game every machine must use the same. Tint and `density` are looks.
+All of them take the builders `with_style`, `with_volume`, `with_lifetime`, `with_grow_time`, `with_tint`, `with_seed`, `with_source` (`SmokeSource::Point`, `Line` or `Box`) and `with_pop_tick`. Style, volume, lifetime, grow time, seed, source and pop tick are part of the rules: they change what blocks, so in a multiplayer game every machine must use the same. Tint and `density` are looks.
 
 ## Gameplay
 
@@ -197,7 +197,7 @@ let hidden = view.blocks_sight(eye, enemy_head);
 - **A per-tick CPU budget.** A cloud's fill runs a little each tick (`Config::fill_budget`, about 0.2 ms); it speeds up only if the cloud is about to start growing. The finished cloud is the same however the work is split.
 - **Networking.** Send the `CloudSpec` of each pop (a couple of dozen bytes) and each bullet and explosion with its tick; every machine computes the same clouds, as long as they share the `Tuning` and the same level answers. For mesh-based levels, voxelise once and ship the voxels (`VoxelObstacles::to_bytes`). A level voxelised at the tuning's voxel size (`VoxelObstacles::from_level`) gives exactly the clouds its source level would, faster: cloud grids lie on the same world lattice. Or run the fill on the server with `fill_cloud` and send the result for `Smokes::insert`, with the same version of the crate at both ends.
 
-In Bevy, `SmokeWorld` is the `Smokes` the plugin runs, and `SmokeClock` sets the tick (by default from Bevy's virtual time; set `auto: false` to drive it from your netcode, with `draw_tick` for an interpolation delay and `draw_fraction` for how far the frame is past that tick). Volumetric smoke's noise moves on those ticks too, not on each machine's clock, so players who draw the same tick see the same billows. `SmokePlugin { config }` takes the same `Config`, so a Bevy client in Z-up inches works too:
+In Bevy, `SmokeWorld` is the `Smokes` the plugin runs, and `SmokeClock` sets the tick (by default from Bevy's virtual time; set `auto: false` to drive it from your netcode, with `draw_tick` for an interpolation delay and `draw_fraction` for how far the frame is past that tick). A `Smoke` pops on that tick. For a cloud the server announced, spawn `Smoke::from_spec(spec)` with the `CloudSpec` it sent: you get the server's cloud to the bit however late you hear of it, with your own look (`with_tint`), and the entity despawns when the cloud is gone. Where every machine spawns the same `Smoke` from the same event instead (lockstep, rollback), `with_pop_tick(tick)` gives it the event's tick. Volumetric smoke's noise moves on those ticks too, not on each machine's clock, so players who draw the same tick see the same billows. `SmokePlugin { config }` takes the same `Config`, so a Bevy client in Z-up inches works too:
 
 ![Units](https://raw.githubusercontent.com/VagabondTech/smokescreen/main/docs/units.jpg)
 
