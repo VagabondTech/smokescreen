@@ -4,8 +4,9 @@
 //! weapon held half a metre from the eye. The usual fix (as in Bevy's
 //! `first_person_view_model` example) is a second camera that draws only the
 //! weapon, after the world camera, with its own depth buffer and without a
-//! `SmokeCamera`. Glass and other transparent objects need nothing: smoke is
-//! drawn before them.
+//! `SmokeCamera`. Transparent objects in front of a smoke need nothing:
+//! smoke is drawn before them. Behind or inside one they show through it
+//! (see the README's limitations).
 //!
 //! ```text
 //! cargo run --release --example viewmodel

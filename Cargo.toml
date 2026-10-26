@@ -12,7 +12,9 @@ categories = ["game-development", "rendering", "simulation"]
 repository = "https://github.com/VagabondTech/smokescreen"
 # The demo, in a browser.
 homepage = "https://vagabondtech.github.io/smokescreen/"
-exclude = ["docs/*.jpg", "docs/media/", "tools/", "web/", ".github/"]
+# CLAUDE.md is for sessions working on this repository; coding assistants using
+# the crate read llms.txt, which the package carries.
+exclude = ["docs/*.jpg", "docs/media/", "tools/", "web/", ".github/", "CLAUDE.md"]
 
 [workspace]
 members = ["smokescreen"]
@@ -64,6 +66,12 @@ bevy = { version = "0.20.0", default-features = false, features = [
     "ui_bevy_render",
     "png",
 ] }
+
+# llms.txt's glTF recipe, compiled as a doc test, uses Bevy's scene types
+# (WorldAssetRoot, WorldInstanceReady). Native only, so the browser demo's
+# download doesn't grow.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+bevy = { version = "0.20.0", default-features = false, features = ["bevy_world_serialization"] }
 
 # In a browser, the demo reads its settings from the page's address and the
 # page's pointer lock, asks whether the main pointer is a finger, and tells

@@ -316,9 +316,10 @@ fn queries_do_not_allocate() {
         let mut cfg = config();
         cfg.tuning.facet_rule = rule;
         let mut smokes = Smokes::new(cfg, &level);
+        let mut ids = Vec::new();
         for (i, (origin, seed)) in common::pops().into_iter().enumerate() {
             let style = [Style::Faceted, Style::Volumetric, Style::Crystal][i % 3];
-            smokes.pop(CloudSpec::new(origin, 0, seed, style));
+            ids.push(smokes.pop(CloudSpec::new(origin, 0, seed, style)));
         }
         smokes.bullet(Vec3::new(-15.0, 1.0, -3.0), Vec3::new(18.0, 1.5, 7.0), 590);
         smokes.explosion(Vec3::new(0.0, 1.0, 4.0), None, 595);
@@ -339,6 +340,9 @@ fn queries_do_not_allocate() {
             sum += smokes.occlusion(*a, *b, tick);
             sum += smokes.blocks_sight(*a, *b, tick) as u32 as f32;
             sum += smokes.density_at(*a, tick);
+            for &id in &ids {
+                sum += smokes.density_of(id, *a, tick);
+            }
         }
         let after = allocations();
         assert!(sum > 0.0);
@@ -473,4 +477,109 @@ fn blocks_sight_matches_occlusion() {
 #[ignore = "slow: about 730,000 queries"]
 fn blocks_sight_matches_occlusion_thoroughly() {
     blocks_sight_agrees_with_occlusion(100);
+}
+
+/// `density_of` is each cloud's term of `density_at`, to the bit: added up
+/// in the view's order, which is the order `density_at` adds them in, the
+/// clouds' densities are `density_at`. Points in and around clouds of every
+/// style over their whole lives, many where three or more overlap, with
+/// bullets and explosions, under every facet rule, in metres and in Z-up
+/// inches.
+#[test]
+fn density_of_is_each_clouds_share_of_density_at() {
+    let styles = [Style::Faceted, Style::Volumetric, Style::Crystal];
+    let mut pops = common::pops();
+    // Three more around the first, in front of the doorway: four clouds of
+    // all three styles on one spot.
+    pops.extend([
+        (Vec3::new(0.6, 0.0, 4.2), 29),
+        (Vec3::new(-0.6, 0.0, 4.4), 31),
+        (Vec3::new(0.0, 0.0, 3.8), 37),
+    ]);
+    for units in [Units::METRES_Y_UP, common::z_up_inches()] {
+        for rule in [FacetRule::Exact, FacetRule::Core, FacetRule::Chords] {
+            let mut cfg = Config::new(units, 128.0);
+            cfg.tuning.facet_rule = rule;
+            let mut smokes = Smokes::new(cfg, common::level_in(units));
+            for (i, (origin, seed)) in pops.iter().enumerate() {
+                let spec = CloudSpec::new(units.from_internal(*origin), 20 * i as u64, *seed, styles[i % 3]);
+                smokes.pop(spec);
+            }
+            let mut rng = common::Rng(0x0dd5_eed5_1234_5678);
+            let (lo, hi) = (Vec3::new(-18.0, 0.0, -12.0), Vec3::new(18.0, 4.5, 16.0));
+            let (mut points, mut overlaps, mut held_by) = (0, 0, [0; 3]);
+            for tick in 0..(21 * 128) {
+                smokes.advance(tick);
+                if tick % 61 == 0 {
+                    let (a, b) = (rng.point(lo, hi), rng.point(lo, hi));
+                    smokes.bullet(units.from_internal(a), units.from_internal(b), tick);
+                }
+                if tick % 397 == 100 {
+                    smokes.explosion(units.from_internal(rng.point(lo, hi)), None, tick);
+                }
+                if tick % 32 != 0 {
+                    continue;
+                }
+                let view = smokes.view(tick);
+                for _ in 0..40 {
+                    let (origin, _) = pops[rng.next_u32() as usize % pops.len()];
+                    let offset = rng.point(Vec3::new(-5.0, 0.0, -5.0), Vec3::new(5.0, 4.0, 5.0));
+                    let p = units.from_internal(origin + offset);
+                    let (mut sum, mut held) = (0.0, 0);
+                    for cloud in view.clouds() {
+                        let d = view.density_of(cloud.state.id, p);
+                        assert!((0.0..=1.0).contains(&d), "{rule:?}: density {d} at {p}, tick {tick}");
+                        if d > 0.0 {
+                            held += 1;
+                            held_by[styles.iter().position(|s| *s == cloud.spec.style).unwrap()] += 1;
+                        }
+                        sum += d;
+                    }
+                    let want = view.density_at(p);
+                    assert_eq!(
+                        sum.to_bits(),
+                        want.to_bits(),
+                        "{rule:?}: {sum} against {want} at {p}, tick {tick}, {held} clouds"
+                    );
+                    points += (held > 0) as u32;
+                    overlaps += (held >= 3) as u32;
+                }
+            }
+            // The points must test the sums: 731–842 of them are in cloud,
+            // 103–169 in three or more clouds.
+            assert!(
+                points > 600 && overlaps > 80 && held_by.iter().all(|&n| n > 150),
+                "{rule:?}: {points} points in cloud, {overlaps} in three or more, by style {held_by:?}"
+            );
+        }
+    }
+}
+
+/// `density_of` is 0 wherever `density_at` adds nothing for the cloud:
+/// outside it, before it starts, once it is gone or removed, past
+/// `Tuning::max_clouds`, and for a handle the world doesn't have.
+#[test]
+fn density_of_counts_what_density_at_counts() {
+    let mut cfg = config();
+    cfg.tuning.max_clouds = 2;
+    let mut smokes = Smokes::new(cfg, FlatGround::default());
+    // Three clouds on one spot, a tick apart: only the newest two count.
+    let ids: Vec<CloudId> = (0..3)
+        .map(|i| smokes.pop(CloudSpec::new(Vec3::ZERO, i, 4 + i as u32, Style::Volumetric)))
+        .collect();
+    let (p, tick) = (Vec3::new(0.0, 1.0, 0.0), 5 * 128);
+    let view = smokes.view(tick);
+    assert_eq!(view.density_of(ids[0], p), 0.0, "past max_clouds");
+    let (a, b) = (view.density_of(ids[1], p), view.density_of(ids[2], p));
+    assert!(a > 0.0 && b > 0.0, "{a}, {b}");
+    assert_eq!(view.density_at(p).to_bits(), (a + b).to_bits());
+    assert_eq!(view.density_of(ids[2], p + Vec3::Y * 20.0), 0.0, "outside");
+    assert_eq!(smokes.density_of(ids[2], p, 1), 0.0, "before the pop");
+    assert_eq!(smokes.density_of(ids[1], p, 5), 0.0, "before it starts");
+    assert_eq!(smokes.density_of(ids[2], p, 19 * 128), 0.0, "gone");
+    assert_eq!(smokes.density_of(CloudId::default(), p, tick), 0.0, "no such cloud");
+    assert!(smokes.remove(ids[2]));
+    assert_eq!(smokes.density_of(ids[2], p, tick), 0.0, "removed");
+    // With one cloud fewer, the oldest counts again.
+    assert!(smokes.density_of(ids[0], p, tick) > 0.0);
 }

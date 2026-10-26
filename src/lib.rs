@@ -69,7 +69,9 @@
 //! once, with the fix.
 //!
 //! The README in the repository root has a longer guide: presets, level
-//! setup, gameplay queries, networking and tuning.
+//! setup, gameplay queries, networking and tuning. For coding assistants,
+//! `llms.txt` (in the repository, and at the root of this crate's package)
+//! maps the API on one page, with recipes.
 
 #![warn(missing_docs)]
 
@@ -126,6 +128,11 @@ pub mod prelude {
 #[cfg(doctest)]
 #[doc = include_str!("../README.md")]
 pub struct ReadmeDoctests;
+
+/// Compiles llms.txt's recipes as doc tests, so they keep up with the API.
+#[cfg(doctest)]
+#[doc = include_str!("../llms.txt")]
+pub struct LlmsTxtDoctests;
 
 /// Adds smoke simulation and rendering.
 ///
@@ -308,7 +315,10 @@ impl SmokeConfig {
 ///
 /// The [`Smoke`] component is a convenience on top: you can also pop clouds,
 /// add holes and query directly here, for example from your networking code
-/// with the server's ticks. Everything in it is drawn. It derefs to
+/// with the server's ticks. Everything in it is drawn. A cloud popped or
+/// inserted here directly has the default look (no tint, density 1) and no
+/// entity, and lasts until it ends or you remove it; for a server's cloud
+/// with a look and an entity, spawn [`Smoke::from_spec`]. It derefs to
 /// [`Smokes`], so call those methods on it.
 #[derive(Resource, Deref, DerefMut)]
 pub struct SmokeWorld(Smokes<SharedLevel>);
@@ -326,8 +336,10 @@ pub struct SmokeWorld(Smokes<SharedLevel>);
 /// [`SmokeSettings`] see the same billows.
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub struct SmokeClock {
-    /// The newest simulation tick: fills advance to it, impacts land on it
-    /// and [`SmokeVision`] answers for it.
+    /// The newest simulation tick: fills advance to it, impacts land on it,
+    /// [`Smoke`] entities pop on it unless they bring their own
+    /// ([`Smoke::pop_tick`], [`Smoke::from_spec`]), and [`SmokeVision`]
+    /// answers for it.
     pub tick: u64,
     /// The tick drawn, for example your interpolation tick slightly behind
     /// `tick`. `None` draws `tick`.
@@ -681,12 +693,19 @@ pub enum SmokeSource {
 }
 
 /// A cloud of smoke popping where the entity is, at the current
-/// [`SmokeClock::tick`]. A convenience over [`Smokes::pop`] on [`SmokeWorld`]: the entity
-/// holds the cloud's look, and (by default) despawns when the cloud is gone.
+/// [`SmokeClock::tick`] (or its [`pop_tick`](Self::pop_tick)). A convenience
+/// over [`Smokes::pop`] on [`SmokeWorld`]: the entity holds the cloud's look,
+/// and (by default) despawns when the cloud is gone.
 ///
 /// Start from a preset ([`Smoke::grenade`], [`Smoke::wall`], [`Smoke::gas`],
 /// [`Smoke::fog_bank`], [`Smoke::steam_vent`]) and adjust with the `with_*`
 /// builders. A clone is a new cloud with the same settings: it pops its own.
+///
+/// In a networked game every machine must pop the same cloud on the same
+/// tick. For a cloud a server announced, spawn [`Smoke::from_spec`] with the
+/// [`CloudSpec`] it sent: that cloud exactly, with your look. When every
+/// machine spawns the same `Smoke` from the same event instead (lockstep,
+/// rollback), give it the event's tick with [`Smoke::with_pop_tick`].
 #[derive(Component, Debug)]
 #[require(Transform)]
 pub struct Smoke {
@@ -711,8 +730,22 @@ pub struct Smoke {
     pub seed: Option<u32>,
     /// Style. `None` uses [`SmokeSettings::style`] at the moment of the pop.
     pub style: Option<SmokeStyle>,
-    /// Despawn the entity when the cloud is gone.
+    /// The tick it pops at. `None` pops at the current [`SmokeClock::tick`].
+    /// Set it to the tick of the event that threw the smoke, and a pop heard
+    /// late keeps pace with everyone else's: the cloud grows, blocks and
+    /// fades on the same ticks. Every machine must then spawn it from the
+    /// same builders at the same position, with no parent: a parent's
+    /// transform is applied in floating point, so the position (and the seed
+    /// made from it) may come out in other bits. A tick still to come pops
+    /// it then.
+    pub pop_tick: Option<u64>,
+    /// Despawn the entity when the cloud is gone. The cloud stays in
+    /// [`SmokeWorld`] for [`Config::history_ticks`] more, as every cloud
+    /// does, for views of the ticks before; despawning the entity sooner
+    /// removes the cloud at once.
     pub despawn_when_done: bool,
+    /// Pop exactly this, whatever the fields above say ([`Smoke::from_spec`]).
+    spec: Option<CloudSpec>,
     cloud: Option<CloudId>,
 }
 
@@ -727,7 +760,9 @@ impl Default for Smoke {
             density: 1.0,
             seed: None,
             style: None,
+            pop_tick: None,
             despawn_when_done: true,
+            spec: None,
             cloud: None,
         }
     }
@@ -756,8 +791,9 @@ impl Smoke {
         }
     }
 
-    /// A drifting cloud of greenish poison gas. Use [`SmokeVision::density_at`]
-    /// to hurt whoever stands in it.
+    /// A drifting cloud of greenish poison gas. Use [`SmokeVision::density_of`]
+    /// with its [`Smoke::cloud`] to hurt whoever stands in it:
+    /// [`SmokeVision::density_at`] adds up every smoke, gas or not.
     pub fn gas() -> Self {
         Self {
             lifetime: Some(25.0),
@@ -790,6 +826,21 @@ impl Smoke {
             grow_time: Some(8.0),
             tint: Color::srgb(1.0, 1.0, 1.0),
             density: 0.5,
+            ..default()
+        }
+    }
+
+    /// The cloud a server announced, to the bit: its origin, pop tick and
+    /// every rule are `spec`'s, the cloud [`Smokes::pop`] of it gives. The
+    /// entity's position, the clock and this smoke's rule fields (source,
+    /// volume, lifetime, grow time, seed, style, pop tick) aren't used. The
+    /// look ([`tint`](Self::tint), [`density`](Self::density)) and
+    /// [`despawn_when_done`](Self::despawn_when_done) are the entity's, as
+    /// for any smoke. Give it a [`Transform`] at `spec.origin` if anything
+    /// else needs its position.
+    pub fn from_spec(spec: CloudSpec) -> Self {
+        Self {
+            spec: Some(spec),
             ..default()
         }
     }
@@ -836,15 +887,23 @@ impl Smoke {
         self
     }
 
-    /// The cloud in [`SmokeWorld`], once popped.
+    /// Pop at `tick` instead of the current tick: the tick of the event that
+    /// threw it (see [`Smoke::pop_tick`]).
+    pub fn with_pop_tick(mut self, tick: u64) -> Self {
+        self.pop_tick = Some(tick);
+        self
+    }
+
+    /// The cloud in [`SmokeWorld`], once popped: for
+    /// [`SmokeVision::density_of`], for example.
     pub fn cloud(&self) -> Option<CloudId> {
         self.cloud
     }
 }
 
 /// Gameplay queries against every smoke at the current [`SmokeClock::tick`]:
-/// bot vision, server-side visibility, audio occlusion. The same answers the
-/// core gives anywhere else, in world units.
+/// bot vision, server-side visibility, audio occlusion, gas damage. The same
+/// answers the core gives anywhere else, in world units.
 #[derive(SystemParam)]
 pub struct SmokeVision<'w> {
     world: ResMut<'w, SmokeWorld>,
@@ -881,10 +940,21 @@ impl SmokeVision<'_> {
         (-metres * self.settings.extinction).exp()
     }
 
-    /// Density (0..1 per smoke, summed) at a point.
+    /// Density (0..1 per smoke, summed) at a point: every smoke, gas or not.
+    /// [`Self::density_of`] gives one smoke's.
     pub fn density_at(&mut self, p: Vec3) -> f32 {
         let tick = self.clock.tick;
         self.world.density_at(p, tick)
+    }
+
+    /// One smoke's density (0..1) at a point: its share of
+    /// [`Self::density_at`], to the bit, with the id from [`Smoke::cloud`].
+    /// For gas damage that plain smoke doesn't do (see
+    /// [`Smokes::density_of`]). [`Smoke::density`] is a look and doesn't
+    /// change it.
+    pub fn density_of(&mut self, cloud: CloudId, p: Vec3) -> f32 {
+        let tick = self.clock.tick;
+        self.world.density_of(cloud, p, tick)
     }
 }
 
@@ -1027,23 +1097,29 @@ fn pop_smokes(
                     .into()
             });
         }
-        let origin = transform.translation();
-        let seed = smoke.seed.unwrap_or_else(|| CloudSpec::seed_from_origin(origin));
-        let mut spec = CloudSpec::new(origin, clock.tick, seed, smoke.style.unwrap_or(settings.style));
-        spec.source = match smoke.source {
-            SmokeSource::Point => CloudSource::Point,
-            SmokeSource::Line { offset } => CloudSource::Line { end: origin + offset },
-            SmokeSource::Box { half_extents } => CloudSource::Box { half_extents },
-        };
-        spec.volume = smoke.volume;
-        if smoke.lifetime.is_some() || smoke.grow_time.is_some() {
-            let base = world.config().tuning.timeline;
-            spec.timeline = Some(SmokeTimeline {
-                lifetime: smoke.lifetime.unwrap_or(base.lifetime),
-                grow_time: smoke.grow_time.unwrap_or(base.grow_time),
-                ..base
-            });
-        }
+        // A server's spec as it is; otherwise the entity's position and the
+        // smoke's settings, on its own tick or the current one.
+        let spec = smoke.spec.unwrap_or_else(|| {
+            let origin = transform.translation();
+            let seed = smoke.seed.unwrap_or_else(|| CloudSpec::seed_from_origin(origin));
+            let tick = smoke.pop_tick.unwrap_or(clock.tick);
+            let mut spec = CloudSpec::new(origin, tick, seed, smoke.style.unwrap_or(settings.style));
+            spec.source = match smoke.source {
+                SmokeSource::Point => CloudSource::Point,
+                SmokeSource::Line { offset } => CloudSource::Line { end: origin + offset },
+                SmokeSource::Box { half_extents } => CloudSource::Box { half_extents },
+            };
+            spec.volume = smoke.volume;
+            if smoke.lifetime.is_some() || smoke.grow_time.is_some() {
+                let base = world.config().tuning.timeline;
+                spec.timeline = Some(SmokeTimeline {
+                    lifetime: smoke.lifetime.unwrap_or(base.lifetime),
+                    grow_time: smoke.grow_time.unwrap_or(base.grow_time),
+                    ..base
+                });
+            }
+            spec
+        });
         if !warnings.warned(Mistake::TooBig)
             && let Some(message) = setup::misfit(&spec, &world)
         {
@@ -1073,7 +1149,8 @@ fn advance_world(mut world: ResMut<SmokeWorld>, clock: Res<SmokeClock>) {
     world.advance(clock.tick);
 }
 
-/// Despawn entities whose cloud is gone, and forget clouds whose entity is.
+/// Despawn entities whose cloud is gone, and remove the clouds of entities
+/// despawned sooner.
 fn retire_smokes(
     mut commands: Commands,
     smokes: Query<(Entity, &Smoke)>,
@@ -1093,6 +1170,10 @@ fn retire_smokes(
         };
         let gone = world.cloud(id).is_none_or(|c| clock.tick >= c.end_tick());
         if gone && smoke.despawn_when_done {
+            // The cloud stays: the core forgets it after
+            // `Config::history_ticks`, so views of the ticks before (lag
+            // compensation, a drawn tick behind) still have it.
+            entities.0.remove(&entity);
             commands.entity(entity).despawn();
         }
     }
@@ -1606,6 +1687,189 @@ mod tests {
             let holes = &frame.holes[slot.hole_start as usize..][..slot.hole_count as usize];
             assert_eq!(holes, cloud.state.holes, "smoke {k}'s holes drawn");
         }
+    }
+
+    /// `SmokeVision::density_of` tells gas from plain smoke: inside the gas
+    /// it is all of `density_at`, and inside a grenade's smoke it is 0,
+    /// where `density_at` counts that smoke too.
+    #[test]
+    fn density_of_tells_gas_from_smoke() {
+        use bevy::ecs::system::SystemState;
+
+        let mut app = headless_app();
+        let gas = app.world_mut().spawn((Smoke::gas(), Transform::default())).id();
+        app.world_mut()
+            .spawn((Smoke::grenade(), Transform::from_xyz(30.0, 0.0, 0.0)));
+        // Five seconds at 50 ms a frame: both have grown.
+        for _ in 0..100 {
+            app.update();
+        }
+        let cloud = app
+            .world()
+            .get::<Smoke>(gas)
+            .and_then(Smoke::cloud)
+            .expect("the gas never popped");
+        let mut state = SystemState::<SmokeVision>::new(app.world_mut());
+        let mut vision = state.get_mut(app.world_mut()).expect("the plugin's resources");
+        let (in_gas, in_smoke) = (Vec3::new(0.0, 1.0, 0.0), Vec3::new(30.0, 1.0, 0.0));
+        let gassed = vision.density_of(cloud, in_gas);
+        assert!(gassed > 0.0, "no gas at {in_gas}");
+        assert_eq!(gassed.to_bits(), vision.density_at(in_gas).to_bits());
+        assert!(vision.density_at(in_smoke) > 0.0, "no smoke at {in_smoke}");
+        assert_eq!(vision.density_of(cloud, in_smoke), 0.0);
+    }
+
+    /// A pop heard late keeps pace with the server's: a `Smoke` on the
+    /// server's tick, or made from its whole spec, is the cloud
+    /// `SmokeWorld::pop` of that spec gives, to the bit, at every tick. Once
+    /// done, it stays for views of the ticks before, as the core keeps it.
+    #[test]
+    fn smokes_popped_on_the_servers_tick_match_the_servers_clouds() {
+        /// Every answer compared, as bits: lines through one smoke, both and
+        /// neither, and points in each.
+        fn answers(smokes: &mut Smokes<SharedLevel>, clouds: [CloudId; 2], tick: u64) -> Vec<u32> {
+            let lines = [
+                (Vec3::new(-6.0, 1.0, -1.5), Vec3::new(18.0, 1.0, 2.5)),
+                (Vec3::new(0.3, 0.5, -8.0), Vec3::new(0.3, 0.5, 8.0)),
+                (Vec3::new(11.6, 0.6, -6.0), Vec3::new(11.6, 0.6, 9.0)),
+                (Vec3::new(-4.0, 2.5, 6.0), Vec3::new(16.0, 0.3, -3.0)),
+                (Vec3::new(5.0, 3.0, 0.0), Vec3::new(5.2, 0.1, 0.3)),
+            ];
+            let points = [
+                Vec3::new(0.3, 1.0, -0.7),
+                Vec3::new(11.6, 0.8, 1.6),
+                Vec3::new(2.0, 0.4, 0.5),
+                Vec3::new(13.0, 1.8, 2.2),
+                Vec3::new(-1.5, 0.3, -2.0),
+                Vec3::new(6.0, 0.5, 0.8),
+            ];
+            let mut out = Vec::new();
+            for (a, b) in lines {
+                out.push(smokes.occlusion(a, b, tick).to_bits());
+                out.push(smokes.blocks_sight(a, b, tick) as u32);
+            }
+            for p in points {
+                out.push(smokes.density_at(p, tick).to_bits());
+                out.extend(clouds.map(|id| smokes.density_of(id, p, tick).to_bits()));
+            }
+            out
+        }
+
+        // The server: the core alone, with the plugin's rules and level.
+        let mut server = Smokes::new(
+            SmokePlugin::default().config,
+            Arc::new(FlatGround::new(0.0, UpAxis::Y)) as SharedLevel,
+        );
+        let popped = 200;
+        // What `Smoke::grenade()` pops at `at`.
+        let at = Vec3::new(0.3, 0.0, -0.7);
+        let grenade = CloudSpec::new(at, popped, CloudSpec::seed_from_origin(at), SmokeStyle::Volumetric);
+        // What a `Smoke`'s fields can't say: a line whose end doesn't survive
+        // the trip through an offset, and a timeline with its own start and
+        // fade.
+        let (from, end) = (Vec3::new(9.0, 0.2, 0.6), Vec3::new(14.3, 0.2, 2.7));
+        assert_ne!(from + (end - from), end);
+        let wall = CloudSpec {
+            source: CloudSource::Line { end },
+            volume: Some(60.0),
+            timeline: Some(SmokeTimeline {
+                start: 0.3,
+                grow_time: 2.0,
+                lifetime: 9.0,
+                fade_time: 2.5,
+            }),
+            ..CloudSpec::new(from, popped, 77, SmokeStyle::Volumetric)
+        };
+        let theirs = [server.pop(grenade), server.pop(wall)];
+
+        // The client hears of both 20 ticks late.
+        let mut app = headless_app();
+        let heard = popped + 20;
+        app.insert_resource(SmokeClock {
+            tick: heard,
+            auto: false,
+            ..default()
+        });
+        let tint = Color::srgb(1.0, 0.3, 0.1);
+        let entities = [
+            app.world_mut()
+                .spawn((Smoke::grenade().with_pop_tick(popped), Transform::from_translation(at)))
+                .id(),
+            app.world_mut().spawn(Smoke::from_spec(wall).with_tint(tint)).id(),
+        ];
+        app.update();
+        let ours = entities.map(|e| {
+            app.world()
+                .get::<Smoke>(e)
+                .and_then(Smoke::cloud)
+                .expect("never popped")
+        });
+        let world = app.world().resource::<SmokeWorld>();
+        for (id, spec) in ours.into_iter().zip([grenade, wall]) {
+            assert_eq!(world.cloud(id).map(|c| *c.spec()), Some(spec));
+        }
+
+        // Just heard; the wall growing; both grown; the wall fading; the wall
+        // done, and a frame later; the grenade fading; the grenade done, and
+        // a frame later; both forgotten. At each, the answers now and 100
+        // ticks before (lag compensation, within `Config::history_ticks`).
+        let ends = theirs.map(|id| server.cloud(id).map(|c| c.end_tick()).expect("the server's cloud"));
+        let mut advanced = popped;
+        for tick in [20, 150, 400, 1000, 1200, 1210, 2100, 2310, 2320, 2450].map(|k| popped + k) {
+            app.world_mut().resource_mut::<SmokeClock>().tick = tick;
+            app.update();
+            for t in advanced..=tick {
+                server.advance(t);
+            }
+            advanced = tick + 1;
+            for t in [tick, tick - 100] {
+                let mut world = app.world_mut().resource_mut::<SmokeWorld>();
+                assert_eq!(
+                    answers(&mut world, ours, t),
+                    answers(&mut server, theirs, t),
+                    "tick {t}"
+                );
+            }
+            // Done smokes despawn, and leave their clouds to the core.
+            for k in 0..2 {
+                let alive = app.world().get_entity(entities[k]).is_ok();
+                assert_eq!(alive, tick < ends[k], "smoke {k} at tick {tick}");
+            }
+            if tick == popped + 400 {
+                // Both grown, and drawn with their entities' looks.
+                assert!(server.blocks_sight(Vec3::new(-6.0, 1.0, -1.5), Vec3::new(18.0, 1.0, 2.5), tick));
+                assert!(server.density_of(theirs[1], Vec3::new(11.6, 0.8, 1.6), tick) > 0.0);
+                let drawn: Vec<CloudId> = app
+                    .world_mut()
+                    .resource_mut::<SmokeWorld>()
+                    .view(tick)
+                    .clouds()
+                    .map(|c| c.state.id)
+                    .collect();
+                let slots = &app.world().resource::<SmokeFrame>().slots;
+                let looks: Vec<(CloudId, Vec3)> = drawn.into_iter().zip(slots.iter().map(|s| s.tint)).collect();
+                assert_eq!(looks.len(), 2);
+                assert!(looks.contains(&(ours[0], Vec3::ONE)));
+                assert!(looks.contains(&(ours[1], tint.to_linear().to_vec3())));
+            }
+        }
+        assert_eq!(server.clouds().count(), 0);
+        assert_eq!(app.world().resource::<SmokeWorld>().clouds().count(), 0);
+    }
+
+    #[test]
+    fn despawning_a_smoke_sooner_removes_its_cloud_at_once() {
+        let mut app = headless_app();
+        let smoke = app.world_mut().spawn((Smoke::grenade(), Transform::default())).id();
+        app.update();
+        let cloud = app
+            .world()
+            .get::<Smoke>(smoke)
+            .and_then(Smoke::cloud)
+            .expect("never popped");
+        app.world_mut().despawn(smoke);
+        app.update();
+        assert!(app.world().resource::<SmokeWorld>().cloud(cloud).is_none());
     }
 
     #[test]

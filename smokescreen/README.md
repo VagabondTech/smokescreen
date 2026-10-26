@@ -26,7 +26,10 @@ let view = smokes.view(tick);
 assert!(view.blocks_sight(Vec3::new(-400.0, 0.0, 64.0), Vec3::new(400.0, 0.0, 64.0)));
 ```
 
-`examples/server.rs` is a complete headless loop with 250 bots.
+`examples/server.rs` is a complete headless loop with 250 bots. For coding
+assistants, [`llms.txt`](https://raw.githubusercontent.com/VagabondTech/smokescreen/main/llms.txt)
+maps the API of this crate and of `bevy_smokescreen` on one page, with
+recipes, a server on this crate alone among them.
 
 It needs Rust 1.88 or newer, and depends only on `glam` and `libm`:
 
@@ -48,9 +51,10 @@ smokescreen = "0.2"
   with ticks; they close and refill over time.
 - **The rule.** `occlusion(a, b)` is the amount of cloud along a segment,
   every cloud added up; `blocks_sight(a, b)` is whether that reaches
-  `Tuning::sight_threshold`; `density_at(p)` is for gas damage. Queries
-  allocate nothing, skip clouds the segment doesn't come near, and a `View`
-  of one tick can be shared between threads.
+  `Tuning::sight_threshold`. `density_at(p)` is the density at a point,
+  every cloud added up, and `density_of(cloud, p)` one cloud's, for gas
+  damage. Queries allocate nothing, skip clouds the segment doesn't come
+  near, and a `View` of one tick can be shared between threads.
 
 ## Multiplayer
 

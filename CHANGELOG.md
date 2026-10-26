@@ -91,6 +91,37 @@ keeps running, with crystal smoke and the simulation, and the log says
 why volumetric and faceted smoke isn't drawn; before, the smoke's GPU
 setup failed wgpu's validation and Bevy quit. No results change.
 
+**`llms.txt`, for coding assistants.** The API of both crates on one page,
+in the llmstxt.org layout, with recipes: grenades, walls, gas, fog and
+steam; bullets and explosions; bot vision, gas damage and sound; levels
+from meshes, boxes, physics engines and glTF scenes; the quality dial and
+budget mode; the looks; other units; multiplayer in Bevy; a first-person
+weapon; a server on the core alone. It also lists the gotchas and every
+setup warning with its fix. Its Rust code is compiled as doc tests, like
+the README's, and `bevy_smokescreen`'s package carries it (and no longer
+carries `CLAUDE.md`, the notes for sessions working on this repository).
+The browser demo's site serves it too.
+
+**One smoke's density at a point.** `density_at(p)` adds up every smoke,
+so gas damage counted plain smoke too. `density_of(cloud, p)`, on `View`,
+`Smokes` (at a tick) and `SmokeVision`, gives one cloud's share of it, to
+the bit; in Bevy, `Smoke::cloud()` gives a smoke's `CloudId`. `llms.txt`'s
+gas damage recipe uses it. No results change.
+
+**Networked pops in Bevy.** A `Smoke` always popped on the current tick,
+so a cloud a client heard of late ran behind the server's all its life;
+clouds popped on `SmokeWorld` with the server's tick were drawn untinted,
+with no entity. `Smoke::from_spec(spec)` spawns exactly the cloud a server
+announced (its origin, pop tick and every rule, whatever the entity's
+position or the clock), with the entity's look and lifecycle.
+`Smoke::with_pop_tick(tick)` (the field `pop_tick`) pops a smoke at the
+tick of the event that threw it, for games where every machine spawns the
+same smoke. A smoke whose entity despawns when it is done now leaves its
+cloud in `SmokeWorld` for `Config::history_ticks` more, as the core keeps
+every cloud, so views of past ticks (lag compensation) still see it;
+despawning the entity sooner still removes the cloud at once. `llms.txt`'s
+multiplayer recipe uses `from_spec`. No results change.
+
 - **results** The volumetric rule works out density in the same order as
   the picture. A sample used to take the density of the distance
   interpolated between voxels, while the GPU bakes each voxel's density
