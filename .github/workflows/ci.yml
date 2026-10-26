@@ -40,6 +40,8 @@ jobs:
         run: cargo test -p smokescreen --test determinism
 
   # Every instruction the runner has (FMA, AVX2) must leave results alone.
+  # No cache: runners differ in CPU, and dependencies built for one can use
+  # instructions another lacks (the test then dies of an illegal instruction).
   core-native:
     runs-on: ubuntu-latest
     env:
@@ -47,7 +49,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - run: cargo test -p smokescreen --release --test determinism
 
   # The core's minimum Rust version (`rust-version` in smokescreen/Cargo.toml).
