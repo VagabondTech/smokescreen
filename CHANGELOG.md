@@ -122,6 +122,54 @@ every cloud, so views of past ticks (lag compensation) still see it;
 despawning the entity sooner still removes the cloud at once. `llms.txt`'s
 multiplayer recipe uses `from_spec`. No results change.
 
+**An API that can grow in 0.2 releases, and four changes that couldn't
+wait for 0.3.** No results change: the determinism hashes are the same,
+and the demo's showcase draws the same pixels.
+
+- `Style` (`SmokeStyle`), `CloudSource`, `SmokeSource`, `NoiseWithinRule`,
+  `SmokeResolution`, `VolumeSteps`, `Polyhedron`, `ShapeMix`,
+  `FacetShadows`, `FacetOcclusion` and `SmokeSystems` are
+  `#[non_exhaustive]`, as `FacetRule` already was, and so is
+  `CrystalPuff`. A `match` on one of them needs a `_` arm, so a new style,
+  source, mode or shape can come in a 0.2 release. Building them is
+  unchanged.
+- The style is out of `SmokeSettings`. Its docs said the look could change
+  at any time without changing what hides what, but the style decides what
+  hides what. Smokes without a style of their own now take
+  `DefaultSmokeStyle`, a resource read at each pop and documented as a
+  rule: write `DefaultSmokeStyle(style)` where you wrote
+  `SmokeSettings { style, .. }`. `SmokeSettings` can now be a player's
+  graphics settings as it stands.
+- `SmokeBullet` and `SmokeExplosion` take a `tick` (`None` lands them on
+  the current tick, as before) and implement `Default`: build them with
+  `..default()`. A message used to land on whatever tick the clock showed
+  when the plugin read it, so machines in lockstep could stamp one shot on
+  different ticks, shots from two fixed steps in one frame shared a tick,
+  and networked games had to call `SmokeWorld::bullet` instead.
+  `llms.txt`'s multiplayer recipe now sends ticked messages.
+- `VoxelObstacles::from_bytes` returns `Result<VoxelObstacles,
+  VoxelBytesError>` instead of an `Option`: not voxels, a format this
+  version can't read (a newer one's), cut short, or a header that makes no
+  sense (or bytes after the voxels). A corrupt header used to panic in
+  debug builds, an overflow working out its size; whatever the bytes hold,
+  the answer is now the voxels or an error. Building a `VoxelObstacles`
+  with a voxel size that isn't above 0, or of more than 2^32 - 1 voxels
+  (512 MB of bits), panics with a message that says so, where it
+  overflowed before.
+- `SmokePlugin::new(config)`, so code needn't spell out the plugin's
+  fields: later versions may add some.
+- Hidden: `Timeline::growth`, `dissolve` and `is_growing`, the density
+  model renderers mirror.
+- The docs say what 0.2 releases may change (a "Versions" section in the
+  README, and on both crates' front pages): variants of non-exhaustive
+  enums, and fields of structs built from a constructor or with
+  `..default()`. `CloudSpec` gains fields only in a new 0.x. Releases avoid
+  changing results where they can, but every machine in a match should
+  run the same version. They also say that a `CloudShape` has no wire
+  format (`fill_cloud` is for filling off the main thread; send the
+  `CloudSpec`), that a smoke source's offset and box are in world axes,
+  and that the look's lengths are in metres in every unit system.
+
 - **results** The volumetric rule works out density in the same order as
   the picture. A sample used to take the density of the distance
   interpolated between voxels, while the GPU bakes each voxel's density
