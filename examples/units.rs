@@ -46,10 +46,8 @@ fn main() {
         }),
         ..default()
     }))
-    .add_plugins(SmokePlugin {
-        config: Config::new(units, 128.0),
-    })
-    .insert_resource(SmokeSettings { style, ..default() })
+    .add_plugins(SmokePlugin::new(Config::new(units, 128.0)))
+    .insert_resource(DefaultSmokeStyle(style))
     .insert_resource(Setup { units, style })
     .insert_resource(GlobalAmbientLight {
         color: Color::srgb(0.75, 0.82, 1.0),
@@ -171,6 +169,7 @@ fn capture(
                 SmokeStyle::Volumetric => "volumetric",
                 SmokeStyle::Faceted => "faceted",
                 SmokeStyle::Crystal => "crystal",
+                _ => "other",
             }
         );
         info!("{} clouds; saving {name}", world.clouds().count());

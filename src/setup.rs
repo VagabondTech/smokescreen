@@ -114,7 +114,8 @@ pub(crate) fn misfit(spec: &CloudSpec, world: &Smokes<SharedLevel>) -> Option<St
                 ));
             }
         }
-        CloudSource::Point => {}
+        // A point fits anywhere (and the core has no other sources yet).
+        _ => {}
     }
     let volume = spec.volume.map_or(t.volume, |vol| units.volume_to_internal(vol));
     let holds = dims.x * dims.y * dims.z * v * v * v;

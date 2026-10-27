@@ -66,18 +66,23 @@ smokescreen = "0.1"
   recent past ticks answer as they would have then.
 - The level must answer the same everywhere. For mesh levels, voxelise once
   (`VoxelObstacles::from_triangles`) and ship the bytes
-  (`VoxelObstacles::to_bytes`).
+  (`VoxelObstacles::to_bytes`). `VoxelObstacles::from_bytes` says why bytes
+  it can't read are wrong (`VoxelBytesError`), and never panics on them.
 - `Level` asks two things: whether a voxel-sized box is blocked
   (`is_blocked`), and whether a point is inside (`is_inside`, which by
   default asks `is_blocked` with a box of size zero). The second lets smoke
   fill right up to walls that only clip a voxel. If your collision code
   can't test a point, answer with `is_blocked(point, half a voxel)`: smoke
   then stops up to half a voxel short of such walls.
-- Or fill on the server only (`fill_cloud`) and send the result to clients
-  (`Smokes::insert`). What a `CloudShape` holds is not part of the API yet,
-  so the server and its clients must run the same version of this crate
-  (as they must to agree anyway). `Smokes::insert` says what a shape sent
-  field by field needs rebuilt on arrival.
+- `fill_cloud` runs a whole fill outside the world (on a worker thread,
+  say) for `Smokes::insert`. A `CloudShape` has no wire format: what it
+  holds is not part of the API, so between machines send the `CloudSpec`.
+- Releases within 0.2 avoid changing results where they can (a change
+  shows in the determinism hashes, and the changelog says so), but to be
+  safe, run the same version on every machine in a match. Later 0.2
+  releases may add enum variants (match with `_`) and fields to the
+  settings structs (build them from their constructors or `Default`);
+  `CloudSpec` gains fields only in a new 0.x.
 
 ## Determinism
 

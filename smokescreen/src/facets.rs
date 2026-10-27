@@ -61,7 +61,9 @@ const ICOSAHEDRON: [Vec3; 10] = [
 
 /// Puff shapes. All are centrally symmetric, so each needs one normal per
 /// pair of opposite faces. The discriminants are the ids renderers use.
+/// Later versions may add shapes, so a `match` on it needs a `_` arm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Polyhedron {
     /// Six square faces.
     Cube = 0,
@@ -105,8 +107,10 @@ impl Polyhedron {
     }
 }
 
-/// Which polyhedra a cloud is built from.
+/// Which polyhedra a cloud is built from. Later versions may add mixes, so a
+/// `match` on it needs a `_` arm.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum ShapeMix {
     /// Every puff has the same shape.
     Single(Polyhedron),

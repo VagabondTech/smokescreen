@@ -19,6 +19,7 @@ use crate::{Smoke, SmokeClock, SmokeConfig, SmokeSettings, SmokeWorld};
 /// don't change or despawn them, but you can filter on this (to keep them
 /// out of your own raycasts, say).
 #[derive(Component, Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct CrystalPuff {
     /// The cloud this puff belongs to.
     pub cloud: CloudId,
