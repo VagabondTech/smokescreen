@@ -48,6 +48,24 @@
 //! The `determinism` test hashes thousands of query results over the lives
 //! of eight clouds; run it on each platform you ship and compare.
 //!
+//! ## Versions
+//!
+//! - **Results.** 0.2 releases avoid changing results where they can (a
+//!   change shows in the `determinism` test's hashes, and the changelog
+//!   says so), but to be safe, run the same version on every machine in a
+//!   match.
+//! - **The API.** Later 0.2 releases may add to it without breaking code
+//!   written the way these docs write it. Enums marked `#[non_exhaustive]`
+//!   may gain variants, so match them with a `_` arm. The settings structs
+//!   ([`Config`], [`Tuning`], [`Timeline`], [`HoleSettings`],
+//!   [`FacetSettings`], [`FacetLimits`]) may gain fields, so build them from
+//!   their constructors or `Default` and set fields, or use `..` with one.
+//!   [`CloudSpec`] gains fields only in a new 0.x: every machine must send
+//!   them, so a new one should stop code that sends it field by field from
+//!   compiling.
+//! - **Hidden items** (left out of these docs) are for `bevy_smokescreen`
+//!   and the tests, and may change in any release.
+//!
 //! ## Example
 //!
 //! ```
@@ -91,7 +109,7 @@ mod world;
 pub use facets::{FacetLimits, FacetRule, FacetSettings, Polyhedron, ShapeMix};
 pub use fill::CloudShape;
 pub use holes::HoleSettings;
-pub use level::{BoxObstacles, FlatGround, Level, ObstacleBox, VoxelObstacles};
+pub use level::{BoxObstacles, FlatGround, Level, ObstacleBox, VoxelBytesError, VoxelObstacles};
 pub use timeline::Timeline;
 pub use units::{Units, UpAxis};
 pub use volume::VolumeSteps;

@@ -51,8 +51,10 @@ pub fn quality_of_tier(tier: usize) -> f32 {
     tier.min(TIERS - 1) as f32 / (TIERS - 1) as f32
 }
 
-/// How the faceted style shades sunlight.
+/// How the faceted style shades sunlight. Later versions may add ways, so a
+/// `match` on it needs a `_` arm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum FacetShadows {
     /// A shadow ray per pixel through the puffs: crisp facet-on-facet shadows.
     Traced,
@@ -62,7 +64,9 @@ pub enum FacetShadows {
 }
 
 /// How the faceted style darkens creases and the underside of the cloud.
+/// Later versions may add ways, so a `match` on it needs a `_` arm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum FacetOcclusion {
     /// Three distance-field taps along the normal: crisp creases.
     Traced,

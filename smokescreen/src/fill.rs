@@ -64,7 +64,8 @@ pub(crate) struct FillSpec {
 /// [`Smokes::insert`](crate::Smokes::insert) takes one, and
 /// [`CloudInfo::shape`](crate::CloudInfo::shape) shows a world's. What is
 /// inside is for renderers and isn't part of the API: it may change in any
-/// release.
+/// release. It has no wire format; between machines, send the
+/// [`CloudSpec`](crate::CloudSpec) instead.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CloudShape {
     #[doc(hidden)]

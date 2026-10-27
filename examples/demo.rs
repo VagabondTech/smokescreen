@@ -173,7 +173,7 @@ fn main() {
         }))
         .insert_resource(ShotTarget::Window);
     }
-    let mut smoke_settings = SmokeSettings { style, ..default() };
+    let mut smoke_settings = SmokeSettings::default();
     if setting("noise").as_deref() == Some("0") {
         // Below 0 the billow erosion also cancels the extra erosion of
         // fading smoke: the shader adds the two and clamps the sum at 0.
@@ -196,6 +196,8 @@ fn main() {
     };
     app.add_plugins((smoke_plugin, FrameTimeDiagnosticsPlugin::default()))
         .insert_resource(smoke_settings)
+        // The style of the smokes the demo throws: a rule, which F cycles.
+        .insert_resource(DefaultSmokeStyle(style))
         .insert_resource(DemoBudget(budget_ms))
         .insert_resource(GlobalAmbientLight {
             color: Color::srgb(0.75, 0.82, 1.0),
@@ -783,7 +785,11 @@ fn shoot(
     let dir = dir.normalize();
     let dist = level.raycast(origin, dir, 120.0).unwrap_or(120.0);
     let end = origin + dir * dist;
-    bullets.write(SmokeBullet { start: origin, end });
+    bullets.write(SmokeBullet {
+        start: origin,
+        end,
+        ..default()
+    });
     effects.tracers.push((origin + dir * 0.6 - Vec3::Y * 0.1, end, 0.0));
     // Muzzle flash: lights smoke you're standing in.
     commands.spawn((
@@ -805,10 +811,7 @@ fn shoot(
 
 /// An HE explosion at `p`: a cleared sphere in the smoke and a flash.
 fn explode(commands: &mut Commands, explosions: &mut MessageWriter<SmokeExplosion>, p: Vec3) {
-    explosions.write(SmokeExplosion {
-        center: p,
-        radius: None,
-    });
+    explosions.write(SmokeExplosion { center: p, ..default() });
     commands.spawn((
         PointLight {
             intensity: 0.0,
@@ -1213,7 +1216,7 @@ fn press(button: ToolButton, actions: &mut Actions) {
 /// The buttons say what the style and the dial are on, more briefly on a
 /// small screen, and without their keys on a touch screen.
 fn update_toolbar(
-    settings: Res<SmokeSettings>,
+    style: Res<DefaultSmokeStyle>,
     touch: Res<TouchControls>,
     cameras: Query<(&SmokeQuality, &Camera)>,
     mut labels: Query<(&ToolLabel, &mut Text)>,
@@ -1222,7 +1225,7 @@ fn update_toolbar(
         .single()
         .map_or(("-", false), |(q, camera)| (q.tier_name(), small_screen(camera)));
     for (label, mut text) in &mut labels {
-        let wanted = tool_label(label.0, settings.style, tier, small, touch.active);
+        let wanted = tool_label(label.0, style.0, tier, small, touch.active);
         if text.0 != wanted {
             text.0 = wanted;
         }
@@ -1264,6 +1267,7 @@ fn style_name(style: SmokeStyle) -> &'static str {
         SmokeStyle::Volumetric => "volumetric",
         SmokeStyle::Faceted => "faceted",
         SmokeStyle::Crystal => "crystal",
+        _ => "other",
     }
 }
 
@@ -1387,16 +1391,16 @@ fn style_key(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     mut actions: ResMut<Actions>,
-    mut settings: ResMut<SmokeSettings>,
+    mut style: ResMut<DefaultSmokeStyle>,
     smokes: Query<(Entity, &Smoke, &Transform)>,
 ) {
     if !(std::mem::take(&mut actions.cycle_style) | keys.just_pressed(KeyCode::KeyF)) {
         return;
     }
-    settings.style = match settings.style {
+    style.0 = match style.0 {
         SmokeStyle::Volumetric => SmokeStyle::Faceted,
         SmokeStyle::Faceted => SmokeStyle::Crystal,
-        SmokeStyle::Crystal => SmokeStyle::Volumetric,
+        _ => SmokeStyle::Volumetric,
     };
     for (entity, smoke, transform) in &smokes {
         commands.entity(entity).despawn();
@@ -1420,7 +1424,7 @@ fn update_hud(
     mut hud: Query<&mut Text, With<Hud>>,
     diagnostics: Res<DiagnosticsStore>,
     smokes: Query<&Smoke>,
-    settings: Res<SmokeSettings>,
+    style: Res<DefaultSmokeStyle>,
     cameras: Query<(
         &SmokeCamera,
         &SmokeQuality,
@@ -1467,24 +1471,23 @@ fn update_hud(
         None => format!("dial {} ({}/6)", status.tier_name(), status.tier + 1),
     };
     // Volumetric smoke marches coarser than the step's resolution close up.
-    let dial = match (settings.style, status.volumetric_resolution) {
+    let dial = match (style.0, status.volumetric_resolution) {
         (SmokeStyle::Volumetric, SmokeResolution::TwoThirds) => format!("{dial}, marched at 2/3"),
         (SmokeStyle::Volumetric, SmokeResolution::Half) => format!("{dial}, marched at 1/2"),
         (SmokeStyle::Volumetric, SmokeResolution::Quarter) => format!("{dial}, marched at 1/4"),
         _ => dial,
     };
     // How far the rays see smoke, when the camera measures it.
-    let dial = match (settings.style, status.measured_depth) {
+    let dial = match (style.0, status.measured_depth) {
         (SmokeStyle::Volumetric, Some(depth)) => format!("{dial} (rays see smoke within {depth:.1} m)"),
         _ => dial,
     };
     // A gameplay query: can the camera see the red box behind the smoke?
     let target = Vec3::new(0.0, 0.9, 10.0);
     let seen = vision.transmittance(cam.translation(), target);
-    let style = match settings.style {
-        SmokeStyle::Volumetric => "volumetric",
+    let style = match style.0 {
         SmokeStyle::Faceted => "faceted (experimental)",
-        SmokeStyle::Crystal => "crystal",
+        other => style_name(other),
     };
     let count = smokes.iter().filter(|s| s.cloud().is_some()).count();
     text.0 = if small_screen(camera) {
@@ -2525,6 +2528,7 @@ fn agreement_run(
     mut ui: Query<&mut Visibility, Or<(With<Hud>, With<Help>, With<Node>)>>,
     mut virtual_time: ResMut<Time<Virtual>>,
     mut settings: ResMut<SmokeSettings>,
+    style: Res<DefaultSmokeStyle>,
     mut world: ResMut<SmokeWorld>,
     clock: Res<SmokeClock>,
     level: Res<Level>,
@@ -2543,7 +2547,7 @@ fn agreement_run(
         run.stage += 1;
         run.stage_frame = 0;
     };
-    let volumetric = settings.style == SmokeStyle::Volumetric;
+    let volumetric = style.0 == SmokeStyle::Volumetric;
     let smoke = Smoke::default().with_seed(7);
     match run.stage {
         0 => {
@@ -2594,7 +2598,7 @@ fn agreement_run(
                     .fold(f32::INFINITY, f32::min);
                 let mut meta = format!(
                     "style {:?}\nthreshold {}\nvolume_steps {:?}\nfacet_rule {:?}\nsigma {}\nage {age:.3}\nerosion {}\ndetail_erosion {}\ntier {}\nnoise_within_rule {:?}\n",
-                    settings.style,
+                    style.0,
                     config.tuning.sight_threshold,
                     config.tuning.volume_steps,
                     config.tuning.facet_rule,
@@ -3083,7 +3087,7 @@ fn video_script(
     target: Res<ShotTarget>,
     mut video: ResMut<Video>,
     mut actions: ResMut<Actions>,
-    mut settings: ResMut<SmokeSettings>,
+    mut default_style: ResMut<DefaultSmokeStyle>,
     mut sightlines: ResMut<Sightlines>,
     mut camera: Query<(&mut Transform, &mut FlyCam, &mut SmokeCamera)>,
     mut ui: Query<&mut Visibility, (With<Node>, Without<Caption>)>,
@@ -3143,7 +3147,7 @@ fn video_script(
         for entity in &things {
             commands.entity(entity).despawn();
         }
-        settings.style = clip.style;
+        default_style.0 = clip.style;
         sightlines.0 = false;
         for (mut v, roof) in &mut props {
             *v = if roof {

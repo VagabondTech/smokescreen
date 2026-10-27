@@ -66,6 +66,24 @@
 //! on an entity without a mesh, and so on), the plugin says so in the log,
 //! once, with the fix.
 //!
+//! ## Versions
+//!
+//! `bevy_smokescreen` 0.2 is for Bevy 0.20. Later 0.2 releases may add to
+//! the API without breaking code written the way these docs write it:
+//!
+//! - enums marked `#[non_exhaustive]` may gain variants, so match them with
+//!   a `_` arm;
+//! - structs whose fields are all public may gain fields, so build them
+//!   from a constructor ([`SmokePlugin::new`], [`SmokeCamera::HIGH`]) or with
+//!   `..default()` ([`SmokeSettings`], [`SmokeCamera`], [`SmokeClock`],
+//!   [`SmokeBullet`], [`SmokeExplosion`], and the core's settings the same
+//!   way);
+//! - a [`Smoke`] is built with its presets and builders, and may gain both.
+//!
+//! The simulation's results follow the core's rule: 0.2 releases avoid
+//! changing them where they can, but run the same version on every machine
+//! in a match. Items hidden from these docs may change in any release.
+//!
 //! The README in the repository root has a longer guide: presets, level
 //! setup, gameplay queries, networking and tuning. For coding assistants,
 //! `llms.txt` (in the repository, and at the root of this crate's package)
@@ -105,7 +123,7 @@ pub use smokescreen::Style as SmokeStyle;
 pub use smokescreen::Timeline as SmokeTimeline;
 pub use smokescreen::{
     BoxObstacles, CloudId, CloudSource, CloudSpec, Config, FacetRule, FacetSettings, FlatGround, HoleSettings, Level,
-    ObstacleBox, Polyhedron, ShapeMix, Smokes, Tuning, Units, UpAxis, VolumeSteps, VoxelObstacles,
+    ObstacleBox, Polyhedron, ShapeMix, Smokes, Tuning, Units, UpAxis, VolumeSteps, VoxelBytesError, VoxelObstacles,
 };
 
 use render::{FrameFacet, FrameLight, FrameSlot, SlotUpload, SmokeFrame, SmokeUploads};
@@ -115,10 +133,11 @@ use smokescreen::light::{LightRays, visibility};
 /// What most apps use: `use bevy_smokescreen::prelude::*;`.
 pub mod prelude {
     pub use crate::{
-        BoxObstacles, CrystalPuff, FacetQuality, FacetRule, FacetSettings, FlatGround, NoiseWithinRule, ObstacleBox,
-        Polyhedron, ShapeMix, Smoke, SmokeBullet, SmokeCamera, SmokeClock, SmokeExplosion, SmokeLevel, SmokeObstacle,
-        SmokePlugin, SmokeQuality, SmokeResolution, SmokeSettings, SmokeSource, SmokeStyle, SmokeSun, SmokeSystems,
-        SmokeVision, SmokeWorld, Units, UpAxis, VolumeSteps, VolumetricQuality, VoxelObstacles,
+        BoxObstacles, CrystalPuff, DefaultSmokeStyle, FacetQuality, FacetRule, FacetSettings, FlatGround,
+        NoiseWithinRule, ObstacleBox, Polyhedron, ShapeMix, Smoke, SmokeBullet, SmokeCamera, SmokeClock,
+        SmokeExplosion, SmokeLevel, SmokeObstacle, SmokePlugin, SmokeQuality, SmokeResolution, SmokeSettings,
+        SmokeSource, SmokeStyle, SmokeSun, SmokeSystems, SmokeVision, SmokeWorld, Units, UpAxis, VolumeSteps,
+        VolumetricQuality, VoxelObstacles,
     };
 }
 
@@ -146,24 +165,34 @@ pub struct LlmsTxtDoctests;
 /// Positions in Bevy (transforms, messages, [`SmokeVision`]) are in
 /// [`Config::units`]: Y-up metres by default, but a world in Z-up inches
 /// works just as well, with the core and the renderer agreeing.
+///
+/// Build it with [`SmokePlugin::new`] or `default()`: later versions may
+/// add fields.
 #[derive(Clone, Debug)]
 pub struct SmokePlugin {
     /// The simulation's configuration: units, ticks per second and the rules.
     pub config: Config,
 }
 
+impl SmokePlugin {
+    /// The plugin with your [`Config`]: units, ticks per second and rules.
+    pub fn new(config: Config) -> Self {
+        Self { config }
+    }
+}
+
 impl Default for SmokePlugin {
+    /// Y-up metres at 128 ticks a second, with the default rules.
     fn default() -> Self {
-        Self {
-            config: Config::new(Units::METRES_Y_UP, 128.0),
-        }
+        Self::new(Config::new(Units::METRES_Y_UP, 128.0))
     }
 }
 
 /// System sets, in order, all in `PostUpdate` after transform propagation.
 /// Write [`SmokeBullet`]/[`SmokeExplosion`] messages in `Update` (or anywhere
-/// before [`SmokeSystems::Simulate`]).
+/// before [`SmokeSystems::Simulate`]). Later versions may add sets.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum SmokeSystems {
     /// Pop new smokes, apply impacts, advance the simulation to
     /// [`SmokeClock::tick`]. It ends before Bevy's visibility systems start
@@ -216,6 +245,7 @@ impl Plugin for SmokePlugin {
             .insert_resource(uploads.clone())
             .init_resource::<SmokeClock>()
             .init_resource::<SmokeSettings>()
+            .init_resource::<DefaultSmokeStyle>()
             .init_resource::<SlotTable>()
             .init_resource::<SmokeLighting>()
             .init_resource::<SmokeEntities>()
@@ -368,12 +398,16 @@ impl SmokeClock {
     }
 }
 
-/// Look of all smokes. Change at runtime freely: nothing here changes what
-/// hides what (that is [`Tuning`], fixed in the plugin's [`Config`]).
+/// Look of all smokes. Change at runtime freely, and per player (a graphics
+/// menu, say): nothing here changes what hides what. That is the rules:
+/// [`Tuning`], fixed in the plugin's [`Config`], and each smoke's style
+/// ([`DefaultSmokeStyle`], [`Smoke::with_style`]).
+///
+/// Lengths here are in metres whatever [`Config::units`] says: the
+/// extinction is per metre and the noise frequency in tiles per metre. Only
+/// `wind` is in world units.
 #[derive(Resource, Clone, Debug)]
 pub struct SmokeSettings {
-    /// Style of smokes whose [`Smoke::style`] is `None`.
-    pub style: SmokeStyle,
     /// Extinction (1/m) of fully dense volumetric smoke. 7 means you can't
     /// see past about half a metre inside a smoke.
     pub extinction: f32,
@@ -435,7 +469,6 @@ pub struct SmokeSettings {
 impl Default for SmokeSettings {
     fn default() -> Self {
         Self {
-            style: SmokeStyle::Volumetric,
             extinction: 7.0,
             albedo: LinearRgba::rgb(0.9, 0.9, 0.92),
             anisotropy: 0.25,
@@ -457,6 +490,26 @@ impl Default for SmokeSettings {
     }
 }
 
+/// The style of smokes that don't choose their own ([`Smoke::style`] is
+/// `None`), read when each one pops. Volumetric by default.
+///
+/// The style is a rule, not a look: it decides what hides what. In a
+/// multiplayer game every machine must give a smoke the same one, so set
+/// this the same everywhere (or give each smoke its own with
+/// [`Smoke::with_style`]); a cloud from [`Smoke::from_spec`] takes its
+/// spec's. Changing it changes only smokes that pop afterwards.
+///
+/// ```no_run
+/// # use bevy::prelude::*;
+/// # use bevy_smokescreen::prelude::*;
+/// App::new()
+///     .add_plugins((DefaultPlugins, SmokePlugin::default()))
+///     // Every smoke crystal, unless it says otherwise.
+///     .insert_resource(DefaultSmokeStyle(SmokeStyle::Crystal));
+/// ```
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Deref, DerefMut)]
+pub struct DefaultSmokeStyle(pub SmokeStyle);
+
 /// How volumetric smoke's noise relates to the rule ([`SmokeSettings::noise_within_rule`]).
 ///
 /// The noise only ever thins the smoke, so it can show through some of what
@@ -466,8 +519,9 @@ impl Default for SmokeSettings {
 /// For those games, `Capped` and `Filled` keep volumetric smoke opaque on
 /// every line the rule blocks (at [`Smoke::density`] 1 or more), each with a
 /// different cost. Both leave thin smoke (wisps, edges, silhouettes) all its
-/// noise.
+/// noise. Later versions may add modes, so a `match` on it needs a `_` arm.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum NoiseWithinRule {
     /// The noise may thin smoke the rule counts. Billowy, and fading clouds
     /// dissolve into wisps. Rays end once less than 5 % of the scene shows
@@ -527,24 +581,38 @@ pub struct SmokeLevel(
 #[derive(Component, Default, Clone, Copy, Debug)]
 pub struct SmokeSun;
 
-/// A bullet passing through smoke at the current [`SmokeClock::tick`]. Leaves
-/// a tunnel that closes in about 2 s.
-#[derive(Message, Clone, Copy, Debug)]
+/// A bullet passing through smoke: a tunnel that closes in about 2 s.
+///
+/// Build it with `..default()` (`SmokeBullet { start, end, ..default() }`):
+/// later versions may add fields.
+#[derive(Message, Clone, Copy, Debug, Default, PartialEq)]
 pub struct SmokeBullet {
     /// Where the shot starts, in world units.
     pub start: Vec3,
     /// Where it ends: what it hit, or the end of its range.
     pub end: Vec3,
+    /// The tick the shot was fired on. `None` lands it on the current
+    /// [`SmokeClock::tick`]. In a networked game, give it the shot's own
+    /// tick (as [`Smoke::with_pop_tick`] does for a pop): a shot heard late,
+    /// or replayed, then opens the same tunnel on every machine. A tick
+    /// still to come opens it then.
+    pub tick: Option<u64>,
 }
 
-/// An explosion inside or near smoke at the current [`SmokeClock::tick`].
-/// Clears a sphere that refills over about 5 s.
-#[derive(Message, Clone, Copy, Debug)]
+/// An explosion inside or near smoke: a cleared sphere that refills over
+/// about 5 s.
+///
+/// Build it with `..default()` (`SmokeExplosion { center, ..default() }`):
+/// later versions may add fields.
+#[derive(Message, Clone, Copy, Debug, Default, PartialEq)]
 pub struct SmokeExplosion {
     /// Where it went off, in world units.
     pub center: Vec3,
     /// Radius of the cleared sphere. `None` uses [`HoleSettings::explosion_radius`].
     pub radius: Option<f32>,
+    /// The tick it went off on. `None` lands it on the current
+    /// [`SmokeClock::tick`]; see [`SmokeBullet::tick`].
+    pub tick: Option<u64>,
 }
 
 /// Add to any `Camera3d` that should see smoke. Holds the camera's
@@ -591,8 +659,10 @@ pub struct SmokeCamera {
 }
 
 /// Fraction of the camera resolution (per axis) the volumetric smoke is
-/// raymarched at.
+/// raymarched at. Later versions may add fractions, so a `match` on it needs
+/// a `_` arm.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum SmokeResolution {
     /// Every pixel.
     #[default]
@@ -669,8 +739,11 @@ impl Default for SmokeCamera {
     }
 }
 
-/// What a [`Smoke`] spreads from, relative to its entity. World units.
+/// What a [`Smoke`] spreads from, relative to its entity, in world units and
+/// world axes: the entity's rotation doesn't turn a line or a box. Later
+/// versions may add shapes, so a `match` on it needs a `_` arm.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[non_exhaustive]
 pub enum SmokeSource {
     /// From the entity's position: a grenade.
     #[default]
@@ -726,7 +799,7 @@ pub struct Smoke {
     /// Fill seed. `None` derives one from the position, so the same throw
     /// gives the same smoke on every machine.
     pub seed: Option<u32>,
-    /// Style. `None` uses [`SmokeSettings::style`] at the moment of the pop.
+    /// Style, a rule. `None` uses [`DefaultSmokeStyle`] as it is at the pop.
     pub style: Option<SmokeStyle>,
     /// The tick it pops at. `None` pops at the current [`SmokeClock::tick`].
     /// Set it to the tick of the event that threw the smoke, and a pop heard
@@ -779,8 +852,9 @@ impl Smoke {
         Self::default()
     }
 
-    /// A wall of smoke from the entity to `offset` from it, as from a line of
-    /// smoke pots. It spreads the default volume along the line.
+    /// A wall of smoke from the entity to `offset` from it (world axes), as
+    /// from a line of smoke pots. It spreads the default volume along the
+    /// line.
     pub fn wall(offset: Vec3) -> Self {
         Self {
             source: SmokeSource::Line { offset },
@@ -803,7 +877,7 @@ impl Smoke {
     }
 
     /// A bank of fog filling a box (`half_extents` either side of the
-    /// entity) for as long as the entity lives.
+    /// entity, along the world's axes) for as long as the entity lives.
     pub fn fog_bank(half_extents: Vec3) -> Self {
         Self {
             source: SmokeSource::Box { half_extents },
@@ -879,7 +953,7 @@ impl Smoke {
         self
     }
 
-    /// Use this look instead of [`SmokeSettings::style`].
+    /// Use this style instead of [`DefaultSmokeStyle`].
     pub fn with_style(mut self, style: SmokeStyle) -> Self {
         self.style = Some(style);
         self
@@ -1076,7 +1150,7 @@ fn pop_smokes(
     mut world: ResMut<SmokeWorld>,
     mut entities: ResMut<SmokeEntities>,
     clock: Res<SmokeClock>,
-    settings: Res<SmokeSettings>,
+    default_style: Res<DefaultSmokeStyle>,
     level: Option<Res<SmokeLevel>>,
     obstacles: Res<obstacles::ObstacleBuild>,
     mut warnings: ResMut<SetupWarnings>,
@@ -1101,7 +1175,7 @@ fn pop_smokes(
             let origin = transform.translation();
             let seed = smoke.seed.unwrap_or_else(|| CloudSpec::seed_from_origin(origin));
             let tick = smoke.pop_tick.unwrap_or(clock.tick);
-            let mut spec = CloudSpec::new(origin, tick, seed, smoke.style.unwrap_or(settings.style));
+            let mut spec = CloudSpec::new(origin, tick, seed, smoke.style.unwrap_or(default_style.0));
             spec.source = match smoke.source {
                 SmokeSource::Point => CloudSource::Point,
                 SmokeSource::Line { offset } => CloudSource::Line { end: origin + offset },
@@ -1136,10 +1210,10 @@ fn apply_impacts(
     clock: Res<SmokeClock>,
 ) {
     for b in bullets.read() {
-        world.bullet(b.start, b.end, clock.tick);
+        world.bullet(b.start, b.end, b.tick.unwrap_or(clock.tick));
     }
     for e in explosions.read() {
-        world.explosion(e.center, e.radius, clock.tick);
+        world.explosion(e.center, e.radius, e.tick.unwrap_or(clock.tick));
     }
 }
 
@@ -1853,6 +1927,100 @@ mod tests {
         }
         assert_eq!(server.clouds().count(), 0);
         assert_eq!(app.world().resource::<SmokeWorld>().clouds().count(), 0);
+    }
+
+    /// A shot or blast heard late lands on its own tick: the messages carve
+    /// the holes `SmokeWorld::bullet` and `explosion` carve at those ticks,
+    /// to the bit, and one without a tick lands on the current tick.
+    #[test]
+    fn impacts_land_on_their_own_ticks() {
+        let mut app = headless_app();
+        app.insert_resource(SmokeClock {
+            tick: 0,
+            auto: false,
+            ..default()
+        });
+        app.world_mut().spawn((Smoke::grenade(), Transform::default()));
+        app.update();
+        // The server: the same cloud, in the core alone.
+        let mut server = Smokes::new(
+            SmokePlugin::default().config,
+            Arc::new(FlatGround::new(0.0, UpAxis::Y)) as SharedLevel,
+        );
+        let seed = CloudSpec::seed_from_origin(Vec3::ZERO);
+        server.pop(CloudSpec::new(Vec3::ZERO, 0, seed, SmokeStyle::Volumetric));
+
+        // Grown by tick 200; a shot at 300 and a blast at 310, both heard at
+        // 320 along with a shot of that tick's.
+        let (shot, blast, now) = (300, 310, 320);
+        let line = (Vec3::new(-8.0, 1.0, 0.2), Vec3::new(8.0, 1.2, -0.3));
+        let late = (Vec3::new(-8.0, 0.6, 1.0), Vec3::new(8.0, 0.6, 1.0));
+        let center = Vec3::new(0.5, 1.0, 2.0);
+        app.world_mut().resource_mut::<SmokeClock>().tick = now;
+        app.world_mut().write_message(SmokeBullet {
+            start: line.0,
+            end: line.1,
+            tick: Some(shot),
+        });
+        app.world_mut().write_message(SmokeExplosion {
+            center,
+            tick: Some(blast),
+            ..default()
+        });
+        app.world_mut().write_message(SmokeBullet {
+            start: late.0,
+            end: late.1,
+            ..default()
+        });
+        app.update();
+        server.bullet(line.0, line.1, shot);
+        server.explosion(center, None, blast);
+        server.bullet(late.0, late.1, now);
+
+        let across = (center - Vec3::X * 6.0, center + Vec3::X * 6.0);
+        let mut world = app.world_mut().resource_mut::<SmokeWorld>();
+        for t in [shot - 1, shot, shot + 5, blast, blast + 5, now, now + 50] {
+            for (a, b) in [line, late, across] {
+                assert_eq!(
+                    world.occlusion(a, b, t).to_bits(),
+                    server.occlusion(a, b, t).to_bits(),
+                    "tick {t}"
+                );
+            }
+        }
+        // The shot's tunnel was open before the shot was heard.
+        assert!(world.occlusion(line.0, line.1, shot + 5) < world.occlusion(line.0, line.1, shot - 1));
+    }
+
+    /// Smokes without a style of their own pop in `DefaultSmokeStyle`'s, as
+    /// it is at their pop.
+    #[test]
+    fn smokes_without_a_style_pop_in_the_default_style() {
+        let mut app = headless_app();
+        app.insert_resource(DefaultSmokeStyle(SmokeStyle::Crystal));
+        let plain = app.world_mut().spawn(Smoke::grenade()).id();
+        let own = app
+            .world_mut()
+            .spawn(Smoke::grenade().with_style(SmokeStyle::Volumetric))
+            .id();
+        app.update();
+        app.world_mut().resource_mut::<DefaultSmokeStyle>().0 = SmokeStyle::Faceted;
+        let later = app.world_mut().spawn(Smoke::grenade()).id();
+        app.update();
+        let style = |app: &App, e: Entity| {
+            let cloud = app
+                .world()
+                .get::<Smoke>(e)
+                .and_then(Smoke::cloud)
+                .expect("never popped");
+            app.world()
+                .resource::<SmokeWorld>()
+                .cloud(cloud)
+                .map(|c| c.spec().style)
+        };
+        assert_eq!(style(&app, plain), Some(SmokeStyle::Crystal));
+        assert_eq!(style(&app, own), Some(SmokeStyle::Volumetric));
+        assert_eq!(style(&app, later), Some(SmokeStyle::Faceted));
     }
 
     #[test]

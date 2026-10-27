@@ -36,8 +36,11 @@ impl Default for Timeline {
     }
 }
 
+// `growth`, `dissolve` and `is_growing` are the density model renderers
+// mirror: public for `bevy_smokescreen`, not part of the API.
 impl Timeline {
     /// Radius of the growth front in normalised fill-distance units, 0 → 1.2.
+    #[doc(hidden)]
     pub fn growth(&self, age: f32) -> f32 {
         let x = ((age - self.start) / self.grow_time.max(1e-3)).clamp(0.0, 1.0);
         let y = 1.0 - x;
@@ -45,6 +48,7 @@ impl Timeline {
     }
 
     /// 0 while alive, rising to 1 over the fade.
+    #[doc(hidden)]
     pub fn dissolve(&self, age: f32) -> f32 {
         ((age - (self.lifetime - self.fade_time)) / self.fade_time.max(1e-3)).clamp(0.0, 1.0)
     }
@@ -55,6 +59,7 @@ impl Timeline {
     }
 
     /// Still blooming out (plus a little margin)?
+    #[doc(hidden)]
     pub fn is_growing(&self, age: f32) -> bool {
         age < self.start + self.grow_time + 0.05
     }

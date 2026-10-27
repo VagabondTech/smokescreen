@@ -238,7 +238,9 @@ impl Level for BoxObstacles {
 /// bit lookups. A 256 × 32 × 256 m level at 0.3 m voxels takes about 10 MB,
 /// plus as much again for each of two sets of voxels next to walls if it
 /// has any (which solid voxels a wall only clips, and which open ones are
-/// the hollow inside of a wall: see [`Level::is_inside`]).
+/// the hollow inside of a wall: see [`Level::is_inside`]). It holds at most
+/// 2^32 - 1 voxels (512 MB of bits): building a bigger one panics, as does
+/// a voxel size that isn't above 0.
 ///
 /// Build it with the tuning's voxel size ([`crate::Tuning::voxel_size`], in
 /// your units) and fills give exactly the clouds the source level would:
@@ -266,6 +268,54 @@ pub struct VoxelObstacles {
     /// What to report for queries outside the voxelised region.
     pub outside_is_solid: bool,
 }
+
+/// Most voxels a [`VoxelObstacles`] holds: its lattice indexes them in
+/// `u32`. That many take 512 MB per set of bits.
+const MAX_VOXELS: u64 = u32::MAX as u64;
+
+/// How many voxels a lattice of `dims` holds, if no more than
+/// [`MAX_VOXELS`].
+fn voxel_count(dims: UVec3) -> Option<usize> {
+    let n = (dims.x as u64).checked_mul(dims.y as u64)?.checked_mul(dims.z as u64)?;
+    (n <= MAX_VOXELS).then_some(n as usize)
+}
+
+/// Why [`VoxelObstacles::from_bytes`] couldn't read its bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum VoxelBytesError {
+    /// They don't start the way [`VoxelObstacles::to_bytes`] starts: not
+    /// voxels at all.
+    NotVoxels,
+    /// Voxels in a format this version can't read, most likely written by a
+    /// newer version of this crate: the format's number (this version
+    /// reads 1 and 2).
+    UnsupportedVersion(u32),
+    /// They end before the voxels do: cut short in a download or a write.
+    Truncated,
+    /// Their header makes no sense (no voxels, more than 2^32 - 1, a voxel
+    /// size that isn't above 0, a corner that isn't finite), or more bytes
+    /// follow the voxels.
+    Invalid,
+}
+
+impl core::fmt::Display for VoxelBytesError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NotVoxels => f.write_str("not smokescreen voxels"),
+            Self::UnsupportedVersion(v) => {
+                write!(
+                    f,
+                    "smokescreen voxels in format {v}, which this version can't read (it reads 1 and 2)"
+                )
+            }
+            Self::Truncated => f.write_str("smokescreen voxels cut short"),
+            Self::Invalid => f.write_str("smokescreen voxels whose header makes no sense, or with bytes after them"),
+        }
+    }
+}
+
+impl std::error::Error for VoxelBytesError {}
 
 /// Bits over the voxels of a [`Lattice`].
 fn set_bit(bits: &mut [u64], i: usize) {
@@ -327,11 +377,23 @@ impl Lattice {
 
     /// The lattice of the voxels holding `[min, max]`.
     fn around(min: Vec3, max: Vec3, voxel_size: f32) -> Self {
+        assert!(
+            voxel_size.is_finite() && voxel_size > 0.0,
+            "VoxelObstacles needs a voxel size above 0, not {voxel_size}"
+        );
+        assert!(
+            min.is_finite() && max.is_finite(),
+            "VoxelObstacles needs a finite region, not {min} to {max}"
+        );
         let first = (min / voxel_size).floor();
         let dims = ((max - first * voxel_size) / voxel_size)
             .ceil()
             .max(Vec3::ONE)
             .as_uvec3();
+        assert!(
+            voxel_count(dims).is_some(),
+            "VoxelObstacles of {dims} voxels of {voxel_size} is too large: it holds at most 2^32 - 1 voxels (512 MB of bits). Voxelise a smaller region, or use larger voxels."
+        );
         Self {
             first: first.as_ivec3(),
             voxel_size,
@@ -630,35 +692,56 @@ impl VoxelObstacles {
     /// Read what [`Self::to_bytes`] wrote. Also reads the first version's
     /// bytes, which don't say which voxels a wall only clips: with those,
     /// smoke stops at the middle of the first solid voxel, as it did then.
-    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        let word = |at: usize| -> Option<[u8; 4]> { bytes.get(at..at + 4)?.try_into().ok() };
+    ///
+    /// The bytes may come from anywhere (another machine, a file on disk):
+    /// whatever they hold, the answer is the voxels or an error, never a
+    /// panic.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, VoxelBytesError> {
+        use VoxelBytesError::{Invalid, NotVoxels, Truncated, UnsupportedVersion};
+        if bytes.get(..4) != Some(b"SMKV".as_slice()) {
+            return Err(NotVoxels);
+        }
+        let word = |at: usize| -> Result<[u8; 4], VoxelBytesError> {
+            bytes.get(at..at + 4).and_then(|w| w.try_into().ok()).ok_or(Truncated)
+        };
         let version = u32::from_le_bytes(word(4)?);
-        if bytes.get(..4)? != b"SMKV" || !(1..=2).contains(&version) {
-            return None;
+        if !(1..=2).contains(&version) {
+            return Err(UnsupportedVersion(version));
         }
         let f = |i: usize| word(8 + i * 4).map(f32::from_le_bytes);
         let u = |i: usize| word(24 + i * 4).map(u32::from_le_bytes);
         let origin = Vec3::new(f(0)?, f(1)?, f(2)?);
         let voxel_size = f(3)?;
         let dims = UVec3::new(u(0)?, u(1)?, u(2)?);
-        let outside_is_solid = *bytes.get(36)? != 0;
-        let sets = if version >= 2 { *bytes.get(37)? } else { 0 };
-        let count = dims.x as usize * dims.y as usize * dims.z as usize;
-        let words = count.div_ceil(64);
+        let outside_is_solid = *bytes.get(36).ok_or(Truncated)? != 0;
+        let sets = if version >= 2 {
+            *bytes.get(37).ok_or(Truncated)?
+        } else {
+            0
+        };
+        let count = voxel_count(dims).filter(|&n| n > 0).ok_or(Invalid)?;
+        if !origin.is_finite() || !voxel_size.is_finite() || voxel_size <= 0.0 || sets & !3 != 0 {
+            return Err(Invalid);
+        }
+        // Fewer than 2^32 voxels: at most 512 MB per set, so no sum below
+        // overflows, even with 32-bit sizes.
+        let len = count.div_ceil(64) * 8;
         let mut at = if version >= 2 { 38 } else { 37 };
-        let mut read = |present: bool| -> Option<Vec<u64>> {
+        let mut read = |present: bool| -> Result<Vec<u64>, VoxelBytesError> {
             if !present {
-                return Some(Vec::new());
+                return Ok(Vec::new());
             }
-            let (chunks, _) = bytes.get(at..at + words * 8)?.as_chunks::<8>();
-            let out = chunks.iter().map(|c| u64::from_le_bytes(*c)).collect();
-            at += words * 8;
-            Some(out)
+            let (chunks, _) = bytes.get(at..at + len).ok_or(Truncated)?.as_chunks::<8>();
+            at += len;
+            Ok(chunks.iter().map(|c| u64::from_le_bytes(*c)).collect())
         };
         let bits = read(true)?;
         let clipped = read(sets & 1 != 0)?;
         let hollow = read(sets & 2 != 0)?;
-        Some(Self {
+        if at != bytes.len() {
+            return Err(Invalid);
+        }
+        Ok(Self {
             origin,
             voxel_size,
             dims,
@@ -862,7 +945,77 @@ mod tests {
             (back.origin, back.dims, back.voxel_size),
             (vox.origin, vox.dims, vox.voxel_size)
         );
-        assert!(VoxelObstacles::from_bytes(b"nope").is_none());
+        assert_eq!(
+            VoxelObstacles::from_bytes(b"nope").err(),
+            Some(VoxelBytesError::NotVoxels)
+        );
+    }
+
+    #[test]
+    fn bytes_that_are_not_voxels_are_errors_not_panics() {
+        use VoxelBytesError::{Invalid, NotVoxels, Truncated, UnsupportedVersion};
+        let vox = VoxelObstacles::build(Vec3::splat(-1.0), Vec3::splat(1.0), 0.3, |c, _| c.y < 0.0);
+        let good = vox.to_bytes();
+        let read = |bytes: &[u8]| VoxelObstacles::from_bytes(bytes).err();
+        assert_eq!(read(&good), None);
+        // A header like `good`'s with one field set: a word at `at`.
+        let with = |at: usize, word: [u8; 4]| {
+            let mut b = good.clone();
+            b[at..at + 4].copy_from_slice(&word);
+            b
+        };
+        assert_eq!(read(b""), Some(NotVoxels));
+        assert_eq!(read(b"SMK"), Some(NotVoxels));
+        assert_eq!(read(&with(0, *b"SMKW")), Some(NotVoxels));
+        assert_eq!(read(&good[..6]), Some(Truncated));
+        assert_eq!(read(&with(4, 3u32.to_le_bytes())), Some(UnsupportedVersion(3)));
+        assert_eq!(read(&with(4, 0u32.to_le_bytes())), Some(UnsupportedVersion(0)));
+        // Cut anywhere in the header or the voxels.
+        for len in [10, 30, 36, 37, 38, good.len() - 1] {
+            assert_eq!(read(&good[..len]), Some(Truncated), "{len}");
+        }
+        // More bytes after the voxels.
+        let mut long = good.clone();
+        long.push(0);
+        assert_eq!(read(&long), Some(Invalid));
+        // Sizes that don't add up: none of these may panic or allocate what
+        // the bytes don't hold.
+        for (at, word) in [
+            (20, 0.0f32.to_le_bytes()),
+            (20, (-0.3f32).to_le_bytes()),
+            (20, f32::NAN.to_le_bytes()),
+            (8, f32::INFINITY.to_le_bytes()),
+            (24, 0u32.to_le_bytes()),
+            (24, u32::MAX.to_le_bytes()),
+        ] {
+            assert_eq!(read(&with(at, word)), Some(Invalid), "{at}");
+        }
+        let mut huge = with(24, u32::MAX.to_le_bytes());
+        huge[28..36].copy_from_slice(&[0xff; 8]);
+        assert_eq!(read(&huge), Some(Invalid));
+        // Dimensions bigger than the voxels sent, but a count that fits.
+        assert_eq!(read(&with(24, 1000u32.to_le_bytes())), Some(Truncated));
+        // Unknown sets of voxels.
+        let mut sets = good.clone();
+        sets[37] |= 4;
+        assert_eq!(read(&sets), Some(Invalid));
+        assert_eq!(
+            VoxelBytesError::UnsupportedVersion(3).to_string(),
+            "smokescreen voxels in format 3, which this version can't read (it reads 1 and 2)"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "voxel size above 0")]
+    fn voxels_of_no_size_are_refused() {
+        VoxelObstacles::build(Vec3::ZERO, Vec3::ONE, 0.0, |_, _| false);
+    }
+
+    #[test]
+    #[should_panic(expected = "too large")]
+    fn levels_of_more_voxels_than_the_lattice_counts_are_refused() {
+        // 10 km × 1 km × 10 km at 1 cm: 10^15 voxels.
+        VoxelObstacles::build(Vec3::ZERO, Vec3::new(1.0e4, 1.0e3, 1.0e4), 0.01, |_, _| false);
     }
 
     #[test]

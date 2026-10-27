@@ -178,7 +178,10 @@ impl Config {
 
 /// How a cloud is shaped. All three styles share the fill, timeline, holes
 /// and rule; only what counts as cloud differs.
+///
+/// Later versions may add styles, so a `match` on it needs a `_` arm.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Style {
     /// A soft density field. The amount of cloud along a segment is its
     /// density integrated along it (metres of full-density cloud).
@@ -202,8 +205,11 @@ pub enum Style {
     Crystal,
 }
 
-/// What a cloud spreads from. Positions and lengths in the caller's units.
+/// What a cloud spreads from. Positions and lengths in the caller's units
+/// and axes. Later versions may add shapes, so a `match` on it needs a `_`
+/// arm.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[non_exhaustive]
 pub enum CloudSource {
     /// From its origin: a grenade.
     #[default]
@@ -214,9 +220,10 @@ pub enum CloudSource {
         /// The segment's other end.
         end: Vec3,
     },
-    /// From every open point of the box centred on its origin: a fog bank, a
-    /// gas-filled room. The box must fit the fill grid
-    /// ([`Tuning::grid_dims`]); set the cloud's volume to about the box's.
+    /// From every open point of the box centred on its origin, its edges
+    /// along the caller's axes: a fog bank, a gas-filled room. The box must
+    /// fit the fill grid ([`Tuning::grid_dims`]); set the cloud's volume to
+    /// about the box's.
     Box {
         /// Half the box's size along each axis.
         half_extents: Vec3,
@@ -674,14 +681,16 @@ impl<L: Level> Smokes<L> {
         self.new_cloud(spec, Fill::Pending(Box::new(job)))
     }
 
-    /// A cloud whose fill was computed elsewhere (by [`fill_cloud`], or
-    /// received from a server). It must come from the same spec, level and
+    /// A cloud whose fill was computed elsewhere (by [`fill_cloud`] on
+    /// another thread, say). It must come from the same spec, level and
     /// tuning, or machines will disagree.
     ///
-    /// A [`CloudShape`]'s contents are not part of the API yet: to send one
-    /// between machines, run the same version of this crate on both. Its
-    /// grid is used as it is. One put together by hand (received field by
-    /// field, say) needs its bricks (`Grid::build_bricks`), and checks are
+    /// A [`CloudShape`]'s contents are not part of the API, and it has no
+    /// wire format: sending one between machines means sending its hidden
+    /// fields, with the same version of this crate at both ends. Sending the
+    /// [`CloudSpec`] is simpler. A shape's grid is used as it is. One put
+    /// together by hand (received field by field, say) needs its bricks
+    /// (`Grid::build_bricks`), and checks are
     /// faster with its front bounds and, if it is volumetric, its sample
     /// cells (`Grid::build_front_bounds`, `Grid::build_sample_cells`);
     /// without those they give the same answers. [`fill_cloud`] builds all
@@ -1153,8 +1162,11 @@ fn collect_holes(
     out.reverse();
 }
 
-/// Run a whole fill at once, outside any world (for example on a server that
-/// sends finished clouds). Same result as [`Smokes::pop`] gives.
+/// Run a whole fill at once, outside any world: on a worker thread, say, for
+/// [`Smokes::insert`]. Same result as [`Smokes::pop`] gives.
+///
+/// A [`CloudShape`] has no wire format. To share a cloud between machines,
+/// send its [`CloudSpec`]: every machine fills the same cloud from it.
 pub fn fill_cloud<L: Level + ?Sized>(config: &Config, spec: &CloudSpec, level: &L) -> CloudShape {
     let internal = config.tuning.to_internal(&config.units);
     crate::fill::fill_now(

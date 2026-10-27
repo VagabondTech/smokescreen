@@ -60,12 +60,13 @@ fn shoot(
         bullets.write(SmokeBullet {
             start: Vec3::new(0.0, 1.6, -10.0),
             end: Vec3::new(0.0, 1.0, 10.0),
+            ..default()
         });
     }
     if keys.just_pressed(KeyCode::KeyH) {
         explosions.write(SmokeExplosion {
             center: Vec3::new(0.0, 0.5, 3.0),
-            radius: None,
+            ..default()
         });
     }
 }
