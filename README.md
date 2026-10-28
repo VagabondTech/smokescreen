@@ -92,7 +92,7 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials
     commands.spawn((Smoke::grenade(), Transform::from_xyz(0.0, 0.0, 0.0)));
 }
 
-fn bot_vision(mut vision: SmokeVision) {
+fn bot_vision(vision: SmokeVision) {
     if vision.blocks_sight(Vec3::new(0.0, 1.6, -10.0), Vec3::new(0.0, 1.6, 10.0)) {
         // The bot can't see the player.
     }
@@ -101,7 +101,7 @@ fn bot_vision(mut vision: SmokeVision) {
 
 `examples/minimal.rs` is the same with bullets, explosions and a level made of boxes instead of meshes.
 
-If a setup step is missing, the plugin says so in the log, once, with the fix: no camera with `SmokeCamera`, no level, `SmokeObstacle` on an entity without a mesh (a glTF scene's root: put it on the scene's meshes), several directional lights and no `SmokeSun`, an orthographic camera, more smokes than `Tuning::max_clouds`, a source bigger than the fill grid, and a few more.
+If a setup step is missing, the plugin says so in the log, once, with the fix: no camera with `SmokeCamera`, no level, `SmokeObstacle` on an entity without a mesh (a glTF scene's root: put it on the scene's meshes), several directional lights and no `SmokeSun`, an orthographic camera, more smokes than `Tuning::max_clouds`, a source bigger than the fill grid, a server without `TransformPlugin`, and a few more.
 
 The API is documented on docs.rs: [`bevy_smokescreen`](https://docs.rs/bevy_smokescreen), and [`smokescreen`](https://docs.rs/smokescreen) for the engine-free core.
 
@@ -153,7 +153,7 @@ fn spawn_smokes(mut commands: Commands) {
 | `Smoke::fog_bank(half_extents)` | Fills a box, feathered at the edges, for as long as the entity lives |
 | `Smoke::steam_vent()` | White, thin, spreads slowly over 8 s, clears after 15 s |
 
-All of them take the builders `with_style`, `with_volume`, `with_lifetime`, `with_grow_time`, `with_tint`, `with_seed`, `with_source` (`SmokeSource::Point`, `Line` or `Box`) and `with_pop_tick`. Style, volume, lifetime, grow time, seed, source and pop tick are part of the rules: they change what blocks, so in a multiplayer game every machine must use the same. Tint and `density` are looks. A source's offset and box are in world axes: turning the entity doesn't turn them.
+All of them take the builders `with_style`, `with_volume`, `with_lifetime`, `with_grow_time`, `with_start` (a fuse before it grows), `with_fade_time`, `with_seed`, `with_source` (`SmokeSource::Point`, `Line` or `Box`), `with_pop_tick`, `with_tint`, `with_density` and `with_despawn_when_done`. Style, volume, the four times, seed, source and pop tick are part of the rules: they change what blocks, so in a multiplayer game every machine must use the same. Tint and density are looks. A source's offset and box are in world axes: turning the entity doesn't turn them.
 
 ## Gameplay
 
@@ -164,6 +164,8 @@ All of them take the builders `with_style`, `with_volume`, `with_lifetime`, `wit
 - `transmittance(a, b)`: fraction of light that gets through, for audio and other soft effects.
 - `density_at(p)`: how dense the smoke is at a point, every smoke added up.
 - `density_of(cloud, p)`: how dense one smoke is there, for gas damage that plain smoke doesn't do (`Smoke::cloud()` gives its id).
+
+It only reads, so systems that use it run in parallel. For many questions, take `vision.view()` once: the tick's `SmokeView`, which any number of threads can ask at once (`par_iter`) and your own functions can take; `drawn_view()` is the drawn tick's, for checks that must agree with the picture. It answers from views the plugin prepares when the clock moves (in `PreUpdate`) and again once the frame's pops and impacts are in (after `SmokeSystems::Simulate`), so every system in `Update` sees the same smoke whatever order they run in. A change made straight to `SmokeWorld` in `Update` shows from then on, or at once after `world.prepare_vision(&clock)`; for another tick (lag compensation), ask `SmokeWorld::view(tick)`.
 
 ![Five bots look at a target across open ground; their sight lines turn red as a smoke grows between them, and a bullet fired along one line briefly turns it green again](https://raw.githubusercontent.com/VagabondTech/smokescreen/main/docs/media/sightlines.webp)
 
@@ -191,7 +193,32 @@ let view = smokes.view(tick);                             // `Copy + Sync`: shar
 let hidden = view.blocks_sight(eye, enemy_head);
 ```
 
-`smokescreen/examples/server.rs` is a complete headless loop.
+`smokescreen/examples/server.rs` is a complete headless loop. A Bevy server runs the plugin without a window, a renderer or assets: it draws nothing and does none of the drawing's work.
+
+```rust,no_run
+use std::time::Duration;
+
+use bevy::{app::ScheduleRunnerPlugin, prelude::*};
+use bevy_smokescreen::prelude::*;
+
+fn main() {
+    // The level every machine shares, voxelised once (`VoxelObstacles::to_bytes`).
+    let bytes = std::fs::read("level.voxels").expect("the level");
+    let level = VoxelObstacles::from_bytes(&bytes).expect("the level's voxels");
+    App::new()
+        .add_plugins((
+            // A frame per tick, and nothing to draw with.
+            MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(1.0 / 128.0))),
+            // Places smokes where their entities are.
+            TransformPlugin,
+            SmokePlugin::default(),
+        ))
+        .insert_resource(SmokeLevel::new(level))
+        .run();
+}
+```
+
+Gameplay systems ask `SmokeVision` as in a game. `SmokeObstacle` works on a server too, given Bevy's `AssetPlugin` and `MeshPlugin` and the level's meshes, but shipping the voxels is lighter and gives every machine the same level.
 
 - **Your ticks.** A cloud at tick *t* is a pure function of its `CloudSpec` (origin, pop tick, seed, style, source, volume, timeline), the level, the `Tuning` and *t*; holes are events with ticks. Events can arrive late or in any order, late joiners compute the same clouds from the same events, and a `view` of a recent tick answers as it would have then (lag compensation).
 - **Your units.** `Units { up, metres_per_unit }`: Y-up metres, Z-up inches, or anything else.
@@ -199,7 +226,7 @@ let hidden = view.blocks_sight(eye, enemy_head);
 - **A per-tick CPU budget.** A cloud's fill runs a little each tick (`Config::fill_budget`, about 0.2 ms); it speeds up only if the cloud is about to start growing. The finished cloud is the same however the work is split.
 - **Networking.** Send the `CloudSpec` of each pop (a couple of dozen bytes) and each bullet and explosion with its tick; every machine computes the same clouds, as long as they share the `Tuning` and the same level answers. For mesh-based levels, voxelise once and ship the voxels (`VoxelObstacles::to_bytes`). A level voxelised at the tuning's voxel size (`VoxelObstacles::from_level`) gives exactly the clouds its source level would, faster: cloud grids lie on the same world lattice. `fill_cloud` runs a whole fill outside the world (on a worker thread, say) for `Smokes::insert`, but a `CloudShape` has no wire format: between machines, send the `CloudSpec`.
 
-In Bevy, `SmokeWorld` is the `Smokes` the plugin runs, and `SmokeClock` sets the tick (by default from Bevy's virtual time; set `auto: false` to drive it from your netcode, with `draw_tick` for an interpolation delay and `draw_fraction` for how far the frame is past that tick). A `Smoke` pops on that tick. For a cloud the server announced, spawn `Smoke::from_spec(spec)` with the `CloudSpec` it sent: you get the server's cloud to the bit however late you hear of it, with your own look (`with_tint`), and the entity despawns when the cloud is gone. Where every machine spawns the same `Smoke` from the same event instead (lockstep, rollback), `with_pop_tick(tick)` gives it the event's tick, and a `SmokeBullet` or `SmokeExplosion` takes its event's `tick` the same way. Volumetric smoke's noise moves on those ticks too, not on each machine's clock, so players who draw the same tick see the same billows. `SmokePlugin::new(config)` takes the same `Config`, so a Bevy client in Z-up inches works too:
+In Bevy, `SmokeWorld` is the `Smokes` the plugin runs, and `SmokeClock` sets the tick (by default from Bevy's virtual time; set `auto: false` to drive it from your netcode, with `draw_tick` for an interpolation delay and `draw_fraction` for how far the frame is past that tick). Write it in `First`, before the plugin prepares `SmokeVision`'s views in `PreUpdate`, or call `world.prepare_vision(&clock)` after writing it (a tick per fixed step, say); the plugin warns if `SmokeVision` is asked after the clock has moved on. A `Smoke` pops on that tick. For a cloud the server announced, spawn `Smoke::from_spec(spec)` with the `CloudSpec` it sent: you get the server's cloud to the bit however late you hear of it, with your own look (`with_tint`), and the entity despawns when the cloud is gone. Where every machine spawns the same `Smoke` from the same event instead (lockstep, rollback), `with_pop_tick(tick)` gives it the event's tick, and a `SmokeBullet` or `SmokeExplosion` takes its event's `tick` the same way. Volumetric smoke's noise moves on those ticks too, not on each machine's clock, so players who draw the same tick see the same billows. `SmokePlugin::new(config)` takes the same `Config`, so a Bevy client in Z-up inches works too:
 
 ![Units](https://raw.githubusercontent.com/VagabondTech/smokescreen/main/docs/units.jpg)
 
@@ -276,6 +303,8 @@ Point lights near volumetric smoke cost extra, as every sample within a light's 
 | `level_query_units` | 4 | Units charged per `Level` query (`is_blocked`, `is_inside`); raise it if yours are slow |
 | `history_ticks` | one second | How long ended clouds and holes are kept, for views of past ticks |
 | `cached_ticks` | 4 | Ticks whose snapshots are kept |
+
+`Config::validate` checks for values that would only make nonsense: every number finite; the tick rate, the unit's length, the voxel size and the volume above 0; `floor_fraction` from 0 to 1; and a grid of at most 2^24 voxels. `Smokes::new` and `SmokePlugin` panic with its message, so call it first to handle a configuration read from a file.
 
 ### The look (`SmokeSettings`, change any time)
 

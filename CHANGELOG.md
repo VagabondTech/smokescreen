@@ -170,6 +170,55 @@ and the demo's showcase draws the same pixels.
   `CloudSpec`), that a smoke source's offset and box are in world axes,
   and that the look's lengths are in metres in every unit system.
 
+**Dedicated servers in Bevy, gameplay queries that only read, checked
+configurations.** No results change: the determinism hashes are the same,
+and the demo's showcase draws the same pixels.
+
+- The plugin runs on a Bevy server: `MinimalPlugins` and `TransformPlugin`
+  are enough, with no renderer and no assets. It used to panic at startup
+  without Bevy's renderer (it registered its shaders anyway), and to refuse
+  to start without `AssetPlugin`. Without a renderer it now adds none of
+  its drawing systems, so a server does none of their work; before, every
+  new cloud's grid also queued for a GPU upload that nothing took, so a
+  server would have kept every cloud it ever popped. Without
+  `TransformPlugin`, smokes placed by their entity pop at the origin, and
+  the plugin now says so, once. The warnings about more smokes than
+  `Tuning::max_clouds` and smokes popped inside solid geometry reach
+  servers too. The README and `llms.txt` have a server recipe.
+- `SmokeVision` only reads (`Res<SmokeWorld>`, `&self` methods), so
+  systems that use it run in parallel with each other and with any system
+  that only reads `SmokeWorld`. It answers from views the plugin prepares
+  when the clock moves in `PreUpdate` and again at the end of
+  `SmokeSystems::Simulate`, so every system in `Update` sees the same
+  smoke, whatever order they run in. Two things change. A change made
+  straight to `SmokeWorld` in `Update` shows from the end of `Simulate`.
+  A clock moved after `PreUpdate` (a tick per fixed step, say) needs the
+  new `SmokeWorld::prepare_vision(&clock)` after it, or `SmokeVision`
+  answers for the tick before, and the plugin warns once; a clock written
+  in `First` needs nothing. `mut vision: SmokeVision` now draws an
+  `unused_mut` warning: drop the `mut`. When `SmokeClock::draw_tick` is
+  behind `tick`, the plugin now works out both ticks' state every frame
+  (about 20 ns per faceted or crystal puff), where it worked out the
+  current tick's only when asked.
+- `SmokeVision::view()` and `drawn_view()` give the current and the drawn
+  tick's `SmokeView` (the core's `View`, now in the prelude), which every
+  thread can ask at once: `par_iter` over many bots, and helpers of your
+  own. Other ticks (lag compensation) stay with `SmokeWorld::view(tick)`.
+- `Config::validate()` returns a `ConfigError` (which setting, and what it
+  must be) for values that silently made nonsense: a number that isn't
+  finite; a tick rate, unit length, voxel size or volume not above 0; a
+  `floor_fraction` outside 0 to 1; or a grid of more than
+  `MAX_GRID_VOXELS` (2^24) voxels. `Smokes::new`, `fill_cloud` and
+  `SmokePlugin` panic with it.
+- Builders: `Smoke::with_density`, `with_despawn_when_done`, `with_start`
+  (a fuse for one smoke) and `with_fade_time`, with new fields `start` and
+  `fade_time`; `CloudSpec::with_volume` and `with_timeline`. A smoke's
+  density and `despawn_when_done` could only be set on a binding before:
+  `Smoke { density, ..default() }` doesn't compile outside the crate.
+- `SmokeLevel::new(level)`, without an `Arc` to make. `Debug` on `Smokes`
+  (so on `SmokeWorld`), `View` and `CloudInfo`, as summaries rather than
+  their voxels; `PartialEq` on `SmokeSettings` and `SmokeCamera`.
+
 - **results** The volumetric rule works out density in the same order as
   the picture. A sample used to take the density of the distance
   interpolated between voxels, while the GPU bakes each voxel's density

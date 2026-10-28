@@ -271,7 +271,7 @@ Rough cost model per camera (volumetric, "high" step, 1080p):
 - **CPU:**
   - per tick, the core's fill budget (about 0.2 ms while a fill is running);
   - per grenade, 1–2 ms of sun and sky visibility rays on a worker thread (not for crystal);
-  - per frame, a few microseconds of bookkeeping, the snapshot of the tick being drawn (microseconds for volumetric smokes, about 20 ns per faceted or crystal puff), and moving the crystal puff entities;
+  - per frame, a few microseconds of bookkeeping, the snapshot of the tick being drawn (microseconds for volumetric smokes, about 20 ns per faceted or crystal puff; the current tick's too when the drawn tick is behind it, for `SmokeVision`), and moving the crystal puff entities. A server (no renderer) does only the snapshot;
   - at startup, ~0.6 s of CPU time for the noise texture, spread over all cores on a background thread while the window and GPU device are created.
 
 The faceted style costs more per covered pixel than the volumetric one (it is sphere tracing polyhedra rather than sampling a texture): roughly 3–5× at the same dial step on the software rasteriser, and 12–40× on an Apple M4, where volumetric smoke got much cheaper in 0.2 (5–8× before). Its cost also depends on distance: close up, big flat facets are mostly shaded from the coarse samples; at mid-range many small facets mean many silhouettes and creases. Crystal clouds are a few hundred small meshes each: a few thousand triangles, plus shadow-map draws.

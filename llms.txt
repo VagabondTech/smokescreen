@@ -6,13 +6,13 @@ This file maps the API of `bevy_smokescreen` and `smokescreen` 0.2 for coding as
 
 - **Which crate.** A Bevy game depends on `bevy_smokescreen`, which re-exports the core as `bevy_smokescreen::smokescreen`. A headless server, bots or another engine depend on `smokescreen` alone (Rust 1.88 or newer; it depends only on `glam` and `libm`). In a workspace with both, `smokescreen = "0.2"` resolves to the version the plugin pins.
 - **Versions.** `bevy_smokescreen` 0.2 is for Bevy 0.20 only, and needs Rust 1.97.1 or newer. Later 0.2 releases may add enum variants (`#[non_exhaustive]`: match with a `_` arm) and struct fields (build structs from a constructor or with `..default()`, as this file does). Releases within 0.2 avoid changing results where they can, but run the same version on every machine in a match.
-- **Imports.** `use bevy::prelude::*;` and `use bevy_smokescreen::prelude::*;` cover most code. `Config`, `Tuning`, `CloudSpec`, `CloudSource`, `CloudId`, `Smokes`, `Level`, `SmokeTimeline`, `HoleSettings` and `VoxelBytesError` are at the plugin's root (`bevy_smokescreen::Config`), not in the prelude. For the core alone: `use smokescreen::*;` and `use smokescreen::glam::Vec3;` (the same `Vec3` as Bevy's).
+- **Imports.** `use bevy::prelude::*;` and `use bevy_smokescreen::prelude::*;` cover most code. `Config`, `ConfigError`, `Tuning`, `CloudSpec`, `CloudSource`, `CloudId`, `Smokes`, `Level`, `SmokeTimeline`, `HoleSettings` and `VoxelBytesError` are at the plugin's root (`bevy_smokescreen::Config`), not in the prelude. For the core alone: `use smokescreen::*;` and `use smokescreen::glam::Vec3;` (the same `Vec3` as Bevy's).
 - **Units.** Positions, lengths and volumes are in your world's units: Y-up metres unless you choose others (recipe "Your own units"). The look's few lengths (`SmokeSettings::extinction`, per metre, and `noise_frequency`) are in metres whatever the units.
-- **Rules and looks.** What hides what (the rules) must be the same on every machine in a match: the `Tuning` in the plugin's `Config`, the level, and each smoke's style (`DefaultSmokeStyle` or `Smoke::with_style`), volume, lifetime, grow time, seed, source and pop tick. The look may differ from machine to machine: `SmokeSettings`, a smoke's tint and density, each camera's quality dial.
+- **Rules and looks.** What hides what (the rules) must be the same on every machine in a match: the `Tuning` in the plugin's `Config`, the level, and each smoke's style (`DefaultSmokeStyle` or `Smoke::with_style`), volume, lifetime, grow time, start, fade time, seed, source and pop tick. The look may differ from machine to machine: `SmokeSettings`, a smoke's tint and density, each camera's quality dial.
 - **Ticks.** The simulation runs on ticks (`Config::tick_rate`: 128 a second in the plugin by default), counted from Bevy's virtual time unless you drive `SmokeClock` yourself. Bullets, explosions and pops land on the current tick unless they bring their own (`SmokeBullet::tick`, `SmokeExplosion::tick`, `Smoke::with_pop_tick`, `Smoke::from_spec`; recipe "Multiplayer in Bevy").
 - **GPU.** Volumetric and faceted smoke need compute shaders: native (Vulkan, Metal, DX12) or WebGPU. On WebGL2 the game keeps running with crystal smoke only.
 - **Setup mistakes** are logged once each, with the fix ("Warnings the plugin logs" below).
-- **Not API.** Items hidden from the docs on docs.rs may change in any release: `CloudState`, `CloudView`, `View::clouds`, `Smokes::internal_tuning`, what a `CloudShape` holds, and the core's `grid`, `light` and `math` modules. Don't use them.
+- **Not API.** Items hidden from the docs on docs.rs may change in any release: `CloudState`, `CloudView`, `View::clouds`, `Smokes::internal_tuning`, `Smokes::pin_view` and `pinned_view`, what a `CloudShape` holds, and the core's `grid`, `light` and `math` modules. Don't use them.
 
 ## Setup
 
@@ -28,7 +28,7 @@ use bevy_smokescreen::prelude::*;
 
 fn main() {
     App::new()
-        // After DefaultPlugins: the plugin needs Bevy's asset and render plugins.
+        // After DefaultPlugins, whose renderer draws the smoke.
         .add_plugins((DefaultPlugins, SmokePlugin::default()))
         .add_systems(Startup, setup)
         .run();
@@ -138,7 +138,7 @@ fn spawn_smokes(mut commands: Commands) {
 }
 ```
 
-Every preset takes the builders `with_style`, `with_volume`, `with_lifetime`, `with_grow_time`, `with_tint`, `with_seed`, `with_source` (`SmokeSource::Point`, `Line { offset }` or `Box { half_extents }`) and `with_pop_tick`. Tint and `Smoke::density` are looks; the rest are rules. A line's offset and a box are in world axes: turning the entity doesn't turn them.
+Every preset takes the builders `with_style`, `with_volume`, `with_lifetime`, `with_grow_time`, `with_start` (a fuse before it grows), `with_fade_time`, `with_seed`, `with_source` (`SmokeSource::Point`, `Line { offset }` or `Box { half_extents }`), `with_pop_tick`, `with_tint`, `with_density` and `with_despawn_when_done`. Tint and density are looks, and `with_despawn_when_done(false)` keeps the entity once the cloud is gone; the rest are rules. A line's offset and a box are in world axes: turning the entity doesn't turn them.
 
 A source must fit the cloud's fill grid: with the default tuning 14.4 m × 7.2 m × 14.4 m (48 × 24 × 48 voxels of 0.3 m), 1.8 m of it below the source. So a box's half extents can be at most 7.2 m across and 1.8 m up, a line at most 14.4 m along each axis, and a volume at most about 1,490 m³. Bigger ones are cut off at the grid's faces (the log says so): use several smokes, or a larger `Tuning::grid_dims` or `Tuning::voxel_size`.
 
@@ -183,32 +183,37 @@ use bevy::prelude::*;
 use bevy_smokescreen::prelude::*;
 
 #[derive(Component)]
-struct Bot;
+struct Bot {
+    /// Enemies the smoke doesn't hide from this bot.
+    in_sight: usize,
+}
 
 #[derive(Component)]
 struct Enemy;
 
 fn bot_vision(
-    mut vision: SmokeVision,
-    bots: Query<&GlobalTransform, With<Bot>>,
+    vision: SmokeVision,
+    mut bots: Query<(&GlobalTransform, &mut Bot)>,
     enemies: Query<&GlobalTransform, With<Enemy>>,
 ) {
-    for bot in &bots {
+    // Every smoke at this tick, asked from every thread at once.
+    let view = vision.view();
+    bots.par_iter_mut().for_each(|(bot, mut state)| {
         let eye = bot.translation() + Vec3::new(0.0, 1.6, 0.0);
-        for enemy in &enemies {
-            let head = enemy.translation() + Vec3::new(0.0, 1.7, 0.0);
-            // True once the line passes through Tuning::sight_threshold of cloud
-            // (0.8 m by default), every smoke added up.
-            if vision.blocks_sight(eye, head) {
-                continue; // hidden by smoke
-            }
-            // The bot can see this enemy, unless something else is in the way.
-        }
-    }
+        state.in_sight = enemies
+            .iter()
+            .filter(|enemy| {
+                let head = enemy.translation() + Vec3::new(0.0, 1.7, 0.0);
+                // True once the line passes through Tuning::sight_threshold of cloud
+                // (0.8 m by default), every smoke added up.
+                !view.blocks_sight(eye, head)
+            })
+            .count();
+    });
 }
 
 /// How much of a sound gets through the smoke between its source and the listener.
-fn muffle(mut vision: SmokeVision, listeners: Query<&GlobalTransform, With<Camera3d>>) {
+fn muffle(vision: SmokeVision, listeners: Query<&GlobalTransform, With<Camera3d>>) {
     let source = Vec3::new(0.0, 1.0, 10.0);
     for ear in &listeners {
         let gain = vision.transmittance(source, ear.translation()); // 0..1
@@ -217,7 +222,9 @@ fn muffle(mut vision: SmokeVision, listeners: Query<&GlobalTransform, With<Camer
 }
 ```
 
-`SmokeVision` answers for the current tick, in world units: `blocks_sight(a, b)`, `occlusion(a, b)` (the amount of cloud between two points), `transmittance(a, b)`, `density_at(p)` (every smoke added up) and `density_of(cloud, p)` (one smoke's). A server without Bevy asks `smokescreen::Smokes` the same questions and gets the same answers.
+`SmokeVision` answers for the current tick, in world units: `blocks_sight(a, b)`, `occlusion(a, b)` (the amount of cloud between two points), `transmittance(a, b)`, `density_at(p)` (every smoke added up) and `density_of(cloud, p)` (one smoke's). `view()` is that tick's `SmokeView`, `Copy + Sync`, with the same questions: take it once for many queries, `par_iter`, or your own functions. `drawn_view()` is the drawn tick's, for checks that must agree with the picture. A server without Bevy asks `smokescreen::Smokes` the same questions and gets the same answers.
+
+`SmokeVision` only reads, so systems that use it run in parallel. It answers from views the plugin prepares when the clock moves (in `PreUpdate`) and again once the frame's pops and impacts are in (after `SmokeSystems::Simulate`): every system in `Update` sees the same smoke, whatever order they run in. A change made straight to `SmokeWorld` in `Update` shows from then on, or at once after `world.prepare_vision(&clock)`. For another tick (lag compensation), use `world.view(tick)` with `ResMut<SmokeWorld>`.
 
 ### Gas damage
 
@@ -234,7 +241,7 @@ struct Gas;
 struct Health(f32);
 
 fn gas_damage(
-    mut vision: SmokeVision,
+    vision: SmokeVision,
     gas: Query<&Smoke, With<Gas>>,
     mut players: Query<(&GlobalTransform, &mut Health)>,
     time: Res<Time>,
@@ -259,8 +266,6 @@ fn gas_damage(
 Mark meshes with `SmokeObstacle` (Setup), or build the level yourself and insert it before smokes pop: a cloud keeps the shape it filled with.
 
 ```rust,no_run
-use std::sync::Arc;
-
 use bevy::prelude::*;
 use bevy_smokescreen::prelude::*;
 
@@ -273,7 +278,7 @@ fn load_level(mut commands: Commands) {
     // Voxelised once, at the tuning's voxel size (0.3 m by default): every fill is then bit
     // lookups, and the clouds come out exactly as the boxes alone would make them.
     let level = VoxelObstacles::from_level(Vec3::new(-50.0, -2.0, -50.0), Vec3::new(50.0, 12.0, 50.0), 0.3, &walls);
-    commands.insert_resource(SmokeLevel(Arc::new(level)));
+    commands.insert_resource(SmokeLevel::new(level));
 }
 
 /// From your physics engine: is the box at `center`, `half` either side, blocked?
@@ -286,7 +291,7 @@ fn level_from_physics(overlaps_box: impl Fn(Vec3, f32) -> bool) -> VoxelObstacle
 
 /// Open ground on purpose: say so, and the log stops warning about a missing level.
 fn open_ground(mut commands: Commands) {
-    commands.insert_resource(SmokeLevel(Arc::new(FlatGround::new(0.0, UpAxis::Y))));
+    commands.insert_resource(SmokeLevel::new(FlatGround::new(0.0, UpAxis::Y)));
 }
 ```
 
@@ -469,12 +474,16 @@ fn main() {
 fn sync_smoke(
     mut net: ResMut<Net>,
     mut clock: ResMut<SmokeClock>,
+    mut world: ResMut<SmokeWorld>,
     mut bullets: MessageWriter<SmokeBullet>,
     mut commands: Commands,
 ) {
     clock.tick = net.server_tick; // fills advance to it, and SmokeVision answers for it
     clock.draw_tick = Some(net.interpolation_tick); // the tick drawn
     clock.draw_fraction = net.interpolation_fraction; // how far the frame is past it
+    // The plugin prepared SmokeVision's views of the old ticks in PreUpdate: these
+    // ones from here on. (A clock written in First needs none of this.)
+    world.prepare_vision(&clock);
     // Events with their own ticks may arrive late or out of order: every machine
     // computes the same clouds from the same events.
     for (spec, tint) in net.pops.drain(..) {
@@ -499,6 +508,38 @@ fn sync_smoke(
 - When every machine spawns the same `Smoke` from the same event instead (lockstep, rollback), give it the event's tick: `Smoke::gas().with_pop_tick(tick)`. Spawn it unparented at the same position: a parent's transform is applied in floating point, so the position, and the seed made from it, may come out in other bits.
 - `SmokeWorld` is the core's `Smokes` the plugin runs (it derefs to it). Clouds popped or inserted on it directly are drawn with the default look (no tint) until they end or `world.remove(id)`. `world.bullet(start, end, tick)` and `world.explosion(center, radius, tick)` do what the ticked messages do, from a system that holds `ResMut<SmokeWorld>`.
 - A view of a recent past tick answers as it would have then (lag compensation): `world.view(tick).blocks_sight(a, b)`. Clouds and holes are kept for `Config::history_ticks` (a second by default) after they end, `Smoke` entities' clouds included.
+- A clock moved after `PreUpdate` (as here, or once per fixed step in `FixedUpdate`) needs `world.prepare_vision(&clock)` after it, or `SmokeVision` answers for the tick before and the log says so once.
+
+### A dedicated server in Bevy
+
+A server runs the plugin without a window, a renderer or assets: it simulates and answers `SmokeVision`, and does none of the drawing's work.
+
+```rust,no_run
+use std::time::Duration;
+
+use bevy::{app::ScheduleRunnerPlugin, prelude::*};
+use bevy_smokescreen::prelude::*;
+
+fn main() {
+    // The level every machine shares, voxelised once (`VoxelObstacles::to_bytes`).
+    let bytes = std::fs::read("level.voxels").expect("the level");
+    let level = VoxelObstacles::from_bytes(&bytes).expect("the level's voxels");
+    App::new()
+        .add_plugins((
+            // A frame per tick, and nothing to draw with.
+            MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(1.0 / 128.0))),
+            // Places smokes where their entities are.
+            TransformPlugin,
+            SmokePlugin::default(),
+        ))
+        .insert_resource(SmokeLevel::new(level))
+        .run();
+}
+```
+
+- `TransformPlugin` is part of `DefaultPlugins`, not `MinimalPlugins`. Without it nothing updates `GlobalTransform`, so smokes placed by their entity would pop at the origin (the log says so). Smokes made with `Smoke::from_spec` need no transforms.
+- `SmokeObstacle` works on a server too, given Bevy's `AssetPlugin` and `MeshPlugin` and the level's meshes. Shipping the voxels is lighter and gives every machine the same level.
+- Drive the clock from your netcode as in "Multiplayer in Bevy", and answer gameplay questions with `SmokeVision` as in a game.
 
 ### A first-person weapon inside smoke
 
@@ -608,6 +649,7 @@ fn main() {
 
 - **Compute shaders.** Volumetric and faceted smoke need them: native, or WebGPU in a browser (Bevy's `webgpu` feature, or `bevy_smokescreen`'s). On WebGL2 only crystal smoke is drawn, and the log says why.
 - **Transparent objects behind smoke show through it.** Alpha-blended objects (tracers, muzzle-flash sprites, particles) behind or inside volumetric or faceted smoke draw over it at full strength: Bevy draws them after the smoke, which writes no depth. Opaque and `AlphaMode::Mask` objects are hidden properly, crystal smoke hides everything, and transparent objects in front of a smoke are fine. For effects that must stay hidden, use one of those, or hide them where `blocks_sight(camera, effect)`.
+- **`SmokeVision` sees the smoke as the plugin last prepared it**: when the clock moved in `PreUpdate`, and again after `SmokeSystems::Simulate`. Changes made straight to `SmokeWorld` show from then on, and a clock moved later needs `world.prepare_vision(&clock)`.
 - **A first-person weapon needs its own camera** (recipe above), or smoke draws over it.
 - **Orthographic cameras** draw no volumetric or faceted smoke; crystal smoke works.
 - **Bevy 0.20 only.** `bevy_smokescreen` 0.1 and 0.2 are both for Bevy 0.20.
@@ -628,7 +670,7 @@ Each is logged once per app, with what to do. If a log shows one:
 - "The camera … has its own AmbientLight" or "… is lit by an environment map": set `SmokeSettings::ambient_override`.
 - "SmokeCamera::budget_ms needs GPU timings": add `RenderDiagnosticsPlugin`, on Vulkan or DX12.
 - "… directional lights have SmokeSun" or "… directional lights and none has SmokeSun": keep `SmokeSun` on exactly one.
-- "A smoke popped with no level": mark the level's meshes, floor included, with `SmokeObstacle`, or insert a `SmokeLevel` before smokes pop; for open ground on purpose, `SmokeLevel(Arc::new(FlatGround::new(height, UpAxis::Y)))`.
+- "A smoke popped with no level": mark the level's meshes, floor included, with `SmokeObstacle`, or insert a `SmokeLevel` before smokes pop; for open ground on purpose, `SmokeLevel::new(FlatGround::new(height, UpAxis::Y))`.
 - "A smoke's box source …", "A smoke's line source …" or "A smoke asks for a volume of …, more than its fill grid holds": a smaller source or several smokes, or a larger `grid_dims` or `voxel_size`.
 - "A smoke popped inside solid level geometry": pop smokes in open air, on or just above the floor. If every smoke does this, check that the level's meshes face outwards.
 - "More smokes are alive than Tuning::max_clouds": fewer at once, or a larger `max_clouds` (past 32, crystal smoke only).
@@ -637,7 +679,10 @@ Each is logged once per app, with what to do. If a log shows one:
 - "SmokeObstacle is on an entity without a Mesh3d": put it on the mesh entities themselves (recipe "A glTF level").
 - "A SmokeObstacle mesh … has no triangle data in the main world": use a triangle list, loaded with `RenderAssetUsages::MAIN_WORLD`.
 - "A SmokeObstacle mesh failed to load": fix the asset, or take `SmokeObstacle` off that entity; smokes wait for the level until then.
-- "SmokePlugin was added before Bevy's RenderPlugin" (or a panic that it needs Bevy's AssetPlugin): add it after `DefaultPlugins`.
+- "SmokePlugin was added before Bevy's RenderPlugin": add it after `DefaultPlugins`.
+- "Bevy's TransformPlugin isn't added": add `TransformPlugin` (part of `DefaultPlugins`; a server on `MinimalPlugins` needs it), or make every smoke with `Smoke::from_spec`.
+- "SmokeVision answered for tick …, but SmokeClock is at …": write `SmokeClock` in `First`, or call `world.prepare_vision(&clock)` after writing it.
+- A panic "SmokePlugin: Config::… is …": fix that setting. `Config::validate()` checks a configuration without panicking (one read from a file, say).
 - "The GPU device … offers no compute shaders": WebGL2; in a browser, build with WebGPU. Crystal smoke still works.
 
 ## API: bevy_smokescreen
@@ -645,7 +690,7 @@ Each is logged once per app, with what to do. If a log shows one:
 In `bevy_smokescreen::prelude` unless marked "root".
 
 - [SmokePlugin](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokePlugin.html): the plugin. `SmokePlugin::default()` or `SmokePlugin::new(config)`; add it after `DefaultPlugins`.
-- [Smoke](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.Smoke.html): component, a cloud popping where its entity is. Presets `grenade()`, `wall(offset)`, `gas()`, `fog_bank(half_extents)`, `steam_vent()`; `from_spec(spec)`, exactly the cloud a server announced; builders `with_style`, `with_volume`, `with_lifetime`, `with_grow_time`, `with_tint`, `with_seed`, `with_source`, `with_pop_tick`; fields `density`, `despawn_when_done`; `cloud()` gives its `CloudId` once popped (for `SmokeVision::density_of`).
+- [Smoke](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.Smoke.html): component, a cloud popping where its entity is. Presets `grenade()`, `wall(offset)`, `gas()`, `fog_bank(half_extents)`, `steam_vent()`; `from_spec(spec)`, exactly the cloud a server announced; builders `with_style`, `with_volume`, `with_lifetime`, `with_grow_time`, `with_start`, `with_fade_time`, `with_seed`, `with_source`, `with_pop_tick`, `with_tint`, `with_density`, `with_despawn_when_done`; `cloud()` gives its `CloudId` once popped (for `SmokeVision::density_of`).
 - [SmokeSource](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/enum.SmokeSource.html): `Point`, `Line { offset }`, `Box { half_extents }`, in world axes.
 - [SmokeStyle](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/enum.SmokeStyle.html): `Volumetric` (the default), `Crystal`, `Faceted` (experimental). The core's `Style`.
 - [DefaultSmokeStyle](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.DefaultSmokeStyle.html): resource, the style of smokes that don't choose their own, read at each pop: a rule, the same on every machine. `DefaultSmokeStyle(SmokeStyle::Crystal)`.
@@ -653,25 +698,26 @@ In `bevy_smokescreen::prelude` unless marked "root".
 - [SmokeQuality](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/quality/struct.SmokeQuality.html): component that comes with `SmokeCamera`: what the dial chose. `tier`, `tier_name()`, `measured_ms`, `predicted_ms`.
 - [SmokeSun](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokeSun.html): marks the directional light that lights the smoke.
 - [SmokeObstacle](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokeObstacle.html): marks level meshes the smoke flows around.
-- [SmokeLevel](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokeLevel.html): resource, the level as any `Level`: `SmokeLevel(Arc::new(level))`. `SmokeObstacle` builds it, or insert your own.
+- [SmokeLevel](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokeLevel.html): resource, the level as any `Level`: `SmokeLevel::new(level)`. `SmokeObstacle` builds it, or insert your own.
 - [SmokeBullet](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokeBullet.html) and [SmokeExplosion](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokeExplosion.html): messages, a tunnel along a shot (`start`, `end`) and a cleared sphere (`center`, `radius`), each on the current tick or its own `tick`. Build them with `..default()`.
-- [SmokeVision](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokeVision.html): system parameter for gameplay queries at the current tick: `blocks_sight(a, b)`, `occlusion(a, b)`, `transmittance(a, b)`, `density_at(p)`, `density_of(cloud, p)`, `tick()`.
+- [SmokeVision](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokeVision.html): system parameter for gameplay queries at the current tick, read-only: `blocks_sight(a, b)`, `occlusion(a, b)`, `transmittance(a, b)`, `density_at(p)`, `density_of(cloud, p)`, `tick()`, and `view()` and `drawn_view()` for the tick's and the drawn tick's `SmokeView`.
+- [SmokeView](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokeView.html): every smoke at one tick, `Copy + Sync`, the core's `View`: the same questions from any number of threads.
 - [SmokeSettings](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokeSettings.html): resource, the look, which can change at any time and differ from player to player: `extinction`, `albedo`, `noise_within_rule`, `ambient_override`, `wind`, `crystal_shadows`, the noise, and debug views.
 - [NoiseWithinRule](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/enum.NoiseWithinRule.html): `Off` (the default), `Capped`, `Filled`.
 - [SmokeClock](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokeClock.html): resource, the tick: `tick`, `draw_tick`, `draw_fraction`, `auto`.
-- [SmokeWorld](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokeWorld.html): resource, the core's `Smokes` the plugin runs (it derefs to it): pops, holes and queries at any tick.
-- [SmokeSystems](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/enum.SmokeSystems.html): system sets in `PostUpdate`, after transform propagation: `Simulate`, then `PrepareRender`.
+- [SmokeWorld](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.SmokeWorld.html): resource, the core's `Smokes` the plugin runs (it derefs to it): pops, holes and queries at any tick. `prepare_vision(&clock)` prepares `SmokeVision`'s views again after the clock or the world changed mid-frame.
+- [SmokeSystems](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/enum.SmokeSystems.html): system sets in `PostUpdate`, after transform propagation: `Simulate` (it ends by preparing `SmokeVision`'s views again), then `PrepareRender` (only with Bevy's renderer).
 - [CrystalPuff](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/struct.CrystalPuff.html): marks the entities the plugin spawns for crystal puffs.
 - [quality](https://docs.rs/bevy_smokescreen/0.2/bevy_smokescreen/quality/index.html): the dial's steps: `VolumetricQuality` and `FacetQuality` (the knobs at each step, to pin with `SmokeCamera::volumetric` and `facets`), `TIER_NAMES`. `SmokeResolution` is the fraction of the screen's resolution volumetric smoke is marched at.
-- Root: `Config`, `Tuning`, `CloudSpec`, `CloudSource`, `CloudId`, `Smokes`, `Level`, `SmokeTimeline` (the core's `Timeline`), `HoleSettings`, `SharedLevel`, `VoxelBytesError`, and the core itself as `bevy_smokescreen::smokescreen`.
+- Root: `Config`, `ConfigError`, `Tuning`, `CloudSpec`, `CloudSource`, `CloudId`, `Smokes`, `Level`, `SmokeTimeline` (the core's `Timeline`), `HoleSettings`, `SharedLevel`, `VoxelBytesError`, and the core itself as `bevy_smokescreen::smokescreen`.
 
 ## API: smokescreen
 
-- [Smokes](https://docs.rs/smokescreen/0.2/smokescreen/struct.Smokes.html): the world of clouds. `new(config, level)`, `pop(spec)`, `bullet(start, end, tick)`, `explosion(center, radius, tick)`, `advance(tick)`, `view(tick)`, and `blocks_sight`, `occlusion`, `density_at`, `density_of` at a tick; `insert(spec, shape)`, `remove(id)`, `clear()`, `set_level(level)`, `clouds()`, `cloud(id)`, `pending_fills()`.
+- [Smokes](https://docs.rs/smokescreen/0.2/smokescreen/struct.Smokes.html): the world of clouds. `new(config, level)` (it panics on a config `Config::validate` refuses), `pop(spec)`, `bullet(start, end, tick)`, `explosion(center, radius, tick)`, `advance(tick)`, `view(tick)`, and `blocks_sight`, `occlusion`, `density_at`, `density_of` at a tick; `insert(spec, shape)`, `remove(id)`, `clear()`, `set_level(level)`, `clouds()`, `cloud(id)`, `pending_fills()`.
 - [View](https://docs.rs/smokescreen/0.2/smokescreen/struct.View.html): every cloud at one tick, `Copy + Sync`: `blocks_sight`, `occlusion`, `density_at`, `density_of`, `tick`. Allocates nothing.
-- [Config](https://docs.rs/smokescreen/0.2/smokescreen/struct.Config.html): `Config::new(units, tick_rate)`; `tuning`, `fill_budget`, `level_query_units`, `history_ticks`, `cached_ticks`.
+- [Config](https://docs.rs/smokescreen/0.2/smokescreen/struct.Config.html): `Config::new(units, tick_rate)`; `tuning`, `fill_budget`, `level_query_units`, `history_ticks`, `cached_ticks`. `validate()` gives a [ConfigError](https://docs.rs/smokescreen/0.2/smokescreen/struct.ConfigError.html) (`field()`, and a message) for a number that isn't finite; a tick rate, unit length, voxel size or volume not above 0; a `floor_fraction` outside 0 to 1; or a grid of more than `MAX_GRID_VOXELS`.
 - [Tuning](https://docs.rs/smokescreen/0.2/smokescreen/struct.Tuning.html): the rules, the same on every machine. `Tuning::new(&units)`; `grid_dims`, `voxel_size`, `volume`, `up_cost`, `down_cost`, `lumpiness`, `lump_size`, `floor_fraction`, `timeline`, `facets`, `crystals`, `facet_rule`, `volume_steps`, `holes`, `max_holes_per_cloud`, `max_clouds`, `sight_threshold`.
-- [CloudSpec](https://docs.rs/smokescreen/0.2/smokescreen/struct.CloudSpec.html): a pop, all a server has to send. `new(origin, pop_tick, seed, style)`, `with_source(source)`, `seed_from_origin(origin)`; fields `source`, `volume`, `timeline`. In Bevy, spawn one with `Smoke::from_spec`.
+- [CloudSpec](https://docs.rs/smokescreen/0.2/smokescreen/struct.CloudSpec.html): a pop, all a server has to send. `new(origin, pop_tick, seed, style)`, `with_source(source)`, `with_volume(volume)`, `with_timeline(timeline)`, `seed_from_origin(origin)`; fields `source`, `volume`, `timeline`. In Bevy, spawn one with `Smoke::from_spec`.
 - [CloudSource](https://docs.rs/smokescreen/0.2/smokescreen/enum.CloudSource.html): `Point`, `Line { end }`, `Box { half_extents }`.
 - [Style](https://docs.rs/smokescreen/0.2/smokescreen/enum.Style.html): `Volumetric`, `Faceted` (experimental), `Crystal`.
 - [Level](https://docs.rs/smokescreen/0.2/smokescreen/trait.Level.html): trait for level geometry: `is_blocked(center, half_extent)`, `ray_hit(origin, dir, max_dist)`, and `is_inside(point)`, which has a default.
