@@ -17,11 +17,14 @@ use crate::{Smoke, SmokeClock, SmokeConfig, SmokeSettings, SmokeWorld};
 
 /// Marks the entities that draw crystal puffs. They belong to the plugin:
 /// don't change or despawn them, but you can filter on this (to keep them
-/// out of your own raycasts, say).
-#[derive(Component, Clone, Copy, Debug)]
+/// out of your own raycasts, say). Reflected without its cloud, which the
+/// core's [`CloudId`] can't be from here.
+#[derive(Component, Clone, Copy, Debug, Reflect)]
+#[reflect(Component, Debug, Clone)]
 #[non_exhaustive]
 pub struct CrystalPuff {
     /// The cloud this puff belongs to.
+    #[reflect(ignore)]
     pub cloud: CloudId,
 }
 

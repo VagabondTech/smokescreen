@@ -53,7 +53,8 @@ pub fn quality_of_tier(tier: usize) -> f32 {
 
 /// How the faceted style shades sunlight. Later versions may add ways, so a
 /// `match` on it needs a `_` arm.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Reflect)]
+#[reflect(Debug, PartialEq, Hash)]
 #[non_exhaustive]
 pub enum FacetShadows {
     /// A shadow ray per pixel through the puffs: crisp facet-on-facet shadows.
@@ -65,7 +66,8 @@ pub enum FacetShadows {
 
 /// How the faceted style darkens creases and the underside of the cloud.
 /// Later versions may add ways, so a `match` on it needs a `_` arm.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Reflect)]
+#[reflect(Debug, PartialEq, Hash)]
 #[non_exhaustive]
 pub enum FacetOcclusion {
     /// Three distance-field taps along the normal: crisp creases.
@@ -75,7 +77,8 @@ pub enum FacetOcclusion {
 }
 
 /// Render knobs of the faceted style for one camera.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Reflect)]
+#[reflect(Debug, PartialEq)]
 pub struct FacetQuality {
     /// The first trace, with its shadows and occlusion, runs at 1/divisor
     /// resolution (1, 2 or 4). Silhouettes and creases between puffs are
@@ -105,7 +108,8 @@ pub struct FacetQuality {
 }
 
 /// Render knobs of the volumetric style for one camera.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Reflect)]
+#[reflect(Debug, PartialEq)]
 pub struct VolumetricQuality {
     /// Raymarch resolution relative to the camera's: the finest the march
     /// uses.
@@ -203,7 +207,8 @@ pub(crate) const VOLUMETRIC_RELATIVE_COST: [f32; TIERS] = [0.85, 0.85, 0.90, 0.9
 
 /// What the dial is doing on a camera this frame. Added automatically with
 /// [`SmokeCamera`]; read it for HUDs and logs.
-#[derive(Component, Clone, Debug, Default, ExtractComponent)]
+#[derive(Component, Clone, Debug, Default, ExtractComponent, Reflect)]
+#[reflect(Component, Default, Debug, Clone)]
 #[extract_app(RenderApp)]
 pub struct SmokeQuality {
     /// Tier in use, 0 (cheapest) ..= 5.
@@ -225,10 +230,13 @@ pub struct SmokeQuality {
     /// while the camera isn't measuring, or before a measurement has come
     /// back since it last jumped.
     pub measured_depth: Option<f32>,
+    #[reflect(ignore)]
     pub(crate) controller: BudgetController,
     /// Whether the render world measures how far the rays see smoke this
     /// frame, and what the measurements need between frames.
+    #[reflect(ignore)]
     pub(crate) measure: bool,
+    #[reflect(ignore)]
     pub(crate) depth: DepthState,
 }
 

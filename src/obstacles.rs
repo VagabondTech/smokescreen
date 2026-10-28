@@ -35,7 +35,8 @@ use crate::{
 /// a box for a raised floor with open air below it. Where triangles face
 /// inwards (a room made of one box seen from inside), or a wall is a single
 /// upright sheet, smoke stops up to half a voxel short of the surface.
-#[derive(Component, Clone, Copy, Debug, Default)]
+#[derive(Component, Clone, Copy, Debug, Default, Reflect)]
+#[reflect(Component, Default, Debug)]
 pub struct SmokeObstacle;
 
 #[derive(Resource, Default)]

@@ -6,6 +6,7 @@ use crate::math::{BYTE_TO_UNIT, smoothstep};
 /// growing 0.1 s after the pop, full after another 1.4 s, dissolves over the
 /// last 3 s of an 18 s life.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Timeline {
     /// Seconds from the pop until the cloud starts to grow. The flood fill
     /// runs in this window, a little each tick (see

@@ -127,7 +127,7 @@ pub use smokescreen::Timeline as SmokeTimeline;
 pub use smokescreen::View as SmokeView;
 pub use smokescreen::{
     BoxObstacles, CloudId, CloudSource, CloudSpec, Config, ConfigError, FacetRule, FacetSettings, FlatGround,
-    HoleSettings, Level, ObstacleBox, Polyhedron, ShapeMix, Smokes, Tuning, Units, UpAxis, VolumeSteps,
+    HoleSettings, Impact, Level, ObstacleBox, Polyhedron, ShapeMix, Smokes, Tuning, Units, UpAxis, VolumeSteps,
     VoxelBytesError, VoxelObstacles,
 };
 
@@ -139,10 +139,10 @@ use smokescreen::light::{LightRays, visibility};
 pub mod prelude {
     pub use crate::{
         BoxObstacles, CrystalPuff, DefaultSmokeStyle, FacetQuality, FacetRule, FacetSettings, FlatGround,
-        NoiseWithinRule, ObstacleBox, Polyhedron, ShapeMix, Smoke, SmokeBullet, SmokeCamera, SmokeClock,
-        SmokeExplosion, SmokeLevel, SmokeObstacle, SmokePlugin, SmokeQuality, SmokeResolution, SmokeSettings,
-        SmokeSource, SmokeStyle, SmokeSun, SmokeSystems, SmokeView, SmokeVision, SmokeWorld, Units, UpAxis,
-        VolumeSteps, VolumetricQuality, VoxelObstacles,
+        NoiseWithinRule, ObstacleBox, Polyhedron, ShapeMix, Smoke, SmokeBullet, SmokeCamera, SmokeClock, SmokeEnded,
+        SmokeExplosion, SmokeLevel, SmokeObstacle, SmokePlugin, SmokePopped, SmokeQuality, SmokeResolution,
+        SmokeSettings, SmokeSource, SmokeStyle, SmokeSun, SmokeSystems, SmokeView, SmokeVision, SmokeWorld, Units,
+        UpAxis, VolumeSteps, VolumetricQuality, VoxelObstacles,
     };
 }
 
@@ -263,9 +263,31 @@ impl Plugin for SmokePlugin {
             .init_resource::<obstacles::ObstacleBuild>()
             .add_message::<SmokeBullet>()
             .add_message::<SmokeExplosion>()
+            // For inspectors, editors and scene files, also in apps without
+            // Bevy's automatic registration (a server's, say).
+            .register_type::<Smoke>()
+            .register_type::<SmokeSource>()
+            .register_type::<SmokeCamera>()
+            .register_type::<SmokeResolution>()
+            .register_type::<VolumetricQuality>()
+            .register_type::<FacetQuality>()
+            .register_type::<FacetShadows>()
+            .register_type::<FacetOcclusion>()
+            .register_type::<SmokeQuality>()
+            .register_type::<SmokeSettings>()
+            .register_type::<NoiseWithinRule>()
+            .register_type::<SmokeClock>()
+            .register_type::<SmokeSun>()
+            .register_type::<SmokeObstacle>()
+            .register_type::<CrystalPuff>()
+            .register_type::<SmokeBullet>()
+            .register_type::<SmokeExplosion>()
             // A clock inserted with the app, for Startup systems.
             .add_systems(PreStartup, prepare_views)
             .add_systems(PreUpdate, (advance_clock, prepare_views).chain())
+            // Before transforms are propagated, so what observers spawn is
+            // placed and drawn this frame.
+            .add_systems(PostUpdate, announce_smokes.before(TransformSystems::Propagate))
             .configure_sets(
                 PostUpdate,
                 (SmokeSystems::Simulate, SmokeSystems::PrepareRender)
@@ -418,7 +440,8 @@ impl SmokeWorld {
 /// Volumetric smoke's noise moves on this clock too, not on each machine's
 /// own: players who draw the same tick and fraction with the same
 /// [`SmokeSettings`] see the same billows.
-#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Reflect)]
+#[reflect(Resource, Default, Debug, PartialEq)]
 pub struct SmokeClock {
     /// The newest simulation tick: fills advance to it, impacts land on it,
     /// [`Smoke`] entities pop on it unless they bring their own
@@ -462,7 +485,8 @@ impl SmokeClock {
 /// Lengths here are in metres whatever [`Config::units`] says: the
 /// extinction is per metre and the noise frequency in tiles per metre. Only
 /// `wind` is in world units.
-#[derive(Resource, Clone, Debug, PartialEq)]
+#[derive(Resource, Clone, Debug, PartialEq, Reflect)]
+#[reflect(Resource, Default, Debug, PartialEq)]
 pub struct SmokeSettings {
     /// Extinction (1/m) of fully dense volumetric smoke. 7 means you can't
     /// see past about half a metre inside a smoke.
@@ -576,7 +600,8 @@ pub struct DefaultSmokeStyle(pub SmokeStyle);
 /// every line the rule blocks (at [`Smoke::density`] 1 or more), each with a
 /// different cost. Both leave thin smoke (wisps, edges, silhouettes) all its
 /// noise. Later versions may add modes, so a `match` on it needs a `_` arm.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Reflect)]
+#[reflect(Default, Debug, PartialEq, Hash)]
 #[non_exhaustive]
 pub enum NoiseWithinRule {
     /// The noise may thin smoke the rule counts. Billowy, and fading clouds
@@ -640,14 +665,17 @@ impl SmokeLevel {
 /// Marks the directional light that lights volumetric and faceted smoke.
 /// Without it, the only directional light is used; with several, mark one
 /// (the plugin warns if none or more than one is marked).
-#[derive(Component, Default, Clone, Copy, Debug)]
+#[derive(Component, Default, Clone, Copy, Debug, Reflect)]
+#[reflect(Component, Default, Debug)]
 pub struct SmokeSun;
 
 /// A bullet passing through smoke: a tunnel that closes in about 2 s.
 ///
 /// Build it with `..default()` (`SmokeBullet { start, end, ..default() }`):
 /// later versions may add fields.
-#[derive(Message, Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Message, Clone, Copy, Debug, Default, PartialEq, Reflect)]
+#[reflect(Default, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SmokeBullet {
     /// Where the shot starts, in world units.
     pub start: Vec3,
@@ -666,7 +694,9 @@ pub struct SmokeBullet {
 ///
 /// Build it with `..default()` (`SmokeExplosion { center, ..default() }`):
 /// later versions may add fields.
-#[derive(Message, Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Message, Clone, Copy, Debug, Default, PartialEq, Reflect)]
+#[reflect(Default, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SmokeExplosion {
     /// Where it went off, in world units.
     pub center: Vec3,
@@ -691,7 +721,8 @@ pub struct SmokeExplosion {
 /// // Or: best quality that fits 1.5 ms of GPU time, re-decided every frame.
 /// let budgeted = SmokeCamera::budget(1.5);
 /// ```
-#[derive(Component, Clone, Copy, Debug, PartialEq, ExtractComponent)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, ExtractComponent, Reflect)]
+#[reflect(Component, Default, Debug, PartialEq)]
 #[extract_app(RenderApp)]
 #[require(SmokeQuality)]
 pub struct SmokeCamera {
@@ -723,7 +754,8 @@ pub struct SmokeCamera {
 /// Fraction of the camera resolution (per axis) the volumetric smoke is
 /// raymarched at. Later versions may add fractions, so a `match` on it needs
 /// a `_` arm.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Reflect)]
+#[reflect(Default, Debug, PartialEq, Hash)]
 #[non_exhaustive]
 pub enum SmokeResolution {
     /// Every pixel.
@@ -804,7 +836,8 @@ impl Default for SmokeCamera {
 /// What a [`Smoke`] spreads from, relative to its entity, in world units and
 /// world axes: the entity's rotation doesn't turn a line or a box. Later
 /// versions may add shapes, so a `match` on it needs a `_` arm.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Reflect)]
+#[reflect(Default, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum SmokeSource {
     /// From the entity's position: a grenade.
@@ -839,7 +872,16 @@ pub enum SmokeSource {
 /// [`CloudSpec`] it sent: that cloud exactly, with your look. When every
 /// machine spawns the same `Smoke` from the same event instead (lockstep,
 /// rollback), give it the event's tick with [`Smoke::with_pop_tick`].
-#[derive(Component, Debug)]
+///
+/// [`SmokePopped`] and [`SmokeEnded`] are triggered on the entity when its
+/// cloud pops and ends, for sounds, effects and UI.
+///
+/// It is reflected, so inspectors, editors and scene files see its fields,
+/// all but [`style`](Self::style): the core's [`SmokeStyle`] can't be
+/// reflected from here. A smoke loaded from a scene takes
+/// [`DefaultSmokeStyle`]; give it a style of its own in code.
+#[derive(Component, Debug, Reflect)]
+#[reflect(Component, Default, Debug, Clone)]
 #[require(Transform)]
 pub struct Smoke {
     /// What it spreads from.
@@ -869,6 +911,8 @@ pub struct Smoke {
     /// gives the same smoke on every machine.
     pub seed: Option<u32>,
     /// Style, a rule. `None` uses [`DefaultSmokeStyle`] as it is at the pop.
+    /// Not reflected.
+    #[reflect(ignore)]
     pub style: Option<SmokeStyle>,
     /// The tick it pops at. `None` pops at the current [`SmokeClock::tick`].
     /// Set it to the tick of the event that threw the smoke, and a pop heard
@@ -885,7 +929,9 @@ pub struct Smoke {
     /// removes the cloud at once.
     pub despawn_when_done: bool,
     /// Pop exactly this, whatever the fields above say ([`Smoke::from_spec`]).
+    #[reflect(ignore)]
     spec: Option<CloudSpec>,
+    #[reflect(ignore)]
     cloud: Option<CloudId>,
 }
 
@@ -1071,6 +1117,50 @@ impl Smoke {
     }
 }
 
+/// A [`Smoke`] popped: the clock reached its cloud's pop tick. For sounds,
+/// effects and UI. The cloud starts to grow [`Smoke::start`] seconds later
+/// (0.1 s by default).
+///
+/// Observe it for every smoke with `app.add_observer(|popped:
+/// On<SmokePopped>| …)`, or for one with `commands.spawn(…).observe(…)`.
+/// It is triggered once per entity, in `PostUpdate` before Bevy propagates
+/// transforms, so what an observer spawns is placed and drawn that frame:
+/// the frame after the plugin popped the smoke, or once the clock reaches a
+/// pop tick still to come. A pop heard late ([`Smoke::from_spec`],
+/// [`Smoke::with_pop_tick`]) is announced at once with its own tick: compare
+/// that with [`SmokeClock::tick`] to leave out a sound that would come too
+/// late (for a player who has just joined, say).
+#[derive(EntityEvent, Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct SmokePopped {
+    /// The smoke's entity.
+    pub entity: Entity,
+    /// Its cloud in [`SmokeWorld`], as [`Smoke::cloud`] gives.
+    pub cloud: CloudId,
+    /// The tick it popped on.
+    pub tick: u64,
+}
+
+/// A [`Smoke`] ended: the clock reached its cloud's end tick, so the cloud
+/// is no longer drawn and blocks nothing. Triggered once per entity, after
+/// [`SmokePopped`] and before [`Smoke::despawn_when_done`] despawns it, so
+/// observers can still read the entity. Its cloud stays in [`SmokeWorld`] for
+/// [`Config::history_ticks`] more.
+///
+/// A smoke despawned sooner, or whose `Smoke` is removed, gets none: observe
+/// Bevy's `On<Despawn>` or `On<Remove, Smoke>` for those.
+#[derive(EntityEvent, Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct SmokeEnded {
+    /// The smoke's entity.
+    pub entity: Entity,
+    /// Its cloud in [`SmokeWorld`], as [`Smoke::cloud`] gives.
+    pub cloud: CloudId,
+    /// The tick it ended on: its end tick, or the clock's tick if the cloud
+    /// left `SmokeWorld` sooner (removed there directly).
+    pub tick: u64,
+}
+
 /// Gameplay queries against every smoke at the current [`SmokeClock::tick`]:
 /// bot vision, server-side visibility, audio occlusion, gas damage. The same
 /// answers the core gives anywhere else, in world units.
@@ -1184,9 +1274,54 @@ impl SmokeVision<'_> {
     }
 }
 
-/// Which entity owns which cloud, to remove clouds whose entity went away.
+/// Which entity owns which cloud, to remove clouds whose entity went away,
+/// and which of its events have been triggered.
 #[derive(Resource, Default)]
-struct SmokeEntities(HashMap<Entity, CloudId>);
+struct SmokeEntities(HashMap<Entity, Owned>);
+
+struct Owned {
+    cloud: CloudId,
+    /// [`SmokePopped`] triggered.
+    popped: bool,
+    /// [`SmokeEnded`] triggered.
+    ended: bool,
+}
+
+impl Owned {
+    /// Trigger whichever of the entity's events are due at `tick`, in order:
+    /// a pop heard late is announced, and ends, at once.
+    fn announce(&mut self, entity: Entity, world: &SmokeWorld, tick: u64, commands: &mut Commands) {
+        if self.ended {
+            return;
+        }
+        let cloud = self.cloud;
+        let Some(info) = world.cloud(cloud) else {
+            // Removed from the world directly: it ended where it was, if it
+            // had popped.
+            if self.popped {
+                self.ended = true;
+                commands.trigger(SmokeEnded { entity, cloud, tick });
+            }
+            return;
+        };
+        if !self.popped && tick >= info.spec().pop_tick {
+            self.popped = true;
+            commands.trigger(SmokePopped {
+                entity,
+                cloud,
+                tick: info.spec().pop_tick,
+            });
+        }
+        if self.popped && tick >= info.end_tick() {
+            self.ended = true;
+            commands.trigger(SmokeEnded {
+                entity,
+                cloud,
+                tick: info.end_tick(),
+            });
+        }
+    }
+}
 
 /// Sun and sky visibility per cloud, worked out on a background thread.
 #[derive(Resource, Default)]
@@ -1357,7 +1492,14 @@ fn pop_smokes(
         }
         let id = world.pop(spec);
         smoke.cloud = Some(id);
-        entities.0.insert(entity, id);
+        entities.0.insert(
+            entity,
+            Owned {
+                cloud: id,
+                popped: false,
+                ended: false,
+            },
+        );
     }
 }
 
@@ -1436,8 +1578,8 @@ fn retire_smokes(
     clock: Res<SmokeClock>,
 ) {
     for entity in removed.read() {
-        if let Some(id) = entities.0.remove(&entity) {
-            world.remove(id);
+        if let Some(owned) = entities.0.remove(&entity) {
+            world.remove(owned.cloud);
         }
     }
     for (entity, smoke) in &smokes {
@@ -1446,11 +1588,32 @@ fn retire_smokes(
         };
         let gone = world.cloud(id).is_none_or(|c| clock.tick >= c.end_tick());
         if gone && smoke.despawn_when_done {
+            // Events not triggered yet first, while the entity is there: a
+            // smoke that popped and ended since `announce_smokes` ran (one
+            // heard long after its pop, say).
+            if let Some(mut owned) = entities.0.remove(&entity) {
+                owned.announce(entity, &world, clock.tick, &mut commands);
+            }
             // The cloud stays: the core forgets it after
             // `Config::history_ticks`, so views of the ticks before (lag
             // compensation, a drawn tick behind) still have it.
-            entities.0.remove(&entity);
             commands.entity(entity).despawn();
+        }
+    }
+}
+
+/// Triggers [`SmokePopped`] and [`SmokeEnded`] as the clock reaches each
+/// smoke's pop and end ticks.
+fn announce_smokes(
+    mut commands: Commands,
+    smokes: Query<Entity, With<Smoke>>,
+    world: Res<SmokeWorld>,
+    mut entities: ResMut<SmokeEntities>,
+    clock: Res<SmokeClock>,
+) {
+    for entity in &smokes {
+        if let Some(owned) = entities.0.get_mut(&entity) {
+            owned.announce(entity, &world, clock.tick, &mut commands);
         }
     }
 }
@@ -2890,6 +3053,201 @@ mod tests {
         assert_eq!((timeline(timed), timeline(plain)), (Some(expected), None));
         let smoke = app.world().get::<Smoke>(timed).expect("the smoke");
         assert_eq!((smoke.density, smoke.despawn_when_done), (0.4, false));
+    }
+
+    /// What the observers in a test heard: the event, its entity, cloud and
+    /// tick, the clock's tick then, and whether the entity was still there.
+    #[derive(Resource, Default)]
+    struct Heard(Vec<(&'static str, Entity, CloudId, u64, u64, bool)>);
+
+    fn listen(app: &mut App) {
+        app.init_resource::<Heard>()
+            .add_observer(
+                |popped: On<SmokePopped>,
+                 mut heard: ResMut<Heard>,
+                 clock: Res<SmokeClock>,
+                 smokes: Query<(), With<Smoke>>| {
+                    let alive = smokes.contains(popped.entity);
+                    heard
+                        .0
+                        .push(("popped", popped.entity, popped.cloud, popped.tick, clock.tick, alive));
+                },
+            )
+            .add_observer(
+                |ended: On<SmokeEnded>,
+                 mut heard: ResMut<Heard>,
+                 clock: Res<SmokeClock>,
+                 smokes: Query<(), With<Smoke>>| {
+                    let alive = smokes.contains(ended.entity);
+                    heard
+                        .0
+                        .push(("ended", ended.entity, ended.cloud, ended.tick, clock.tick, alive));
+                },
+            );
+    }
+
+    /// Each smoke's pop and end are announced once each, in order, while
+    /// its entity is still there: a pop on the frame after the smoke popped
+    /// (or when a pop tick still to come arrives), an end on its tick, both
+    /// at once for a smoke heard after it was over, and no end for a smoke
+    /// despawned sooner.
+    #[test]
+    fn pops_and_ends_are_announced() {
+        let mut app = server_app(true);
+        listen(&mut app);
+        // Each ends 128 ticks after its pop.
+        let short = Smoke::grenade().with_lifetime(1.0);
+        let plain = app.world_mut().spawn(short.clone()).id();
+        let later = app.world_mut().spawn(short.clone().with_pop_tick(100)).id();
+        let kept = app.world_mut().spawn(short.clone().with_despawn_when_done(false)).id();
+        let dropped = app.world_mut().spawn(short.clone()).id();
+        // Popped at tick 0 and over by tick 32, heard of at 50.
+        let spec = CloudSpec::new(Vec3::new(3.0, 0.0, 0.0), 0, 9, SmokeStyle::Crystal).with_timeline(SmokeTimeline {
+            lifetime: 0.25,
+            fade_time: 0.1,
+            ..default()
+        });
+        let mut stale = Entity::PLACEHOLDER;
+        for tick in 0..300 {
+            app.world_mut().resource_mut::<SmokeClock>().tick = tick;
+            if tick == 50 {
+                stale = app.world_mut().spawn(Smoke::from_spec(spec)).id();
+            }
+            if tick == 60 {
+                app.world_mut().despawn(dropped);
+            }
+            app.update();
+        }
+
+        let heard = &app.world().resource::<Heard>().0;
+        let of = |e: Entity| {
+            heard
+                .iter()
+                .filter(|h| h.1 == e)
+                .map(|h| (h.0, h.3, h.4, h.5))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(of(plain), [("popped", 0, 1, true), ("ended", 128, 128, true)]);
+        assert_eq!(of(later), [("popped", 100, 100, true), ("ended", 228, 228, true)]);
+        assert_eq!(of(kept), [("popped", 0, 1, true), ("ended", 128, 128, true)]);
+        assert_eq!(of(dropped), [("popped", 0, 1, true)]);
+        assert_eq!(of(stale), [("popped", 0, 50, true), ("ended", 32, 50, true)]);
+        // Both events of a smoke name its cloud.
+        for e in [plain, later, kept, stale] {
+            let clouds: Vec<CloudId> = heard.iter().filter(|h| h.1 == e).map(|h| h.2).collect();
+            assert_eq!(clouds[0], clouds[1]);
+        }
+        let kept_cloud = app.world().get::<Smoke>(kept).and_then(Smoke::cloud);
+        assert_eq!(kept_cloud, heard.iter().find(|h| h.1 == kept).map(|h| h.2));
+        assert!(app.world().get_entity(plain).is_err());
+    }
+
+    /// The plugin's components, resources and messages are registered for
+    /// reflection, as inspectors, editors and scene files need. A smoke goes
+    /// through a dynamic world (what a scene file holds) and comes back a
+    /// new smoke with the same settings, all but its style, which is the
+    /// core's and isn't reflected: it takes `DefaultSmokeStyle`. A smoke
+    /// missing fields (saved by an earlier version) takes their defaults.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn smokes_go_through_reflection() {
+        use std::any::TypeId;
+
+        use bevy::{
+            ecs::{entity::EntityHashMap, reflect::from_reflect_with_fallback},
+            reflect::{
+                TypeInfo, Typed,
+                structs::{DynamicStruct, Struct},
+            },
+            world_serialization::DynamicWorldBuilder,
+        };
+
+        let mut app = server_app(true);
+        {
+            let registry = app.world().resource::<AppTypeRegistry>().read();
+            for (name, id) in [
+                ("Smoke", TypeId::of::<Smoke>()),
+                ("SmokeCamera", TypeId::of::<SmokeCamera>()),
+                ("SmokeQuality", TypeId::of::<SmokeQuality>()),
+                ("SmokeSun", TypeId::of::<SmokeSun>()),
+                ("SmokeObstacle", TypeId::of::<SmokeObstacle>()),
+                ("CrystalPuff", TypeId::of::<CrystalPuff>()),
+            ] {
+                assert!(registry.get_type_data::<ReflectComponent>(id).is_some(), "{name}");
+            }
+            for (name, id) in [
+                ("SmokeSettings", TypeId::of::<SmokeSettings>()),
+                ("SmokeClock", TypeId::of::<SmokeClock>()),
+            ] {
+                assert!(registry.get_type_data::<ReflectResource>(id).is_some(), "{name}");
+            }
+            for (name, id) in [
+                ("SmokeBullet", TypeId::of::<SmokeBullet>()),
+                ("SmokeExplosion", TypeId::of::<SmokeExplosion>()),
+                ("SmokeSource", TypeId::of::<SmokeSource>()),
+                ("SmokeResolution", TypeId::of::<SmokeResolution>()),
+                ("NoiseWithinRule", TypeId::of::<NoiseWithinRule>()),
+                ("VolumetricQuality", TypeId::of::<VolumetricQuality>()),
+                ("FacetQuality", TypeId::of::<FacetQuality>()),
+                ("FacetShadows", TypeId::of::<FacetShadows>()),
+                ("FacetOcclusion", TypeId::of::<FacetOcclusion>()),
+            ] {
+                assert!(registry.contains(id), "{name}");
+            }
+        }
+        let TypeInfo::Struct(info) = Smoke::type_info() else {
+            panic!("Smoke reflects as a struct");
+        };
+        let fields: Vec<&str> = info.field_names().to_vec();
+        assert!(
+            fields.contains(&"density") && fields.contains(&"fade_time"),
+            "{fields:?}"
+        );
+        for hidden in ["style", "spec", "cloud"] {
+            assert!(!fields.contains(&hidden), "{hidden} in {fields:?}");
+        }
+
+        let original = app
+            .world_mut()
+            .spawn((
+                Smoke::gas().with_style(SmokeStyle::Crystal).with_lifetime(9.0),
+                Transform::from_xyz(2.0, 0.0, 1.0),
+            ))
+            .id();
+        app.update();
+        let first = app.world().get::<Smoke>(original).and_then(Smoke::cloud);
+        let saved = {
+            let registry = app.world().resource::<AppTypeRegistry>().read();
+            DynamicWorldBuilder::from_world(app.world(), &registry)
+                .deny_all()
+                .allow_component::<Smoke>()
+                .extract_entity(original)
+                .build()
+        };
+        let mut entities = EntityHashMap::default();
+        saved
+            .write_to_world(app.world_mut(), &mut entities)
+            .expect("the smoke loads");
+        let copy = entities[&original];
+        app.update();
+        let smoke = app.world().get::<Smoke>(copy).expect("the copy");
+        let gas = Smoke::gas();
+        assert_eq!(
+            (smoke.lifetime, smoke.grow_time, smoke.tint, smoke.density, smoke.style),
+            (Some(9.0), gas.grow_time, gas.tint, gas.density, None)
+        );
+        let cloud = smoke.cloud();
+        assert!(cloud.is_some() && cloud != first, "the copy pops a cloud of its own");
+        let style = cloud.and_then(|c| app.world().resource::<SmokeWorld>().cloud(c).map(|c| c.spec().style));
+        assert_eq!(style, Some(SmokeStyle::Volumetric));
+
+        let mut partial = DynamicStruct::default();
+        partial.set_represented_type(Some(Smoke::type_info()));
+        partial.insert("density", 0.3_f32);
+        assert_eq!(partial.field_len(), 1);
+        let registry = app.world().resource::<AppTypeRegistry>().clone();
+        let smoke: Smoke = from_reflect_with_fallback(&partial, app.world_mut(), &registry.read());
+        assert_eq!((smoke.density, smoke.lifetime, smoke.tint), (0.3, None, Color::WHITE));
     }
 
     #[test]

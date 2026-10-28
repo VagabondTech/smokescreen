@@ -108,7 +108,7 @@ mod world;
 
 pub use facets::{FacetLimits, FacetRule, FacetSettings, Polyhedron, ShapeMix};
 pub use fill::CloudShape;
-pub use holes::HoleSettings;
+pub use holes::{HoleSettings, Impact};
 pub use level::{BoxObstacles, FlatGround, Level, ObstacleBox, VoxelBytesError, VoxelObstacles};
 pub use timeline::Timeline;
 pub use units::{Units, UpAxis};
