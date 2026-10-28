@@ -34,7 +34,6 @@ features = ["serde"]
 
 [dependencies]
 smokescreen = { path = "smokescreen", version = "0.1.1" }
-serde = { version = "1.0.200", default-features = false, features = ["derive"], optional = true }
 bevy = { version = "0.20.0", default-features = false, features = [
     "std",
     "multi_threaded",
@@ -49,6 +48,7 @@ bevy = { version = "0.20.0", default-features = false, features = [
 ] }
 
 bytemuck = "1"
+serde = { version = "1.0.200", default-features = false, features = ["derive"], optional = true }
 
 [dev-dependencies]
 bevy = { version = "0.20.0", default-features = false, features = [
