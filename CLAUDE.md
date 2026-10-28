@@ -11,7 +11,8 @@ smoke for games, as a plugin for Bevy 0.20, in two crates in one workspace:
 - **`smokescreen/`**: the simulation, with no engine in it. Flood fill, a
   cloud's shape over time, bullet and explosion holes, and the sight rule
   (`occlusion`, `blocks_sight`). Runs on caller-supplied ticks, in caller
-  units, bit-identical on every platform. Depends only on `glam` and `libm`.
+  units, bit-identical on every platform. Depends only on `glam` and `libm`
+  (and `serde`, behind a feature of that name, off by default).
 - **`bevy_smokescreen`** (the repository root): the Bevy plugin. Draws what
   the core computes in one of three looks, wraps it in ECS conveniences
   (`Smoke` component and presets, `SmokeVision`, `SmokeObstacle`), and has a
@@ -29,8 +30,10 @@ The three looks (`Style` in the core, `SmokeStyle` in Bevy):
 
 ```sh
 cargo test -p smokescreen --release         # core tests, ~10 s
+cargo test -p smokescreen --release --features serde  # with the serde feature's tests (tests/serde.rs)
 cargo test -p bevy_smokescreen              # builds every example, runs the README's and llms.txt's examples as doc tests
 cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --features serde -- -D warnings  # both crates' serde feature
 cargo fmt --all                             # rustfmt.toml: max_width = 120
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 cargo bench -p smokescreen                  # fill and query timings: the README's performance tables
@@ -166,11 +169,11 @@ cargo run --example presets                 # every preset and look; also minima
 | `smokescreen/src/volume.rs` | Volumetric rule: density integral, skipping empty bricks, inactive parts and samples that read nothing |
 | `smokescreen/src/facets.rs` | Polyhedra, puffs, bins, the blended faceted SDF and its exact integrator |
 | `smokescreen/src/chords.rs` | Crystal, faceted-chord and faceted-core rules: exact chords through convex pieces; `ChordBounds`, the exact faceted rule's bounds for `blocks_sight`; `hole_spans`, the holes along a line |
-| `smokescreen/src/holes.rs`, `timeline.rs` | Hole events and shapes; a cloud's life, the density model and `DensityTable` |
+| `smokescreen/src/holes.rs`, `timeline.rs` | Hole events (`Impact`, as given) and shapes; a cloud's life, the density model and `DensityTable` |
 | `smokescreen/src/level.rs` | `Level` trait, `FlatGround`, `BoxObstacles`, `VoxelObstacles` (from boxes, a closure or triangles, with winding numbers for which side of a mesh is solid; to and from bytes) |
 | `smokescreen/src/light.rs` | Sun and sky visibility per voxel, for renderers |
-| `smokescreen/tests/` | `fill`, `queries`, `styles`, `walls`, `determinism` |
-| `src/lib.rs` | Plugin, `Smoke` and presets, `SmokeVision`, `SmokeClock`, systems |
+| `smokescreen/tests/` | `fill`, `queries` (late joiners too), `styles`, `walls`, `determinism`, `serde` (only with the feature) |
+| `src/lib.rs` | Plugin, `Smoke` and presets, `SmokePopped` and `SmokeEnded`, `SmokeVision`, `SmokeClock`, systems |
 | `src/render.rs` | Atlas, uploads, bake, raymarch, faceted passes, composite |
 | `src/crystal.rs` | Crystal meshes and the per-frame puff sync |
 | `src/obstacles.rs` | `SmokeObstacle`: voxelises marked meshes into the level |
@@ -317,6 +320,32 @@ cargo run --example presets                 # every preset and look; also minima
   kept, the queue held every cloud's grid. The plugin tests' headless app
   keeps `RenderPlugin` with no GPU backend, so the drawing systems run
   there; `server_app` builds a server's app.
+- `SmokePopped` and `SmokeEnded` are triggered by `announce_smokes` in
+  `PostUpdate` before `TransformSystems::Propagate`, so what observers
+  spawn is placed that frame. Spawned after propagation (inside
+  `SmokeSystems::Simulate`, say), an entity keeps `GlobalTransform`'s
+  default, the origin, until the next frame's propagation, and is drawn
+  there for a frame. A pop is so announced the frame after `pop_smokes`
+  popped it; `retire_smokes` triggers whatever is still due before it
+  despawns a smoke (one heard after it ended). `SmokeEntities` keeps which
+  events each entity has had.
+- Reflection. Bevy's remote reflection can't mirror the core's
+  `#[non_exhaustive]` enums: `#[reflect_remote(smokescreen::Style)]`
+  generates a check that matches every variant, which fails with E0004
+  from another crate. An opaque wrapper compiles but can only be shown,
+  not edited. So `Smoke::style` and `CrystalPuff::cloud` are
+  `#[reflect(ignore)]`, and the core has no Bevy (an optional
+  `bevy_reflect` feature there was the alternative, left out to keep the
+  core engine-free). A field added to a reflected struct needs a default
+  for reflection (its type registers `Default`, or the field has
+  `#[reflect(default)]`), or scene files saved by an earlier 0.2 release
+  stop loading; `VolumetricQuality` and `FacetQuality` have no `Default`.
+- `Smokes::impacts` gives back each impact as it was given: every hole
+  entry keeps its `Impact` beside its metres, as converting the metres
+  back doesn't always give the same bits (Z-up inches, say). The metres
+  are computed as before, so the hashes held. serde_json 1.0.154 gives
+  back every finite `f32` in the same bits (all 4,278,190,080 checked,
+  with and without its `float_roundtrip` feature), which the docs say.
 - GPU timings exist for an Apple M4 (Metal) and, as ratios only, for a
   software rasteriser. Metal's GPU timestamp queries lose the device, so on
   macOS the demo's tier sweep times whole frames instead; NVIDIA, AMD and

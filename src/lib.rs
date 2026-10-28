@@ -66,6 +66,20 @@
 //! on an entity without a mesh, and so on), the plugin says so in the log,
 //! once, with the fix.
 //!
+//! [`SmokePopped`] and [`SmokeEnded`] are triggered on a smoke's entity when
+//! its cloud pops and ends, for sounds, effects and UI. The components,
+//! resources and messages are reflected and registered, for inspectors,
+//! editors and scene files; a smoke's style, the core's type, is the one
+//! field left out.
+//!
+//! ## Features
+//!
+//! - **`serde`** (off by default): `Serialize` and `Deserialize` on
+//!   [`SmokeBullet`] and [`SmokeExplosion`], and on the core's [`CloudSpec`]
+//!   and [`Impact`] (its own `serde` feature), for networking crates such as
+//!   bevy_replicon and lightyear.
+//! - **`webgpu`**: draw through WebGPU in a browser (wasm32).
+//!
 //! ## Versions
 //!
 //! `bevy_smokescreen` 0.2 is for Bevy 0.20. Later 0.2 releases may add to
@@ -78,11 +92,15 @@
 //!   `..default()` ([`SmokeSettings`], [`SmokeCamera`], [`SmokeClock`],
 //!   [`SmokeBullet`], [`SmokeExplosion`], and the core's settings the same
 //!   way);
-//! - a [`Smoke`] is built with its presets and builders, and may gain both.
+//! - a [`Smoke`] is built with its presets and builders, and may gain both;
+//! - [`SmokePopped`] and [`SmokeEnded`] may gain fields: read the ones you
+//!   need.
 //!
 //! The simulation's results follow the core's rule: 0.2 releases avoid
 //! changing them where they can, but run the same version on every machine
-//! in a match. Items hidden from these docs may change in any release.
+//! in a match. So do serialised forms, which follow the types. A scene file
+//! saved by an earlier 0.2 release still loads: a field it lacks takes its
+//! default. Items hidden from these docs may change in any release.
 //!
 //! The README in the repository root has a longer guide: presets, level
 //! setup, gameplay queries, networking and tuning. For coding assistants,

@@ -219,6 +219,45 @@ and the demo's showcase draws the same pixels.
   (so on `SmokeWorld`), `View` and `CloudInfo`, as summaries rather than
   their voxels; `PartialEq` on `SmokeSettings` and `SmokeCamera`.
 
+**For networking crates, editors and late joiners: a `serde` feature,
+reflection, `Smokes::impacts`, and pop and end events.** No results
+change: the determinism hashes are the same, and the demo's showcase
+draws the same pixels.
+
+- A `serde` feature in both crates, off by default: `Serialize` and
+  `Deserialize` on `CloudSpec`, `CloudSource`, `Style`, `Timeline` and the
+  new `Impact` in the core, and on `SmokeBullet` and `SmokeExplosion` in
+  the plugin, as networking crates' events need (bevy_replicon,
+  lightyear). Without it the core still depends on `glam` and `libm` only.
+  Binary formats such as postcard and bincode carry every number exactly,
+  and so does `serde_json` for every finite `f32` (all of them checked).
+  The serialised form follows the types: send it between machines running
+  the same version.
+- `Smokes::impacts()` gives back every bullet and explosion a world keeps,
+  exactly as it was given, in your units, by tick and in the same order
+  within a tick on every machine. With the specs of the clouds still
+  alive, that is all a late joiner needs; `Smokes::impact(impact)` adds
+  each one back, whatever kinds of impact later versions add. A server
+  used to keep its own log: the world kept impacts in metres, which don't
+  always convert back to the same bits. Each kept impact takes 40 bytes
+  more.
+- `SmokePopped` and `SmokeEnded`, entity events for observers, once per
+  smoke, for sounds, effects and UI: when its cloud pops (a pop heard late
+  at once, with its own tick), and when the cloud is gone, before
+  `despawn_when_done` despawns the entity. Each carries the entity, the
+  cloud and the tick. They come in `PostUpdate` before Bevy propagates
+  transforms, so what an observer spawns is placed that frame. Before, a
+  game watched `Changed<Smoke>` for `Smoke::cloud()`.
+- Reflection: `Smoke`, `SmokeSource`, `SmokeCamera` and the quality types
+  it holds, `SmokeQuality`, `SmokeSettings`, `NoiseWithinRule`,
+  `SmokeClock`, `SmokeSun`, `SmokeObstacle`, `CrystalPuff`, `SmokeBullet`
+  and `SmokeExplosion` are reflected and registered, for inspectors,
+  editors, scene files and glTF extras. A smoke's style is left out: it is
+  the core's type, which the plugin can't reflect, so a smoke from a scene
+  takes `DefaultSmokeStyle`.
+- `llms.txt` has recipes for sounds, effects and UI on pops and ends, and
+  for a player who joins mid-match.
+
 - **results** The volumetric rule works out density in the same order as
   the picture. A sample used to take the density of the distance
   interpolated between voxels, while the GPU bakes each voxel's density
