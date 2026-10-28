@@ -105,7 +105,7 @@ use bevy::{
         renderer::RenderDevice,
         view::screenshot::{Screenshot, save_to_disk},
     },
-    time::TimeUpdateStrategy,
+    time::{TimeSystems, TimeUpdateStrategy},
     ui::{ComputedNode, IsDefaultUiCamera, RelativeCursorPosition, UiGlobalTransform},
     window::{CursorGrabMode, CursorOptions, ExitCondition, PrimaryWindow},
     winit::WinitPlugin,
@@ -250,7 +250,8 @@ fn main() {
     if let Some(ahead) = setting("client_clock").and_then(|s| s.parse::<f64>().ok()) {
         app.insert_resource(ClientClock(Duration::from_secs_f64(ahead)))
             .add_systems(Startup, start_client_clock)
-            .add_systems(PreUpdate, count_client_ticks);
+            // Before the plugin prepares SmokeVision's views in PreUpdate.
+            .add_systems(First, count_client_ticks.after(TimeSystems));
     }
 
     if gpu_timings {
@@ -487,7 +488,7 @@ fn setup_level(
         SmokePlugin::default().config.tuning.voxel_size,
         level.as_ref(),
     );
-    commands.insert_resource(SmokeLevel(Arc::new(voxels)));
+    commands.insert_resource(SmokeLevel::new(voxels));
     commands.insert_resource(Level(level));
 
     commands.spawn((
@@ -1433,7 +1434,7 @@ fn update_hud(
         &GlobalTransform,
         &Camera,
     )>,
-    mut vision: SmokeVision,
+    vision: SmokeVision,
     time: Res<Time<Real>>,
     mut timer: Local<f32>,
 ) {
@@ -3067,7 +3068,7 @@ fn setup_bots(
 }
 
 /// Green while a bot can see the target's head, red once smoke hides it.
-fn draw_sightlines(sightlines: Res<Sightlines>, mut vision: SmokeVision, mut gizmos: Gizmos) {
+fn draw_sightlines(sightlines: Res<Sightlines>, vision: SmokeVision, mut gizmos: Gizmos) {
     if !sightlines.0 {
         return;
     }

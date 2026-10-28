@@ -113,7 +113,10 @@ pub use level::{BoxObstacles, FlatGround, Level, ObstacleBox, VoxelBytesError, V
 pub use timeline::Timeline;
 pub use units::{Units, UpAxis};
 pub use volume::VolumeSteps;
-pub use world::{CloudId, CloudInfo, CloudSource, CloudSpec, Config, Smokes, Style, Tuning, View, fill_cloud};
+pub use world::{
+    CloudId, CloudInfo, CloudSource, CloudSpec, Config, ConfigError, MAX_GRID_VOXELS, Smokes, Style, Tuning, View,
+    fill_cloud,
+};
 
 // What bevy_smokescreen reads to draw, and the tests to check: public, but
 // not part of the API. Each definition is `#[doc(hidden)]` too, as

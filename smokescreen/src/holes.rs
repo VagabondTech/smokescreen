@@ -55,6 +55,19 @@ impl HoleSettings {
     pub(crate) fn max_duration(&self) -> f32 {
         self.bullet_close.max(self.explosion_refill)
     }
+
+    /// Every number, by field name, for [`crate::Config::validate`].
+    pub(crate) fn numbers(&self) -> [(&'static str, f32); 7] {
+        [
+            ("bullet_radius", self.bullet_radius),
+            ("bullet_hold", self.bullet_hold),
+            ("bullet_close", self.bullet_close),
+            ("explosion_radius", self.explosion_radius),
+            ("explosion_hold", self.explosion_hold),
+            ("explosion_refill", self.explosion_refill),
+            ("explosion_strength", self.explosion_strength),
+        ]
+    }
 }
 
 /// What made a hole. Internally in metres, Y up.

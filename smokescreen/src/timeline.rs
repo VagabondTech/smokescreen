@@ -68,6 +68,16 @@ impl Timeline {
     pub fn is_finished(&self, age: f32) -> bool {
         age >= self.lifetime
     }
+
+    /// Every number, by field name, for [`crate::Config::validate`].
+    pub(crate) fn numbers(&self) -> [(&'static str, f32); 4] {
+        [
+            ("start", self.start),
+            ("grow_time", self.grow_time),
+            ("lifetime", self.lifetime),
+            ("fade_time", self.fade_time),
+        ]
+    }
 }
 
 /// Density (0..1) of the volumetric style at a voxel with normalised fill

@@ -4,8 +4,6 @@
 //!
 //! `cargo run --release --example minimal`
 
-use std::sync::Arc;
-
 use bevy::prelude::*;
 use bevy_smokescreen::prelude::*;
 
@@ -40,7 +38,7 @@ fn setup(mut commands: Commands) {
         Vec3::new(10.0, 3.0, 0.3),
     )]);
     let level = VoxelObstacles::from_level(Vec3::new(-50.0, -2.0, -50.0), Vec3::new(50.0, 12.0, 50.0), 0.3, &walls);
-    commands.insert_resource(SmokeLevel(Arc::new(level)));
+    commands.insert_resource(SmokeLevel::new(level));
 }
 
 /// Call this where your grenade comes to rest.
@@ -73,7 +71,7 @@ fn shoot(
 
 /// Gameplay sees the same smoke: bots, server-side visibility, audio. (A
 /// server without Bevy asks `smokescreen::Smokes` the same question.)
-fn bot_vision(mut vision: SmokeVision) {
+fn bot_vision(vision: SmokeVision) {
     let bot_eye = Vec3::new(0.0, 1.6, -10.0);
     let player = Vec3::new(0.0, 1.6, 10.0);
     if vision.blocks_sight(bot_eye, player) {

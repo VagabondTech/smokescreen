@@ -212,7 +212,27 @@ pub(crate) struct SlotUpload {
 /// extraction, so an upload always lands in the same frame as the slot that
 /// uses it.
 #[derive(Resource, Clone, Default)]
-pub(crate) struct SmokeUploads(pub Arc<Mutex<Vec<SlotUpload>>>);
+pub(crate) struct SmokeUploads {
+    queue: Arc<Mutex<Vec<SlotUpload>>>,
+    /// A render world drains the queue. Without one (a server, or no
+    /// renderer when the plugin was added) uploads are dropped at once:
+    /// kept, they would hold every cloud's grid for good.
+    pub drained: bool,
+}
+
+impl SmokeUploads {
+    pub(crate) fn push(&self, upload: SlotUpload) {
+        if self.drained {
+            self.queue.lock().unwrap().push(upload);
+        }
+    }
+
+    /// Uploads waiting.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.queue.lock().unwrap().len()
+    }
+}
 
 /// Each smoke camera's recent depth measurements (main-world camera entity
 /// to measurements, oldest first), read back on the render world and read by
@@ -758,7 +778,18 @@ struct ViewSmoke {
 // Plugin wiring.
 // ---------------------------------------------------------------------------
 
-pub(crate) fn build(app: &mut App, config: SmokeConfig, uploads: SmokeUploads) {
+/// Sets up drawing, if there is a render world to draw in. Returns whether
+/// there is.
+pub(crate) fn build(app: &mut App, config: SmokeConfig, uploads: SmokeUploads) -> bool {
+    let depths = MeasuredDepths::default();
+    app.insert_resource(depths.clone());
+    if app.get_sub_app(RenderApp).is_none() {
+        // A server (or a renderer added later): simulation and
+        // `SmokeVision` still work. Shaders and extraction would only fail
+        // here, or log errors.
+        return false;
+    }
+
     load_shader_library!(app, "shaders/smoke_common.wesl");
     load_shader_library!(app, "shaders/smoke_facets.wesl");
     load_shader_library!(app, "shaders/smoke_facet_refine.wesl");
@@ -772,8 +803,6 @@ pub(crate) fn build(app: &mut App, config: SmokeConfig, uploads: SmokeUploads) {
     embedded_asset!(app, "shaders/smoke_facet_composite.wesl");
     embedded_asset!(app, "shaders/smoke_depth.wesl");
 
-    let depths = MeasuredDepths::default();
-    app.insert_resource(depths.clone());
     app.add_plugins((
         ExtractResourcePlugin::<SmokeFrame>::default(),
         ExtractComponentPlugin::<SmokeCamera>::default(),
@@ -781,8 +810,7 @@ pub(crate) fn build(app: &mut App, config: SmokeConfig, uploads: SmokeUploads) {
     ));
 
     let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
-        // Headless server: simulation and `SmokeVision` still work.
-        return;
+        return false;
     };
 
     render_app
@@ -820,6 +848,7 @@ pub(crate) fn build(app: &mut App, config: SmokeConfig, uploads: SmokeUploads) {
                 .before(main_transparent_pass_3d)
                 .in_set(Core3dSystems::MainPass),
         );
+    true
 }
 
 pub(crate) fn finish(app: &mut App) {
@@ -1306,7 +1335,7 @@ fn init_smoke_pipelines(
 // ---------------------------------------------------------------------------
 
 fn extract_uploads(uploads: Res<SmokeUploads>, mut state: ResMut<SmokeRenderState>) {
-    let mut queue = uploads.0.lock().unwrap();
+    let mut queue = uploads.queue.lock().unwrap();
     state.pending_uploads.extend(queue.drain(..));
 }
 

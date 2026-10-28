@@ -677,7 +677,7 @@ pub(crate) fn update_smoke_quality(
     frame: Res<SmokeFrame>,
     diagnostics: Option<Res<DiagnosticsStore>>,
     depths: Option<Res<MeasuredDepths>>,
-    mut warnings: ResMut<SetupWarnings>,
+    warnings: Res<SetupWarnings>,
 ) {
     // Volumetric or faceted smoke is ready to draw: what only those need.
     let drawn = !frame.slots.is_empty();

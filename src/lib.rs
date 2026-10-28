@@ -101,15 +101,15 @@ mod setup;
 use std::sync::Arc;
 
 use bevy::{
-    asset::{AssetEventSystems, AssetPlugin},
+    asset::AssetEventSystems,
     camera::visibility::VisibilitySystems,
     ecs::system::SystemParam,
     light::{DirectionalLight, GlobalAmbientLight, PointLight},
     platform::collections::HashMap,
     prelude::*,
-    render::{RenderApp, extract_component::ExtractComponent},
+    render::{RenderApp, RenderPlugin, extract_component::ExtractComponent},
     tasks::{AsyncComputeTaskPool, Task, futures::check_ready},
-    transform::TransformSystems,
+    transform::{TransformPlugin, TransformSystems},
 };
 
 pub use crystal::CrystalPuff;
@@ -121,9 +121,14 @@ pub use smokescreen;
 pub use smokescreen::Style as SmokeStyle;
 /// A cloud's timing (see [`smokescreen::Timeline`]).
 pub use smokescreen::Timeline as SmokeTimeline;
+/// Every smoke at one tick ([`smokescreen::View`]): [`SmokeVision::view`]
+/// and [`Smokes::view`] give one. It answers the same questions from any
+/// number of threads, without allocating.
+pub use smokescreen::View as SmokeView;
 pub use smokescreen::{
-    BoxObstacles, CloudId, CloudSource, CloudSpec, Config, FacetRule, FacetSettings, FlatGround, HoleSettings, Level,
-    ObstacleBox, Polyhedron, ShapeMix, Smokes, Tuning, Units, UpAxis, VolumeSteps, VoxelBytesError, VoxelObstacles,
+    BoxObstacles, CloudId, CloudSource, CloudSpec, Config, ConfigError, FacetRule, FacetSettings, FlatGround,
+    HoleSettings, Level, ObstacleBox, Polyhedron, ShapeMix, Smokes, Tuning, Units, UpAxis, VolumeSteps,
+    VoxelBytesError, VoxelObstacles,
 };
 
 use render::{FrameFacet, FrameLight, FrameSlot, SlotUpload, SmokeFrame, SmokeUploads};
@@ -136,8 +141,8 @@ pub mod prelude {
         BoxObstacles, CrystalPuff, DefaultSmokeStyle, FacetQuality, FacetRule, FacetSettings, FlatGround,
         NoiseWithinRule, ObstacleBox, Polyhedron, ShapeMix, Smoke, SmokeBullet, SmokeCamera, SmokeClock,
         SmokeExplosion, SmokeLevel, SmokeObstacle, SmokePlugin, SmokeQuality, SmokeResolution, SmokeSettings,
-        SmokeSource, SmokeStyle, SmokeSun, SmokeSystems, SmokeVision, SmokeWorld, Units, UpAxis, VolumeSteps,
-        VolumetricQuality, VoxelObstacles,
+        SmokeSource, SmokeStyle, SmokeSun, SmokeSystems, SmokeView, SmokeVision, SmokeWorld, Units, UpAxis,
+        VolumeSteps, VolumetricQuality, VoxelObstacles,
     };
 }
 
@@ -195,11 +200,13 @@ impl Default for SmokePlugin {
 #[non_exhaustive]
 pub enum SmokeSystems {
     /// Pop new smokes, apply impacts, advance the simulation to
-    /// [`SmokeClock::tick`]. It ends before Bevy's visibility systems start
-    /// (see [`SmokeSystems::PrepareRender`]), so a system ordered after them
-    /// can't be ordered before this set.
+    /// [`SmokeClock::tick`], then prepare [`SmokeVision`]'s views again, so
+    /// systems after it see this frame's pops and impacts. It ends before
+    /// Bevy's visibility systems start (see [`SmokeSystems::PrepareRender`]),
+    /// so a system ordered after them can't be ordered before this set.
     Simulate,
     /// Gather everything the renderer needs and pick each camera's tier.
+    /// Only with Bevy's `RenderPlugin`: a server has none of this work.
     /// Crystal puffs are moved, shown and hidden first, before Bevy's
     /// [`VisibilitySystems::VisibilityPropagate`] and
     /// [`VisibilitySystems::CalculateBounds`] and its asset events, so each
@@ -211,12 +218,9 @@ pub enum SmokeSystems {
 
 impl Plugin for SmokePlugin {
     fn build(&self, app: &mut App) {
-        // Without it the shaders can't be registered, and Bevy's own panic
-        // doesn't say why.
-        assert!(
-            app.is_plugin_added::<AssetPlugin>(),
-            "SmokePlugin needs Bevy's AssetPlugin, part of DefaultPlugins: add SmokePlugin after them, as in .add_plugins((DefaultPlugins, SmokePlugin::default()))."
-        );
+        if let Err(e) = self.config.validate() {
+            panic!("SmokePlugin: {e}");
+        }
         let world = Smokes::new(
             self.config.clone(),
             Arc::new(FlatGround::new(0.0, self.config.units.up)) as SharedLevel,
@@ -238,11 +242,15 @@ impl Plugin for SmokePlugin {
             units: self.config.units,
             tick_rate: self.config.tick_rate,
         };
-        let uploads = SmokeUploads::default();
+        let mut uploads = SmokeUploads::default();
+        uploads.drained = render::build(app, config, uploads.clone());
+        // What `SmokeVision` answers from until the clock first moves.
+        let mut world = SmokeWorld(world);
+        world.prepare_vision(&SmokeClock::default());
 
         app.insert_resource(config)
-            .insert_resource(SmokeWorld(world))
-            .insert_resource(uploads.clone())
+            .insert_resource(world)
+            .insert_resource(uploads)
             .init_resource::<SmokeClock>()
             .init_resource::<SmokeSettings>()
             .init_resource::<DefaultSmokeStyle>()
@@ -255,8 +263,9 @@ impl Plugin for SmokePlugin {
             .init_resource::<obstacles::ObstacleBuild>()
             .add_message::<SmokeBullet>()
             .add_message::<SmokeExplosion>()
-            .add_systems(Startup, crystal::setup_meshes)
-            .add_systems(PreUpdate, advance_clock)
+            // A clock inserted with the app, for Startup systems.
+            .add_systems(PreStartup, prepare_views)
+            .add_systems(PreUpdate, (advance_clock, prepare_views).chain())
             .configure_sets(
                 PostUpdate,
                 (SmokeSystems::Simulate, SmokeSystems::PrepareRender)
@@ -266,16 +275,28 @@ impl Plugin for SmokePlugin {
             .add_systems(
                 PostUpdate,
                 (
-                    (
-                        obstacles::voxelise_obstacles,
-                        sync_level,
-                        pop_smokes,
-                        apply_impacts,
-                        advance_world,
-                        retire_smokes,
-                    )
-                        .chain()
-                        .in_set(SmokeSystems::Simulate),
+                    obstacles::voxelise_obstacles,
+                    sync_level,
+                    pop_smokes,
+                    apply_impacts,
+                    advance_world,
+                    retire_smokes,
+                    prepare_views,
+                    warn_of_clouds,
+                )
+                    .chain()
+                    .in_set(SmokeSystems::Simulate),
+            );
+    }
+
+    fn finish(&self, app: &mut App) {
+        render::finish(app);
+        // Drawing, only where something draws: a server (MinimalPlugins)
+        // does none of its work each frame.
+        if app.is_plugin_added::<RenderPlugin>() {
+            app.add_systems(Startup, crystal::setup_meshes).add_systems(
+                PostUpdate,
+                (
                     (
                         // Before Bevy works out what is visible and sends
                         // asset events: a puff the rule counts is culled
@@ -298,11 +319,15 @@ impl Plugin for SmokePlugin {
                         .in_set(SmokeSystems::PrepareRender),
                 ),
             );
-        render::build(app, config, uploads);
-    }
-
-    fn finish(&self, app: &mut App) {
-        render::finish(app);
+        }
+        if !app.is_plugin_added::<TransformPlugin>() {
+            app.add_systems(
+                PostUpdate,
+                warn_without_transforms
+                    .before(pop_smokes)
+                    .in_set(SmokeSystems::Simulate),
+            );
+        }
     }
 }
 
@@ -348,8 +373,37 @@ impl SmokeConfig {
 /// entity, and lasts until it ends or you remove it; for a server's cloud
 /// with a look and an entity, spawn [`Smoke::from_spec`]. It derefs to
 /// [`Smokes`], so call those methods on it.
-#[derive(Resource, Deref, DerefMut)]
+///
+/// Its queries answer for any tick, with every change made so far:
+/// [`Smokes::view`] gives one tick's [`SmokeView`] to share between threads
+/// (lag compensation at the tick a shooter saw, say). [`SmokeVision`] needs
+/// only read access instead, and answers as of the views the plugin
+/// prepares (see [`SmokeWorld::prepare_vision`]).
+#[derive(Resource, Debug, Deref, DerefMut)]
 pub struct SmokeWorld(Smokes<SharedLevel>);
+
+/// The pins of [`SmokeVision`]'s views (see [`Smokes::pin_view`]).
+const VISION_PIN: usize = 0;
+const DRAWN_PIN: usize = 1;
+
+impl SmokeWorld {
+    /// Prepares [`SmokeVision`]'s views of `clock`'s tick and drawn tick
+    /// from the world as it is now. The plugin does this when the clock
+    /// moves (in `PreUpdate`) and again at the end of
+    /// [`SmokeSystems::Simulate`], after the frame's pops and impacts, so
+    /// most games never call it.
+    ///
+    /// Call it after moving the clock yourself between those points (a
+    /// fixed-step game that sets [`SmokeClock::tick`] in `FixedUpdate`,
+    /// say), or after changing the world directly when systems before
+    /// `PostUpdate` should see it. Until then `SmokeVision` answers as
+    /// before: for the tick it was prepared for (it warns once when the
+    /// clock has moved on), and without the changes.
+    pub fn prepare_vision(&mut self, clock: &SmokeClock) {
+        self.0.pin_view(VISION_PIN, clock.tick);
+        self.0.pin_view(DRAWN_PIN, clock.drawn());
+    }
+}
 
 /// The tick the smoke is simulated and drawn at.
 ///
@@ -357,7 +411,9 @@ pub struct SmokeWorld(Smokes<SharedLevel>);
 /// ([`Config::tick_rate`] per second), so pausing virtual time freezes the
 /// smoke. To drive smoke from your own simulation, set `auto` to `false` and
 /// write `tick` (and `draw_tick` and `draw_fraction`) yourself before
-/// `PostUpdate`.
+/// `PostUpdate`. [`SmokeVision`] answers for the tick the clock had when
+/// the plugin prepared its views in `PreUpdate`: write the clock in `First`,
+/// or call [`SmokeWorld::prepare_vision`] after writing it.
 ///
 /// Volumetric smoke's noise moves on this clock too, not on each machine's
 /// own: players who draw the same tick and fraction with the same
@@ -406,7 +462,7 @@ impl SmokeClock {
 /// Lengths here are in metres whatever [`Config::units`] says: the
 /// extinction is per metre and the noise frequency in tiles per metre. Only
 /// `wind` is in world units.
-#[derive(Resource, Clone, Debug)]
+#[derive(Resource, Clone, Debug, PartialEq)]
 pub struct SmokeSettings {
     /// Extinction (1/m) of fully dense volumetric smoke. 7 means you can't
     /// see past about half a metre inside a smoke.
@@ -558,7 +614,6 @@ pub enum NoiseWithinRule {
 /// ```no_run
 /// # use bevy::prelude::*;
 /// # use bevy_smokescreen::prelude::*;
-/// # use std::sync::Arc;
 /// fn load_level(mut commands: Commands) {
 ///     let boxes = vec![ObstacleBox::from_center_size(Vec3::new(0.0, 1.5, 4.0), Vec3::new(8.0, 3.0, 0.2))];
 ///     // Pre-voxelise once so every smoke is just bit lookups.
@@ -566,7 +621,7 @@ pub enum NoiseWithinRule {
 ///         Vec3::new(-50.0, -1.0, -50.0), Vec3::new(50.0, 10.0, 50.0), 0.3,
 ///         &BoxObstacles::new(boxes),
 ///     );
-///     commands.insert_resource(SmokeLevel(Arc::new(voxels)));
+///     commands.insert_resource(SmokeLevel::new(voxels));
 /// }
 /// ```
 #[derive(Resource, Clone)]
@@ -574,6 +629,13 @@ pub struct SmokeLevel(
     /// The level: anything behind [`Level`], in world units.
     pub SharedLevel,
 );
+
+impl SmokeLevel {
+    /// The level from anything behind [`Level`], in world units.
+    pub fn new(level: impl Level + Send + Sync + 'static) -> Self {
+        Self(Arc::new(level))
+    }
+}
 
 /// Marks the directional light that lights volumetric and faceted smoke.
 /// Without it, the only directional light is used; with several, mark one
@@ -629,7 +691,7 @@ pub struct SmokeExplosion {
 /// // Or: best quality that fits 1.5 ms of GPU time, re-decided every frame.
 /// let budgeted = SmokeCamera::budget(1.5);
 /// ```
-#[derive(Component, Clone, Copy, Debug, ExtractComponent)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, ExtractComponent)]
 #[extract_app(RenderApp)]
 #[require(SmokeQuality)]
 pub struct SmokeCamera {
@@ -791,6 +853,13 @@ pub struct Smoke {
     /// Seconds the cloud takes to spread to full size. `None` uses the
     /// tuning's timeline.
     pub grow_time: Option<f32>,
+    /// Seconds from the pop until the cloud starts to grow: a fuse, and the
+    /// time its fill has to run in. `None` uses the tuning's timeline
+    /// ([`Timeline::start`](smokescreen::Timeline::start)).
+    pub start: Option<f32>,
+    /// Seconds at the end of the lifetime spent dissolving. `None` uses the
+    /// tuning's timeline.
+    pub fade_time: Option<f32>,
     /// Multiplies [`SmokeSettings::albedo`]. Team-coloured smokes, signal smoke...
     pub tint: Color,
     /// Multiplies how dense volumetric smoke looks. A look only: what hides
@@ -827,6 +896,8 @@ impl Default for Smoke {
             volume: None,
             lifetime: None,
             grow_time: None,
+            start: None,
+            fade_time: None,
             tint: Color::WHITE,
             density: 1.0,
             seed: None,
@@ -905,7 +976,8 @@ impl Smoke {
     /// The cloud a server announced, to the bit: its origin, pop tick and
     /// every rule are `spec`'s, the cloud [`Smokes::pop`] of it gives. The
     /// entity's position, the clock and this smoke's rule fields (source,
-    /// volume, lifetime, grow time, seed, style, pop tick) aren't used. The
+    /// volume, lifetime, grow time, start, fade time, seed, style, pop tick)
+    /// aren't used. The
     /// look ([`tint`](Self::tint), [`density`](Self::density)) and
     /// [`despawn_when_done`](Self::despawn_when_done) are the entity's, as
     /// for any smoke. Give it a [`Transform`] at `spec.origin` if anything
@@ -941,9 +1013,35 @@ impl Smoke {
         self
     }
 
+    /// Start growing `seconds` after the pop: a fuse (see [`Smoke::start`]).
+    pub fn with_start(mut self, seconds: f32) -> Self {
+        self.start = Some(seconds);
+        self
+    }
+
+    /// Spend the last `seconds` of the lifetime dissolving.
+    pub fn with_fade_time(mut self, seconds: f32) -> Self {
+        self.fade_time = Some(seconds);
+        self
+    }
+
     /// Colour the smoke (a look only).
     pub fn with_tint(mut self, tint: Color) -> Self {
         self.tint = tint;
+        self
+    }
+
+    /// Make volumetric smoke look this dense (a look only: see
+    /// [`Smoke::density`]).
+    pub fn with_density(mut self, density: f32) -> Self {
+        self.density = density;
+        self
+    }
+
+    /// Despawn the entity once the cloud is gone, or keep it (see
+    /// [`Smoke::despawn_when_done`]).
+    pub fn with_despawn_when_done(mut self, despawn: bool) -> Self {
+        self.despawn_when_done = despawn;
         self
     }
 
@@ -976,47 +1074,104 @@ impl Smoke {
 /// Gameplay queries against every smoke at the current [`SmokeClock::tick`]:
 /// bot vision, server-side visibility, audio occlusion, gas damage. The same
 /// answers the core gives anywhere else, in world units.
+///
+/// It only reads, so systems that use it run in parallel with each other
+/// and with any system that only reads [`SmokeWorld`]. It answers from
+/// views the plugin prepares: when the clock moves (in `PreUpdate`), and
+/// again once [`SmokeSystems::Simulate`] has applied the frame's pops and
+/// impacts. Every system between two of those sees the same smoke, whatever
+/// order they run in. Changes made to [`SmokeWorld`] directly show from the
+/// next one, or from [`SmokeWorld::prepare_vision`]; for other ticks (lag
+/// compensation), or every change made so far, ask [`SmokeWorld`] itself.
+///
+/// For many queries, take the [`view`](Self::view) once: it is shared by
+/// every thread.
+///
+/// ```no_run
+/// # use bevy::prelude::*;
+/// # use bevy_smokescreen::prelude::*;
+/// #[derive(Component)]
+/// struct Bot {
+///     sees_player: bool,
+/// }
+///
+/// fn bot_vision(vision: SmokeVision, mut bots: Query<(&GlobalTransform, &mut Bot)>) {
+///     let view = vision.view();
+///     let player = Vec3::new(0.0, 1.6, 10.0);
+///     bots.par_iter_mut().for_each(|(eye, mut bot)| {
+///         bot.sees_player = !view.blocks_sight(eye.translation(), player);
+///     });
+/// }
+/// ```
 #[derive(SystemParam)]
 pub struct SmokeVision<'w> {
-    world: ResMut<'w, SmokeWorld>,
+    world: Res<'w, SmokeWorld>,
     clock: Res<'w, SmokeClock>,
     settings: Res<'w, SmokeSettings>,
+    warnings: Res<'w, SetupWarnings>,
 }
 
 impl SmokeVision<'_> {
-    /// The tick the answers are for.
+    /// The tick the answers are for: [`SmokeClock::tick`] when the views
+    /// were prepared.
     pub fn tick(&self) -> u64 {
-        self.clock.tick
+        self.view().tick()
+    }
+
+    /// Every smoke at [`Self::tick`], to ask many questions of from any
+    /// number of threads (`par_iter`), or to hand to your own functions.
+    pub fn view(&self) -> SmokeView<'_> {
+        self.prepared(VISION_PIN, self.clock.tick)
+    }
+
+    /// Every smoke at the tick being drawn ([`SmokeClock::drawn`]), for
+    /// checks that must agree with the picture: a name tag hidden where the
+    /// smoke drawn hides its player, say.
+    pub fn drawn_view(&self) -> SmokeView<'_> {
+        self.prepared(DRAWN_PIN, self.clock.drawn())
+    }
+
+    /// The view `pin` keeps, which should be of `tick`.
+    fn prepared(&self, pin: usize, tick: u64) -> SmokeView<'_> {
+        let view = self
+            .world
+            .pinned_view(pin)
+            .expect("SmokePlugin prepares SmokeVision's views when it is built");
+        if view.tick() != tick {
+            self.warnings.warn(Mistake::VisionTick, || {
+                format!(
+                    "SmokeVision answered for tick {}, but SmokeClock is at {tick}: the clock moved after the plugin prepared SmokeVision's views (in PreUpdate, and at the end of SmokeSystems::Simulate). Write SmokeClock in First, or call SmokeWorld::prepare_vision(&clock) after writing it.",
+                    view.tick()
+                )
+            });
+        }
+        view
     }
 
     /// The amount of cloud between two points, every smoke added up, in world
     /// units (see [`Smokes::occlusion`]).
-    pub fn occlusion(&mut self, from: Vec3, to: Vec3) -> f32 {
-        let tick = self.clock.tick;
-        self.world.occlusion(from, to, tick)
+    pub fn occlusion(&self, from: Vec3, to: Vec3) -> f32 {
+        self.view().occlusion(from, to)
     }
 
     /// Does smoke hide `to` from `from`? True once the segment passes through
     /// [`Tuning::sight_threshold`] of cloud.
-    pub fn blocks_sight(&mut self, from: Vec3, to: Vec3) -> bool {
-        let tick = self.clock.tick;
-        self.world.blocks_sight(from, to, tick)
+    pub fn blocks_sight(&self, from: Vec3, to: Vec3) -> bool {
+        self.view().blocks_sight(from, to)
     }
 
     /// Fraction of light (0..1) that gets through, from the amount of cloud
     /// and [`SmokeSettings::extinction`]: for audio and other soft effects.
-    pub fn transmittance(&mut self, from: Vec3, to: Vec3) -> f32 {
-        let tick = self.clock.tick;
-        let amount = self.world.occlusion(from, to, tick);
+    pub fn transmittance(&self, from: Vec3, to: Vec3) -> f32 {
+        let amount = self.view().occlusion(from, to);
         let metres = self.world.units().length_to_internal(amount);
         (-metres * self.settings.extinction).exp()
     }
 
     /// Density (0..1 per smoke, summed) at a point: every smoke, gas or not.
     /// [`Self::density_of`] gives one smoke's.
-    pub fn density_at(&mut self, p: Vec3) -> f32 {
-        let tick = self.clock.tick;
-        self.world.density_at(p, tick)
+    pub fn density_at(&self, p: Vec3) -> f32 {
+        self.view().density_at(p)
     }
 
     /// One smoke's density (0..1) at a point: its share of
@@ -1024,9 +1179,8 @@ impl SmokeVision<'_> {
     /// For gas damage that plain smoke doesn't do (see
     /// [`Smokes::density_of`]). [`Smoke::density`] is a look and doesn't
     /// change it.
-    pub fn density_of(&mut self, cloud: CloudId, p: Vec3) -> f32 {
-        let tick = self.clock.tick;
-        self.world.density_of(cloud, p, tick)
+    pub fn density_of(&self, cloud: CloudId, p: Vec3) -> f32 {
+        self.view().density_of(cloud, p)
     }
 }
 
@@ -1153,7 +1307,7 @@ fn pop_smokes(
     default_style: Res<DefaultSmokeStyle>,
     level: Option<Res<SmokeLevel>>,
     obstacles: Res<obstacles::ObstacleBuild>,
-    mut warnings: ResMut<SetupWarnings>,
+    warnings: Res<SetupWarnings>,
 ) {
     // The first level built from marked meshes is on its way: wait for it.
     if level.is_none() && obstacles.pending() {
@@ -1165,7 +1319,7 @@ fn pop_smokes(
         }
         if level.is_none() {
             warnings.warn(Mistake::NoLevel, || {
-                "A smoke popped with no level: smoke only knows a flat ground at height 0 and passes through walls. Mark the level's meshes, floor included, with SmokeObstacle, or insert a SmokeLevel before smokes pop. For open ground on purpose, insert SmokeLevel(Arc::new(FlatGround::new(height, UpAxis::Y)))."
+                "A smoke popped with no level: smoke only knows a flat ground at height 0 and passes through walls. Mark the level's meshes, floor included, with SmokeObstacle, or insert a SmokeLevel before smokes pop. For open ground on purpose, insert SmokeLevel::new(FlatGround::new(height, UpAxis::Y))."
                     .into()
             });
         }
@@ -1182,12 +1336,16 @@ fn pop_smokes(
                 SmokeSource::Box { half_extents } => CloudSource::Box { half_extents },
             };
             spec.volume = smoke.volume;
-            if smoke.lifetime.is_some() || smoke.grow_time.is_some() {
+            if [smoke.start, smoke.grow_time, smoke.lifetime, smoke.fade_time]
+                .iter()
+                .any(Option::is_some)
+            {
                 let base = world.config().tuning.timeline;
                 spec.timeline = Some(SmokeTimeline {
-                    lifetime: smoke.lifetime.unwrap_or(base.lifetime),
+                    start: smoke.start.unwrap_or(base.start),
                     grow_time: smoke.grow_time.unwrap_or(base.grow_time),
-                    ..base
+                    lifetime: smoke.lifetime.unwrap_or(base.lifetime),
+                    fade_time: smoke.fade_time.unwrap_or(base.fade_time),
                 });
             }
             spec
@@ -1219,6 +1377,52 @@ fn apply_impacts(
 
 fn advance_world(mut world: ResMut<SmokeWorld>, clock: Res<SmokeClock>) {
     world.advance(clock.tick);
+}
+
+/// Prepares [`SmokeVision`]'s views of the clock's ticks.
+fn prepare_views(mut world: ResMut<SmokeWorld>, clock: Res<SmokeClock>) {
+    world.prepare_vision(&clock);
+}
+
+/// Clouds that count for less than their smokes promise: past
+/// `Tuning::max_clouds`, or empty, popped inside solid geometry. Servers are
+/// told too, as they draw nothing.
+fn warn_of_clouds(world: Res<SmokeWorld>, warnings: Res<SetupWarnings>) {
+    if !warnings.warned(Mistake::TooManyClouds) && world.pinned_view(VISION_PIN).is_some_and(|v| v.uncounted() > 0) {
+        let max_clouds = world.config().tuning.max_clouds;
+        warnings.warn(Mistake::TooManyClouds, || {
+            format!(
+                "More smokes are alive than Tuning::max_clouds ({max_clouds}): the oldest stop counting, so they neither block sight nor are drawn until fewer are alive (a long-lived fog bank goes first). Raise max_clouds in SmokePlugin's Config if you need more at once: up to 32 volumetric or faceted smokes are drawn, crystal ones without a limit."
+            )
+        });
+    }
+    // The fill found nothing open to spread from.
+    if !warnings.warned(Mistake::InsideSolid)
+        && let Some(cloud) = world.clouds().find(|c| c.shape().is_some_and(|s| s.grid.is_empty()))
+    {
+        warnings.warn(Mistake::InsideSolid, || {
+            format!(
+                "A smoke popped inside solid level geometry at {}: nothing next to it is open, so its cloud is empty, isn't drawn and blocks nothing. Pop smokes in open air, on or just above the floor. If every smoke does this, check that the level's meshes face outwards (see SmokeObstacle).",
+                shown(cloud.spec().origin)
+            )
+        });
+    }
+}
+
+/// Added only without Bevy's `TransformPlugin`: nothing then updates
+/// `GlobalTransform`, so smokes placed by their entity would pop at the
+/// origin, and obstacle meshes be voxelised there.
+fn warn_without_transforms(
+    smokes: Query<&Smoke, Added<Smoke>>,
+    obstacles: Query<(), Added<SmokeObstacle>>,
+    warnings: Res<SetupWarnings>,
+) {
+    if !warnings.warned(Mistake::NoTransforms) && (smokes.iter().any(|s| s.spec.is_none()) || !obstacles.is_empty()) {
+        warnings.warn(Mistake::NoTransforms, || {
+            "Bevy's TransformPlugin isn't added, so nothing updates GlobalTransform: smokes pop at the world's origin whatever their Transform, and SmokeObstacle meshes are voxelised there too. Add TransformPlugin (part of DefaultPlugins); on a server, .add_plugins((MinimalPlugins, TransformPlugin, SmokePlugin::default())). Smokes made with Smoke::from_spec take their place from the spec and need no transforms."
+                .into()
+        });
+    }
 }
 
 /// Despawn entities whose cloud is gone, and remove the clouds of entities
@@ -1257,8 +1461,12 @@ fn light_clouds(
     world: Res<SmokeWorld>,
     mut lighting: ResMut<SmokeLighting>,
     lights: DirectionalLights,
-    mut warnings: ResMut<SetupWarnings>,
+    uploads: Res<SmokeUploads>,
 ) {
+    // Only an upload uses it.
+    if !uploads.drained {
+        return;
+    }
     let units = *world.units();
     let sun = find_sun(&lights).map(|(_, dir, _)| dir);
     let rays = LightRays {
@@ -1270,15 +1478,6 @@ fn light_clouds(
         let Some(shape) = cloud.shape() else {
             continue;
         };
-        // The fill found nothing open to spread from.
-        if shape.grid.is_empty() {
-            warnings.warn(Mistake::InsideSolid, || {
-                format!(
-                    "A smoke popped inside solid level geometry at {}: nothing next to it is open, so its cloud is empty, isn't drawn and blocks nothing. Pop smokes in open air, on or just above the floor. If every smoke does this, check that the level's meshes face outwards (see SmokeObstacle).",
-                    shown(cloud.spec().origin)
-                )
-            });
-        }
         // Crystals are lit by Bevy's own renderer.
         if lighting.0.contains_key(&cloud.id()) || shape.is_empty() || cloud.spec().style == SmokeStyle::Crystal {
             continue;
@@ -1329,7 +1528,7 @@ fn build_frame(
     dir_lights: DirectionalLights,
     ambient: Option<Res<GlobalAmbientLight>>,
     mut last: Local<Option<(Vec3, u64)>>,
-    mut warnings: ResMut<SetupWarnings>,
+    warnings: Res<SetupWarnings>,
 ) {
     let frame = frame.as_mut();
     frame.slots.clear();
@@ -1384,13 +1583,6 @@ fn build_frame(
 
     let max_clouds = world.config().tuning.max_clouds;
     let view = world.view(clock.drawn());
-    if view.uncounted() > 0 {
-        warnings.warn(Mistake::TooManyClouds, || {
-            format!(
-                "More smokes are alive than Tuning::max_clouds ({max_clouds}): the oldest stop counting, so they neither block sight nor are drawn until fewer are alive (a long-lived fog bank goes first). Raise max_clouds in SmokePlugin's Config if you need more at once: up to 32 volumetric or faceted smokes are drawn, crystal ones without a limit."
-            )
-        });
-    }
     // Free the slots of clouds no longer drawn.
     for owner in slots.owners.iter_mut() {
         if owner
@@ -1415,7 +1607,7 @@ fn build_frame(
             Some(layer) => layer,
             None => match slots.allocate(config.max_smokes, id) {
                 Some(layer) => {
-                    uploads.0.lock().unwrap().push(SlotUpload {
+                    uploads.push(SlotUpload {
                         layer,
                         shape: cloud.shape.clone(),
                         lighting: light.clone(),
@@ -1445,7 +1637,7 @@ fn build_frame(
         if !owner.lit
             && let Some(light) = &light
         {
-            uploads.0.lock().unwrap().push(SlotUpload {
+            uploads.push(SlotUpload {
                 layer,
                 shape: cloud.shape.clone(),
                 lighting: Some(light.clone()),
@@ -1782,7 +1974,7 @@ mod tests {
             .and_then(Smoke::cloud)
             .expect("the gas never popped");
         let mut state = SystemState::<SmokeVision>::new(app.world_mut());
-        let mut vision = state.get_mut(app.world_mut()).expect("the plugin's resources");
+        let vision = state.get(app.world()).expect("the plugin's resources");
         let (in_gas, in_smoke) = (Vec3::new(0.0, 1.0, 0.0), Vec3::new(30.0, 1.0, 0.0));
         let gassed = vision.density_of(cloud, in_gas);
         assert!(gassed > 0.0, "no gas at {in_gas}");
@@ -2387,7 +2579,7 @@ mod tests {
     fn a_smoke_inside_solid_geometry_is_warned() {
         let mut app = headless_app();
         let solid = BoxObstacles::new(vec![ObstacleBox::from_center_size(Vec3::ZERO, Vec3::splat(10.0))]);
-        app.insert_resource(SmokeLevel(Arc::new(solid)));
+        app.insert_resource(SmokeLevel::new(solid));
         app.world_mut().spawn((Smoke::grenade(), Transform::default()));
         assert!(run_until_warned(&mut app, Mistake::InsideSolid));
         assert!(!warned(&app, Mistake::NoLevel));
@@ -2433,9 +2625,276 @@ mod tests {
         assert!(app.world().resource::<SmokeFrame>().slots.is_empty());
     }
 
+    /// A server's app: Bevy's minimal plugins, no renderer and no assets,
+    /// and transforms only if asked.
+    fn server_app(transforms: bool) -> App {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, SmokePlugin::default()))
+            .insert_resource(SmokeLevel::new(FlatGround::new(0.0, UpAxis::Y)))
+            .insert_resource(SmokeClock {
+                auto: false,
+                ..default()
+            });
+        if transforms {
+            app.add_plugins(TransformPlugin);
+        }
+        app.finish();
+        app.cleanup();
+        app
+    }
+
+    /// A dedicated server: smokes pop where their entities are and
+    /// `SmokeVision` answers, while nothing is drawn or kept for drawing.
     #[test]
-    #[should_panic(expected = "SmokePlugin needs Bevy's AssetPlugin")]
-    fn smoke_plugin_needs_the_asset_plugin() {
-        App::new().add_plugins((MinimalPlugins, SmokePlugin::default()));
+    fn a_dedicated_server_runs_on_minimal_plugins() {
+        use bevy::ecs::system::SystemState;
+
+        let mut app = server_app(true);
+        let at = Vec3::new(5.0, 0.0, -3.0);
+        let smoke = app
+            .world_mut()
+            .spawn((Smoke::grenade(), Transform::from_translation(at)))
+            .id();
+        // Five seconds, a tick a frame.
+        for tick in 0..640 {
+            app.world_mut().resource_mut::<SmokeClock>().tick = tick;
+            app.update();
+        }
+        let cloud = app
+            .world()
+            .get::<Smoke>(smoke)
+            .and_then(Smoke::cloud)
+            .expect("never popped");
+        let origin = app
+            .world()
+            .resource::<SmokeWorld>()
+            .cloud(cloud)
+            .map(|c| c.spec().origin);
+        assert_eq!(origin, Some(at));
+        let mut state = SystemState::<SmokeVision>::new(app.world_mut());
+        let vision = state.get(app.world()).expect("the plugin's resources");
+        assert_eq!(vision.tick(), 639);
+        assert!(vision.blocks_sight(at + Vec3::new(-8.0, 1.0, 0.0), at + Vec3::new(8.0, 1.0, 0.0)));
+        assert!(app.world().resource::<SmokeFrame>().slots.is_empty());
+        assert_eq!(app.world().resource::<SmokeUploads>().len(), 0);
+        assert!(app.world().resource::<SetupWarnings>().none());
+    }
+
+    /// On a server with Bevy's asset and mesh plugins, `SmokeObstacle`
+    /// builds the level from marked meshes, as in a game.
+    #[test]
+    fn a_server_builds_the_level_from_marked_meshes() {
+        use bevy::{asset::AssetPlugin, mesh::MeshPlugin};
+
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            TransformPlugin,
+            AssetPlugin::default(),
+            MeshPlugin,
+            SmokePlugin::default(),
+        ));
+        app.finish();
+        app.cleanup();
+        let floor = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Plane3d::default().mesh().size(50.0, 50.0));
+        app.world_mut().spawn((Mesh3d(floor), SmokeObstacle));
+        for _ in 0..500 {
+            app.update();
+            if app.world().contains_resource::<SmokeLevel>() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(app.world().contains_resource::<SmokeLevel>(), "no level was built");
+        assert!(app.world().resource::<SetupWarnings>().none());
+    }
+
+    /// Without `TransformPlugin`, smokes placed by their entity are warned
+    /// about; a server's specs need no transforms.
+    #[test]
+    fn smokes_without_transforms_are_warned() {
+        let mut app = server_app(false);
+        app.world_mut()
+            .spawn((Smoke::grenade(), Transform::from_xyz(5.0, 0.0, 0.0)));
+        app.update();
+        assert!(warned(&app, Mistake::NoTransforms));
+
+        let mut app = server_app(false);
+        let spec = CloudSpec::new(Vec3::new(5.0, 0.0, 0.0), 0, 1, SmokeStyle::Volumetric);
+        app.world_mut().spawn(Smoke::from_spec(spec));
+        app.update();
+        assert!(!warned(&app, Mistake::NoTransforms));
+    }
+
+    /// `SmokeVision` only reads: a system may hold it and `SmokeWorld` too,
+    /// and its answers are the world's own, to the bit.
+    #[test]
+    fn smoke_vision_only_reads() {
+        #[derive(Resource, Default)]
+        struct Seen(Vec<u32>);
+
+        let line = (Vec3::new(-8.0, 1.0, 0.3), Vec3::new(8.0, 1.1, -0.2));
+        let mut app = headless_app();
+        app.insert_resource(SmokeClock {
+            tick: 0,
+            auto: false,
+            ..default()
+        })
+        .init_resource::<Seen>()
+        .add_systems(
+            Update,
+            move |vision: SmokeVision, world: Res<SmokeWorld>, mut seen: ResMut<Seen>| {
+                let view = vision.view();
+                seen.0 = vec![
+                    view.occlusion(line.0, line.1).to_bits(),
+                    vision.drawn_view().occlusion(line.0, line.1).to_bits(),
+                    vision.density_at(Vec3::Y).to_bits(),
+                    world.clouds().count() as u32,
+                ];
+            },
+        );
+        app.world_mut().spawn((Smoke::grenade(), Transform::default()));
+        app.update();
+        app.world_mut().resource_mut::<SmokeClock>().tick = 400;
+        app.update();
+        let mut world = app.world_mut().resource_mut::<SmokeWorld>();
+        let view = world.view(400);
+        let theirs = vec![
+            view.occlusion(line.0, line.1).to_bits(),
+            view.occlusion(line.0, line.1).to_bits(),
+            view.density_at(Vec3::Y).to_bits(),
+            1,
+        ];
+        assert!(view.occlusion(line.0, line.1) > 1.0, "the smoke never grew");
+        assert_eq!(app.world().resource::<Seen>().0, theirs);
+    }
+
+    /// `SmokeVision` answers as of the views the plugin prepares: a bullet
+    /// put straight into `SmokeWorld` in `Update` shows once
+    /// `SmokeSystems::Simulate` is done, or at once after
+    /// `SmokeWorld::prepare_vision`.
+    #[test]
+    fn smoke_vision_answers_as_of_its_views() {
+        #[derive(Resource, Default)]
+        struct Seen(Vec<u32>);
+
+        let line = (Vec3::new(-8.0, 1.0, 0.3), Vec3::new(8.0, 1.1, -0.2));
+        let record = move |vision: SmokeVision, mut seen: ResMut<Seen>| {
+            seen.0.push(vision.occlusion(line.0, line.1).to_bits());
+        };
+        for refresh in [false, true] {
+            let mut app = headless_app();
+            app.insert_resource(SmokeClock {
+                tick: 0,
+                auto: false,
+                ..default()
+            })
+            .init_resource::<Seen>();
+            app.world_mut().spawn((Smoke::grenade(), Transform::default()));
+            app.update();
+            app.world_mut().resource_mut::<SmokeClock>().tick = 400;
+            app.update();
+            let before = app
+                .world_mut()
+                .resource_mut::<SmokeWorld>()
+                .occlusion(line.0, line.1, 400);
+            app.add_systems(
+                Update,
+                (
+                    move |mut world: ResMut<SmokeWorld>, clock: Res<SmokeClock>| {
+                        world.bullet(line.0, line.1, clock.tick - 5);
+                        if refresh {
+                            world.prepare_vision(&clock);
+                        }
+                    },
+                    record,
+                )
+                    .chain(),
+            )
+            .add_systems(PostUpdate, record.after(SmokeSystems::Simulate));
+            app.update();
+            let after = app
+                .world_mut()
+                .resource_mut::<SmokeWorld>()
+                .occlusion(line.0, line.1, 400);
+            assert!(after < before, "the bullet left no tunnel: {before} → {after}");
+            let in_update = if refresh { after } else { before };
+            let seen = &app.world().resource::<Seen>().0;
+            assert_eq!(seen, &[in_update.to_bits(), after.to_bits()], "refresh: {refresh}");
+        }
+    }
+
+    /// A clock moved after the plugin prepared `SmokeVision`'s views (a
+    /// fixed step's tick, say) is warned about, unless the views are
+    /// prepared again.
+    #[test]
+    fn a_clock_moved_after_the_views_are_prepared_is_warned() {
+        for refresh in [false, true] {
+            let mut app = headless_app();
+            app.insert_resource(SmokeClock {
+                tick: 100,
+                auto: false,
+                ..default()
+            })
+            .add_systems(
+                Update,
+                (
+                    move |mut clock: ResMut<SmokeClock>, mut world: ResMut<SmokeWorld>| {
+                        clock.tick += 1;
+                        if refresh {
+                            world.prepare_vision(&clock);
+                        }
+                    },
+                    move |vision: SmokeVision| assert_eq!(vision.tick(), 101 - u64::from(!refresh)),
+                )
+                    .chain(),
+            );
+            app.update();
+            assert_eq!(warned(&app, Mistake::VisionTick), !refresh);
+        }
+    }
+
+    /// The timing builders override the tuning's timeline field by field;
+    /// the look and the entity's fate are the smoke's own.
+    #[test]
+    fn smokes_pop_with_their_own_timing() {
+        let mut app = headless_app();
+        let timed = Smoke::grenade()
+            .with_start(2.0)
+            .with_fade_time(1.5)
+            .with_density(0.4)
+            .with_despawn_when_done(false);
+        let timed = app.world_mut().spawn(timed).id();
+        let plain = app.world_mut().spawn(Smoke::grenade().with_seed(2)).id();
+        app.update();
+        let timeline = |e: Entity| {
+            let cloud = app
+                .world()
+                .get::<Smoke>(e)
+                .and_then(Smoke::cloud)
+                .expect("never popped");
+            app.world()
+                .resource::<SmokeWorld>()
+                .cloud(cloud)
+                .and_then(|c| c.spec().timeline)
+        };
+        let base = app.world().resource::<SmokeWorld>().config().tuning.timeline;
+        let expected = SmokeTimeline {
+            start: 2.0,
+            fade_time: 1.5,
+            ..base
+        };
+        assert_eq!((timeline(timed), timeline(plain)), (Some(expected), None));
+        let smoke = app.world().get::<Smoke>(timed).expect("the smoke");
+        assert_eq!((smoke.density, smoke.despawn_when_done), (0.4, false));
+    }
+
+    #[test]
+    #[should_panic(expected = "SmokePlugin: Config::tick_rate is 0: it must be above 0")]
+    fn smoke_plugin_refuses_a_nonsense_config() {
+        App::new().add_plugins((MinimalPlugins, SmokePlugin::new(Config::new(Units::METRES_Y_UP, 0.0))));
     }
 }

@@ -9,7 +9,7 @@
 //! `SMOKE_STYLE=faceted` or `crystal` draws that style. Without `SMOKE_CAPTURE` it just
 //! shows the scene.
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use bevy::{
     camera::Exposure,
@@ -119,7 +119,7 @@ fn setup(
         boxes: obstacles,
         ground: Some(FlatGround::new(0.0, u.up)),
     };
-    commands.insert_resource(SmokeLevel(Arc::new(level)));
+    commands.insert_resource(SmokeLevel::new(level));
 
     commands.spawn((
         DirectionalLight {

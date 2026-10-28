@@ -244,6 +244,20 @@ impl FacetSettings {
     pub(crate) fn halo_metres(&self) -> f32 {
         self.overhang + 0.2
     }
+
+    /// Every number, by field name, for [`crate::Config::validate`].
+    pub(crate) fn numbers(&self) -> [(&'static str, f32); 8] {
+        [
+            ("spacing", self.spacing),
+            ("size", self.size),
+            ("size_jitter", self.size_jitter),
+            ("taper", self.taper),
+            ("blend", self.blend),
+            ("spin", self.spin),
+            ("pop_time", self.pop_time),
+            ("overhang", self.overhang),
+        ]
+    }
 }
 
 /// Peak scale of the pop-in animation.
