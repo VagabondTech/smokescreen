@@ -252,9 +252,10 @@ draws the same pixels.
   it holds, `SmokeQuality`, `SmokeSettings`, `NoiseWithinRule`,
   `SmokeClock`, `SmokeSun`, `SmokeObstacle`, `CrystalPuff`, `SmokeBullet`
   and `SmokeExplosion` are reflected and registered, for inspectors,
-  editors, scene files and glTF extras. A smoke's style is left out: it is
-  the core's type, which the plugin can't reflect, so a smoke from a scene
-  takes `DefaultSmokeStyle`.
+  editors, scene files, and crates that turn glTF extras from Blender into
+  components. A smoke's style is left out: it is the core's type, which
+  the plugin can't reflect, so a smoke from a scene takes
+  `DefaultSmokeStyle`.
 - `llms.txt` has recipes for sounds, effects and UI on pops and ends, and
   for a player who joins mid-match.
 

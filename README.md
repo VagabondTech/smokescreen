@@ -103,7 +103,7 @@ fn bot_vision(vision: SmokeVision) {
 
 If a setup step is missing, the plugin says so in the log, once, with the fix: no camera with `SmokeCamera`, no level, `SmokeObstacle` on an entity without a mesh (a glTF scene's root: put it on the scene's meshes), several directional lights and no `SmokeSun`, an orthographic camera, more smokes than `Tuning::max_clouds`, a source bigger than the fill grid, a server without `TransformPlugin`, and a few more.
 
-The plugin's components, resources and messages are reflected and registered, so inspectors, editors and scene files see them. That includes glTF extras written by a Blender add-on, which can mark level meshes with `SmokeObstacle`. A smoke's style is the exception: it is the core's type, which can't be reflected from the plugin, so a smoke loaded from a scene takes `DefaultSmokeStyle`.
+The plugin's components, resources and messages are reflected and registered, so inspectors, editors and scene files see them. So does a Blender add-on, with its crate, that turns glTF extras into registered components: it can mark level meshes with `SmokeObstacle` in Blender. A smoke's style is the exception: it is the core's type, which can't be reflected from the plugin, so a smoke loaded from a scene takes `DefaultSmokeStyle`.
 
 The API is documented on docs.rs: [`bevy_smokescreen`](https://docs.rs/bevy_smokescreen), and [`smokescreen`](https://docs.rs/smokescreen) for the engine-free core.
 
