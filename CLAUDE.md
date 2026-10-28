@@ -160,7 +160,7 @@ cargo run --example presets                 # every preset and look; also minima
 
 | Path | What |
 |---|---|
-| `smokescreen/src/world.rs` | `Smokes` (pops, holes, ticks, fill budget, snapshots, queries), `Tuning`, `Config`, `CloudSpec`, `CloudSource`, `View` |
+| `smokescreen/src/world.rs` | `Smokes` (pops, holes, ticks, fill budget, snapshots and pinned views, queries), `Tuning`, `Config` and `Config::validate`, `CloudSpec`, `CloudSource`, `View` |
 | `smokescreen/src/fill.rs` | The fill state machine: spread, padding clipped wall voxels, bricks, sample cells, halo, region and air distance transforms, puff seeding, binning; sources |
 | `smokescreen/src/grid.rs` | The fill grid, bricks and front bounds for skipping, sample cells (walls, and samples that read nothing), chamfer distance transforms |
 | `smokescreen/src/volume.rs` | Volumetric rule: density integral, skipping empty bricks, inactive parts and samples that read nothing |
@@ -296,6 +296,27 @@ cargo run --example presets                 # every preset and look; also minima
   `every_crystal_puff_the_rule_counts_is_drawn` catches that.
 - `SmokeObstacle` voxelisation runs on a background task; until the first
   level exists, new `Smoke` entities wait before popping.
+- `SmokeVision` only reads. It answers from two views that
+  `Smokes::pin_view` keeps out of the snapshot cache's turnover (the
+  current tick and the drawn tick), prepared by `prepare_views` at
+  `PreStartup`, after `advance_clock` in `PreUpdate`, and at the end of
+  `SmokeSystems::Simulate`. A pinned view stays as it was when pinned,
+  whatever the world does next: each `CloudState` points at its cloud's
+  `Filled` (the fill, spec and timeline, made once when the fill is done)
+  instead of indexing the cloud list. Games
+  that move the clock or change the world mid-frame call
+  `SmokeWorld::prepare_vision`; `SmokeVision` warns once when the clock
+  has moved past its view. `build_frame` and `sync_crystals` still ask
+  `world.view(drawn)`, which reuses the pinned snapshot when nothing
+  changed, so the picture has every change.
+- Without Bevy's `RenderPlugin` (a dedicated server) the plugin adds none
+  of its drawing systems (they are added in `finish`). It registers its
+  shaders and extraction only where a render world exists: without the
+  renderer, registering shaders panics and extraction logs errors.
+  `SmokeUploads` drops what it is given unless a render world drains it:
+  kept, the queue held every cloud's grid. The plugin tests' headless app
+  keeps `RenderPlugin` with no GPU backend, so the drawing systems run
+  there; `server_app` builds a server's app.
 - GPU timings exist for an Apple M4 (Metal) and, as ratios only, for a
   software rasteriser. Metal's GPU timestamp queries lose the device, so on
   macOS the demo's tier sweep times whole frames instead; NVIDIA, AMD and

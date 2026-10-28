@@ -325,6 +325,7 @@ fn queries_do_not_allocate() {
         smokes.explosion(Vec3::new(0.0, 1.0, 4.0), None, 595);
         let tick = 600;
         let _ = smokes.occlusion(Vec3::ZERO, Vec3::ONE, tick);
+        smokes.pin_view(0, tick);
         let mut rng = common::Rng(3);
         let segments: Vec<(Vec3, Vec3)> = (0..500)
             .map(|_| {
@@ -343,6 +344,7 @@ fn queries_do_not_allocate() {
             for &id in &ids {
                 sum += smokes.density_of(id, *a, tick);
             }
+            sum += smokes.pinned_view(0).map_or(0.0, |v| v.occlusion(*a, *b));
         }
         let after = allocations();
         assert!(sum > 0.0);
@@ -363,6 +365,57 @@ fn views_are_shared_between_threads() {
             s.spawn(|| assert_eq!(view.occlusion(a, b).to_bits(), expected.to_bits()));
         }
     });
+}
+
+/// A pinned view answers as the world was when it was pinned: holes, pops
+/// and removals since, and more ticks viewed than the cache holds, leave it
+/// as it was. Pinned again, it answers as a fresh view does.
+#[test]
+fn a_pinned_view_keeps_the_world_it_was_pinned_with() {
+    let level = common::level();
+    let mut smokes = Smokes::new(config(), &level);
+    let mut ids = Vec::new();
+    for (i, (origin, seed)) in common::pops().into_iter().enumerate() {
+        let style = [Style::Faceted, Style::Volumetric, Style::Crystal][i % 3];
+        ids.push(smokes.pop(CloudSpec::new(origin, 0, seed, style)));
+    }
+    let tick = 600;
+    let mut rng = common::Rng(5);
+    let (lo, hi) = (Vec3::new(-16.0, 0.0, -10.0), Vec3::new(16.0, 4.0, 12.0));
+    let lines: Vec<(Vec3, Vec3)> = (0..200).map(|_| (rng.point(lo, hi), rng.point(lo, hi))).collect();
+    let answers = |view: View| -> Vec<u32> {
+        let mut out = Vec::new();
+        for (a, b) in &lines {
+            out.push(view.occlusion(*a, *b).to_bits());
+            out.push(view.blocks_sight(*a, *b) as u32);
+            out.push(view.density_at(*a).to_bits());
+            out.extend(ids.iter().map(|&id| view.density_of(id, *b).to_bits()));
+        }
+        out
+    };
+    smokes.pin_view(0, tick);
+    let pinned = answers(smokes.pinned_view(0).expect("pinned"));
+    assert_eq!(pinned, answers(smokes.view(tick)), "a pinned view is its tick's view");
+    let clouds = smokes.pinned_view(0).expect("pinned").clouds().count();
+    assert_eq!(clouds, ids.len());
+
+    smokes.bullet(Vec3::new(-15.0, 1.0, -3.0), Vec3::new(18.0, 1.5, 7.0), tick);
+    smokes.explosion(Vec3::new(0.0, 1.0, 4.0), None, tick);
+    smokes.remove(ids[0]);
+    smokes.pop(CloudSpec::new(Vec3::new(-8.0, 0.0, 3.0), 100, 29, Style::Volumetric));
+    for k in 0..12 {
+        smokes.view(tick + 10 * k);
+    }
+    let view = smokes.pinned_view(0).expect("pinned");
+    assert_eq!((view.tick(), view.clouds().count()), (tick, clouds));
+    assert_eq!(answers(view), pinned, "the pinned view changed");
+    assert_ne!(answers(smokes.view(tick)), pinned, "the world didn't change");
+
+    smokes.clear();
+    assert_eq!(answers(smokes.pinned_view(0).expect("pinned")), pinned);
+    smokes.pin_view(0, tick);
+    assert_eq!(smokes.pinned_view(0).expect("pinned").clouds().count(), 0);
+    assert!(smokes.pinned_view(1).is_none());
 }
 
 /// A cloud filled elsewhere and inserted answers exactly as one popped, in
