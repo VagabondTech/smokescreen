@@ -8,7 +8,7 @@ use crate::{
     chords::{ChordBounds, ChordField, CoreField, CrystalField},
     facets::{FacetField, FacetRule, FacetSettings, LivePuff},
     fill::{CloudShape, FillJob, FillSpec, Source, Work},
-    holes::{HOLE_BUFFER, HoleKind, HoleSettings, HoleShape, holes_near},
+    holes::{HOLE_BUFFER, HoleKind, HoleSettings, HoleShape, Impact, holes_near},
     level::Level,
     math::{boxes_overlap, clip_segment, distance_to_segment, hash_u32, safe_recip, slab},
     timeline::{DensityTable, Timeline},
@@ -282,6 +282,7 @@ impl std::error::Error for ConfigError {}
 ///
 /// Later versions may add styles, so a `match` on it needs a `_` arm.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum Style {
     /// A soft density field. The amount of cloud along a segment is its
@@ -310,6 +311,7 @@ pub enum Style {
 /// and axes. Later versions may add shapes, so a `match` on it needs a `_`
 /// arm.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum CloudSource {
     /// From its origin: a grenade.
@@ -333,6 +335,7 @@ pub enum CloudSource {
 
 /// A cloud: where, when and how it popped. This is all a server has to send.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CloudSpec {
     /// Where the grenade came to rest, in the caller's units.
     pub origin: Vec3,
@@ -462,6 +465,9 @@ struct HoleEntry {
     /// Orders holes of the same tick, independently of arrival order.
     key: u64,
     kind: HoleKind,
+    /// The impact as it was given, in the caller's units: converting `kind`
+    /// back wouldn't always give the same bits.
+    given: Impact,
 }
 
 fn hole_key(kind: &HoleKind) -> u64 {
@@ -895,48 +901,90 @@ impl<L: Level> Smokes<L> {
         self.generation += 1;
     }
 
-    fn add_hole(&mut self, kind: HoleKind, tick: u64) {
-        if self.internal.holes.is_none() {
-            return;
-        }
-        let entry = HoleEntry {
-            tick,
-            key: hole_key(&kind),
-            kind,
-        };
-        let at = self.holes.partition_point(|h| (h.tick, h.key) <= (tick, entry.key));
-        self.holes.insert(at, entry);
-        self.generation += 1;
-    }
-
     /// A shot from `start` to `end` at `tick`: a tunnel through any cloud it
     /// crosses. Ignored when holes are off.
     pub fn bullet(&mut self, start: Vec3, end: Vec3, tick: u64) {
-        let units = self.config.units;
-        self.add_hole(
-            HoleKind::Bullet {
-                start: units.to_internal(start),
-                end: units.to_internal(end),
-            },
-            tick,
-        );
+        self.impact(Impact::Bullet { start, end, tick });
     }
 
     /// An explosion at `tick`: clears a sphere (default radius from the
     /// tuning) that refills. Ignored when holes are off.
     pub fn explosion(&mut self, center: Vec3, radius: Option<f32>, tick: u64) {
+        self.impact(Impact::Explosion { center, radius, tick });
+    }
+
+    /// A bullet or an explosion: what [`Self::bullet`] or
+    /// [`Self::explosion`] does with its fields. Ignored when holes are off.
+    /// For catching up from [`Self::impacts`], whatever kinds of impact a
+    /// later version adds.
+    pub fn impact(&mut self, impact: Impact) {
         let units = self.config.units;
         let Some(holes) = self.internal.holes else {
             return;
         };
-        let radius = radius.map_or(holes.explosion_radius, |r| units.length_to_internal(r));
-        self.add_hole(
-            HoleKind::Explosion {
-                center: units.to_internal(center),
-                radius,
+        let kind = match impact {
+            Impact::Bullet { start, end, .. } => HoleKind::Bullet {
+                start: units.to_internal(start),
+                end: units.to_internal(end),
             },
-            tick,
-        );
+            Impact::Explosion { center, radius, .. } => HoleKind::Explosion {
+                center: units.to_internal(center),
+                radius: radius.map_or(holes.explosion_radius, |r| units.length_to_internal(r)),
+            },
+        };
+        let entry = HoleEntry {
+            tick: impact.tick(),
+            key: hole_key(&kind),
+            kind,
+            given: impact,
+        };
+        let at = self
+            .holes
+            .partition_point(|h| (h.tick, h.key) <= (entry.tick, entry.key));
+        self.holes.insert(at, entry);
+        self.generation += 1;
+    }
+
+    /// Every bullet and explosion the world keeps, exactly as it was given
+    /// (in your units, to the bit): those whose holes are open or still to
+    /// come, and those that closed less than [`Config::history_ticks`] ago,
+    /// whether or not they hit a cloud. They come in order of tick, and in
+    /// the same order within a tick on every machine, whatever order they
+    /// arrived in. Empty when holes are off, as impacts are then ignored.
+    ///
+    /// With the [`CloudSpec`] of each cloud still alive, this is all a late
+    /// joiner needs: its world then computes the same clouds, to the bit.
+    /// The world keeps the impacts as given because it works in metres
+    /// inside, and converting back wouldn't always give the same bits.
+    ///
+    /// ```
+    /// use smokescreen::glam::Vec3;
+    /// use smokescreen::*;
+    ///
+    /// let config = Config::new(Units::INCHES_Z_UP, 64.0);
+    /// let ground = FlatGround::new(0.0, UpAxis::Z);
+    /// let mut server = Smokes::new(config.clone(), ground);
+    /// server.pop(CloudSpec::new(Vec3::ZERO, 0, 7, Style::Volumetric));
+    /// let tick = 128;
+    /// server.bullet(Vec3::new(-400.0, 0.0, 40.0), Vec3::new(400.0, 10.0, 50.0), tick - 4);
+    /// server.advance(tick);
+    ///
+    /// // A player joins: send the clouds still alive and the impacts.
+    /// let specs: Vec<CloudSpec> = server.clouds().filter(|c| c.end_tick() > tick).map(|c| *c.spec()).collect();
+    /// let impacts: Vec<Impact> = server.impacts().collect();
+    ///
+    /// let mut client = Smokes::new(config, ground);
+    /// for spec in specs {
+    ///     client.pop(spec);
+    /// }
+    /// for impact in impacts {
+    ///     client.impact(impact);
+    /// }
+    /// let (eye, enemy) = (Vec3::new(-400.0, 20.0, 45.0), Vec3::new(400.0, 0.0, 45.0));
+    /// assert_eq!(client.occlusion(eye, enemy, tick).to_bits(), server.occlusion(eye, enemy, tick).to_bits());
+    /// ```
+    pub fn impacts(&self) -> impl Iterator<Item = Impact> + '_ {
+        self.holes.iter().map(|h| h.given)
     }
 
     fn finish_fill(&mut self, i: usize) {

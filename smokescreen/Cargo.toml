@@ -11,9 +11,23 @@ keywords = ["smoke", "deterministic", "gamedev", "line-of-sight", "multiplayer"]
 categories = ["game-development", "simulation"]
 repository = "https://github.com/VagabondTech/smokescreen"
 
+[features]
+# Serialize and Deserialize on what machines send each other: CloudSpec (with
+# CloudSource, Style and Timeline) and Impact. Without it, the crate depends
+# on glam and libm only.
+serde = ["dep:serde", "glam/serde"]
+
 [dependencies]
 glam = "0.33"
 libm = "0.2"
+serde = { version = "1.0.200", default-features = false, features = ["derive"], optional = true }
+
+[dev-dependencies]
+# A binary format for the serde tests (tests/serde.rs).
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+
+[package.metadata.docs.rs]
+features = ["serde"]
 
 [[bench]]
 name = "queries"

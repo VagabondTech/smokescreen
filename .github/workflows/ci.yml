@@ -20,7 +20,8 @@ env:
 jobs:
   # The simulation has no engine in it, so it builds in seconds everywhere.
   # macOS runners are ARM and the others x86-64: the determinism hashes are
-  # checked on both.
+  # checked on both. With the serde feature, which changes no results; the
+  # build without it is checked by the jobs below.
   core:
     name: core (${{ matrix.os }})
     strategy:
@@ -34,8 +35,8 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy -p smokescreen --all-targets -- -D warnings
-      - run: cargo test -p smokescreen --release
+      - run: cargo clippy -p smokescreen --all-targets --features serde -- -D warnings
+      - run: cargo test -p smokescreen --release --features serde
       - name: Determinism hashes in a debug build
         run: cargo test -p smokescreen --test determinism
 
@@ -59,6 +60,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.88
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p smokescreen --release
+      - run: cargo test -p smokescreen --release --features serde --test serde
 
   # The Bevy plugin: formatting, lints, the examples (built, not run), the
   # README's examples as doc tests, and the docs.
@@ -78,6 +80,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy with both crates' serde feature
+        run: cargo clippy --workspace --all-targets --features serde -- -D warnings
       - run: cargo test -p bevy_smokescreen
       - run: cargo doc --workspace --no-deps
         env:
