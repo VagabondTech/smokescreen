@@ -48,9 +48,12 @@ both).
 - **The README's media** are recorded by the demo (`SMOKE_DEMO_SCRIPT=video`)
   on a real GPU and encoded with `tools/encode_clips.sh`, so they can be
   remade whenever the look changes.
-- **crates.io:** `smokescreen` and `bevy_smokescreen` 0.1.0 (2026-10-17)
-  and 0.1.1 (2026-10-18, the performance work of two reviews; tags `v0.1.0`
-  and `v0.1.1`), with their API docs on docs.rs.
+- **crates.io:** `smokescreen` and `bevy_smokescreen` 0.1.0 (2026-10-17),
+  0.1.1 (2026-10-18, the performance work of two reviews) and 0.2.0
+  (2026-10-29: volumetric smoke up to 86 % cheaper to draw on an Apple M4,
+  a smaller API with serde and Reflect, and new simulation results, not in
+  lockstep with 0.1; tags `v0.1.0`, `v0.1.1` and `v0.2.0`), with their API
+  docs on docs.rs.
 - **Touch controls** for the browser demo: drag to look, a thumb stick to
   move, tap to shoot. Checked on an iPhone 15 Pro (Safari 26).
 
