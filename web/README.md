@@ -19,6 +19,11 @@ smoke grenade, H an HE grenade, the left mouse button shoots, X clears the
 smokes and F changes the style; the buttons at the top right do the same.
 The help at the bottom left lists the rest.
 
+F and the Style button switch between volumetric and crystal smoke. The
+experimental faceted look is left out here: it costs 20–40 times what a
+volumetric smoke does to draw, which makes a poor first look on a laptop
+or a phone. `?style=faceted` in the address starts in it.
+
 On a phone or tablet, drag on the scene to look around, and put a thumb
 down in the lower left for a stick that moves you (look up and push
 forward to rise). A quick tap on the scene, the lower left included, shoots
@@ -39,7 +44,7 @@ phone:
 | `?smoke=0` | No smoke at the start: just the scene |
 | `?ldr` | No HDR |
 | `?msaa=0` | No MSAA |
-| `?style=faceted`, `?style=crystal` | Start in that style |
+| `?style=crystal`, `?style=faceted` | Start in that style (faceted only this way) |
 
 Combine them with `&`: `?log&smoke=0&msaa=0`. They are the demo's
 `SMOKE_DEMO_*` environment variables (see the top of `examples/demo.rs`),

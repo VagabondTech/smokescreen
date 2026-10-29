@@ -337,7 +337,7 @@ Nothing here changes what blocks, so it can differ from player to player (a grap
 |---|---|
 | `minimal` | The smallest integration: a grenade, bullets, explosions, a bot's line of sight |
 | `presets` | Every preset and look, in a yard made of `SmokeObstacle` meshes |
-| `demo` | A playable test range, also [in your browser](https://vagabondtech.github.io/smokescreen/) with touch controls on a phone ([how it's built](https://github.com/VagabondTech/smokescreen/blob/main/web/README.md)): throw smoke and HE grenades (G, H), shoot, switch looks (F), turn the dial (1–6), budget mode (B); GPU timings in the HUD; scripted captures, and the clips in this README |
+| `demo` | A playable test range, also [in your browser](https://vagabondtech.github.io/smokescreen/) with touch controls on a phone ([how it's built](https://github.com/VagabondTech/smokescreen/blob/main/web/README.md)): throw smoke and HE grenades (G, H), shoot, switch looks (F; the browser build leaves out the experimental faceted look), turn the dial (1–6), budget mode (B); GPU timings in the HUD; scripted captures, and the clips in this README |
 | `viewmodel` | A first-person weapon that stays visible inside smoke (a second camera) |
 | `units` | The same scene in Y-up metres and Z-up inches |
 | `smokescreen/examples/server` | A headless server loop in Z-up inches with 250 bots |
