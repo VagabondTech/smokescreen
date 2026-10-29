@@ -2,6 +2,8 @@
 //! what to do; the systems that can see a mistake check for it where they
 //! already look, so a check costs nothing per frame.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use bevy::prelude::*;
 use smokescreen::{CloudSource, CloudSpec, Smokes};
 
@@ -39,21 +41,27 @@ pub(crate) enum Mistake {
     MeshWithoutTriangles,
     /// A `SmokeObstacle` mesh that failed to load.
     MeshFailed,
+    /// No `TransformPlugin`: nothing updates `GlobalTransform`.
+    NoTransforms,
+    /// `SmokeVision` asked after the clock moved past the tick its views
+    /// were prepared for.
+    VisionTick,
 }
 
-/// The mistakes warned about so far.
+/// The mistakes warned about so far. Atomic, so that systems that only read
+/// it (`SmokeVision`'s) can warn too.
 #[derive(Resource, Default)]
-pub(crate) struct SetupWarnings(u32);
+pub(crate) struct SetupWarnings(AtomicU32);
 
 impl SetupWarnings {
     pub(crate) fn warned(&self, mistake: Mistake) -> bool {
-        self.0 & (1 << mistake as u32) != 0
+        self.0.load(Ordering::Relaxed) & (1 << mistake as u32) != 0
     }
 
     /// Log `message` the first time `mistake` is seen.
-    pub(crate) fn warn(&mut self, mistake: Mistake, message: impl FnOnce() -> String) {
-        if !self.warned(mistake) {
-            self.0 |= 1 << mistake as u32;
+    pub(crate) fn warn(&self, mistake: Mistake, message: impl FnOnce() -> String) {
+        let bit = 1 << mistake as u32;
+        if self.0.load(Ordering::Relaxed) & bit == 0 && self.0.fetch_or(bit, Ordering::Relaxed) & bit == 0 {
             warn!("{}", message());
         }
     }
@@ -61,7 +69,7 @@ impl SetupWarnings {
     /// Nothing warned about yet.
     #[cfg(test)]
     pub(crate) fn none(&self) -> bool {
-        self.0 == 0
+        self.0.load(Ordering::Relaxed) == 0
     }
 }
 
@@ -114,7 +122,8 @@ pub(crate) fn misfit(spec: &CloudSpec, world: &Smokes<SharedLevel>) -> Option<St
                 ));
             }
         }
-        CloudSource::Point => {}
+        // A point fits anywhere (and the core has no other sources yet).
+        _ => {}
     }
     let volume = spec.volume.map_or(t.volume, |vol| units.volume_to_internal(vol));
     let holds = dims.x * dims.y * dims.z * v * v * v;

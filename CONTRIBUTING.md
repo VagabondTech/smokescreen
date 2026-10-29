@@ -9,7 +9,8 @@ works; [ROADMAP.md](ROADMAP.md) lists what is left.
 ## Building
 
 - `bevy_smokescreen` needs Rust 1.97.1 or newer (Bevy 0.20's minimum).
-- `smokescreen` needs Rust 1.88 or newer, and nothing but `glam` and `libm`.
+- `smokescreen` needs Rust 1.88 or newer, and nothing but `glam` and `libm`
+  (and `serde` with its `serde` feature, off by default).
 - On Linux, Bevy's examples need `libasound2-dev libudev-dev libwayland-dev
   libxkbcommon-dev` (or your distribution's equivalents).
 - The smoke needs compute shaders: Vulkan, Metal, DX12 or WebGPU.
@@ -30,7 +31,9 @@ rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 ```sh
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --features serde -- -D warnings
 cargo test -p smokescreen --release      # includes the determinism hash
+cargo test -p smokescreen --release --features serde
 cargo test -p bevy_smokescreen           # builds the examples, runs the README's and llms.txt's examples
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 ```

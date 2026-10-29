@@ -122,6 +122,143 @@ every cloud, so views of past ticks (lag compensation) still see it;
 despawning the entity sooner still removes the cloud at once. `llms.txt`'s
 multiplayer recipe uses `from_spec`. No results change.
 
+**An API that can grow in 0.2 releases, and four changes that couldn't
+wait for 0.3.** No results change: the determinism hashes are the same,
+and the demo's showcase draws the same pixels.
+
+- `Style` (`SmokeStyle`), `CloudSource`, `SmokeSource`, `NoiseWithinRule`,
+  `SmokeResolution`, `VolumeSteps`, `Polyhedron`, `ShapeMix`,
+  `FacetShadows`, `FacetOcclusion` and `SmokeSystems` are
+  `#[non_exhaustive]`, as `FacetRule` already was, and so is
+  `CrystalPuff`. A `match` on one of them needs a `_` arm, so a new style,
+  source, mode or shape can come in a 0.2 release. Building them is
+  unchanged.
+- The style is out of `SmokeSettings`. Its docs said the look could change
+  at any time without changing what hides what, but the style decides what
+  hides what. Smokes without a style of their own now take
+  `DefaultSmokeStyle`, a resource read at each pop and documented as a
+  rule: write `DefaultSmokeStyle(style)` where you wrote
+  `SmokeSettings { style, .. }`. `SmokeSettings` can now be a player's
+  graphics settings as it stands.
+- `SmokeBullet` and `SmokeExplosion` take a `tick` (`None` lands them on
+  the current tick, as before) and implement `Default`: build them with
+  `..default()`. A message used to land on whatever tick the clock showed
+  when the plugin read it, so machines in lockstep could stamp one shot on
+  different ticks, shots from two fixed steps in one frame shared a tick,
+  and networked games had to call `SmokeWorld::bullet` instead.
+  `llms.txt`'s multiplayer recipe now sends ticked messages.
+- `VoxelObstacles::from_bytes` returns `Result<VoxelObstacles,
+  VoxelBytesError>` instead of an `Option`: not voxels, a format this
+  version can't read (a newer one's), cut short, or a header that makes no
+  sense (or bytes after the voxels). A corrupt header used to panic in
+  debug builds, an overflow working out its size; whatever the bytes hold,
+  the answer is now the voxels or an error. Building a `VoxelObstacles`
+  with a voxel size that isn't above 0, or of more than 2^32 - 1 voxels
+  (512 MB of bits), panics with a message that says so, where it
+  overflowed before.
+- `SmokePlugin::new(config)`, so code needn't spell out the plugin's
+  fields: later versions may add some.
+- Hidden: `Timeline::growth`, `dissolve` and `is_growing`, the density
+  model renderers mirror.
+- The docs say what 0.2 releases may change (a "Versions" section in the
+  README, and on both crates' front pages): variants of non-exhaustive
+  enums, and fields of structs built from a constructor or with
+  `..default()`. `CloudSpec` gains fields only in a new 0.x. Releases avoid
+  changing results where they can, but every machine in a match should
+  run the same version. They also say that a `CloudShape` has no wire
+  format (`fill_cloud` is for filling off the main thread; send the
+  `CloudSpec`), that a smoke source's offset and box are in world axes,
+  and that the look's lengths are in metres in every unit system.
+
+**Dedicated servers in Bevy, gameplay queries that only read, checked
+configurations.** No results change: the determinism hashes are the same,
+and the demo's showcase draws the same pixels.
+
+- The plugin runs on a Bevy server: `MinimalPlugins` and `TransformPlugin`
+  are enough, with no renderer and no assets. It used to panic at startup
+  without Bevy's renderer (it registered its shaders anyway), and to refuse
+  to start without `AssetPlugin`. Without a renderer it now adds none of
+  its drawing systems, so a server does none of their work; before, every
+  new cloud's grid also queued for a GPU upload that nothing took, so a
+  server would have kept every cloud it ever popped. Without
+  `TransformPlugin`, smokes placed by their entity pop at the origin, and
+  the plugin now says so, once. The warnings about more smokes than
+  `Tuning::max_clouds` and smokes popped inside solid geometry reach
+  servers too. The README and `llms.txt` have a server recipe.
+- `SmokeVision` only reads (`Res<SmokeWorld>`, `&self` methods), so
+  systems that use it run in parallel with each other and with any system
+  that only reads `SmokeWorld`. It answers from views the plugin prepares
+  when the clock moves in `PreUpdate` and again at the end of
+  `SmokeSystems::Simulate`, so every system in `Update` sees the same
+  smoke, whatever order they run in. Two things change. A change made
+  straight to `SmokeWorld` in `Update` shows from the end of `Simulate`.
+  A clock moved after `PreUpdate` (a tick per fixed step, say) needs the
+  new `SmokeWorld::prepare_vision(&clock)` after it, or `SmokeVision`
+  answers for the tick before, and the plugin warns once; a clock written
+  in `First` needs nothing. `mut vision: SmokeVision` now draws an
+  `unused_mut` warning: drop the `mut`. When `SmokeClock::draw_tick` is
+  behind `tick`, the plugin now works out both ticks' state every frame
+  (about 20 ns per faceted or crystal puff), where it worked out the
+  current tick's only when asked.
+- `SmokeVision::view()` and `drawn_view()` give the current and the drawn
+  tick's `SmokeView` (the core's `View`, now in the prelude), which every
+  thread can ask at once: `par_iter` over many bots, and helpers of your
+  own. Other ticks (lag compensation) stay with `SmokeWorld::view(tick)`.
+- `Config::validate()` returns a `ConfigError` (which setting, and what it
+  must be) for values that silently made nonsense: a number that isn't
+  finite; a tick rate, unit length, voxel size or volume not above 0; a
+  `floor_fraction` outside 0 to 1; or a grid of more than
+  `MAX_GRID_VOXELS` (2^24) voxels. `Smokes::new`, `fill_cloud` and
+  `SmokePlugin` panic with it.
+- Builders: `Smoke::with_density`, `with_despawn_when_done`, `with_start`
+  (a fuse for one smoke) and `with_fade_time`, with new fields `start` and
+  `fade_time`; `CloudSpec::with_volume` and `with_timeline`. A smoke's
+  density and `despawn_when_done` could only be set on a binding before:
+  `Smoke { density, ..default() }` doesn't compile outside the crate.
+- `SmokeLevel::new(level)`, without an `Arc` to make. `Debug` on `Smokes`
+  (so on `SmokeWorld`), `View` and `CloudInfo`, as summaries rather than
+  their voxels; `PartialEq` on `SmokeSettings` and `SmokeCamera`.
+
+**For networking crates, editors and late joiners: a `serde` feature,
+reflection, `Smokes::impacts`, and pop and end events.** No results
+change: the determinism hashes are the same, and the demo's showcase
+draws the same pixels.
+
+- A `serde` feature in both crates, off by default: `Serialize` and
+  `Deserialize` on `CloudSpec`, `CloudSource`, `Style`, `Timeline` and the
+  new `Impact` in the core, and on `SmokeBullet` and `SmokeExplosion` in
+  the plugin, as networking crates' events need (bevy_replicon,
+  lightyear). Without it the core still depends on `glam` and `libm` only.
+  Binary formats such as postcard and bincode carry every number exactly,
+  and so does `serde_json` for every finite `f32` (all of them checked).
+  The serialised form follows the types: send it between machines running
+  the same version.
+- `Smokes::impacts()` gives back every bullet and explosion a world keeps,
+  exactly as it was given, in your units, by tick and in the same order
+  within a tick on every machine. With the specs of the clouds still
+  alive, that is all a late joiner needs; `Smokes::impact(impact)` adds
+  each one back, whatever kinds of impact later versions add. A server
+  used to keep its own log: the world kept impacts in metres, which don't
+  always convert back to the same bits. Each kept impact takes 40 bytes
+  more.
+- `SmokePopped` and `SmokeEnded`, entity events for observers, once per
+  smoke, for sounds, effects and UI: when its cloud pops (a pop heard late
+  at once, with its own tick), and when the cloud is gone, before
+  `despawn_when_done` despawns the entity. Each carries the entity, the
+  cloud and the tick. They come in `PostUpdate` before Bevy propagates
+  transforms, so what an observer spawns is placed that frame. Before, a
+  game watched `Changed<Smoke>` for `Smoke::cloud()`.
+- Reflection: `Smoke`, `SmokeSource`, `SmokeCamera` and the quality types
+  it holds, `SmokeQuality`, `SmokeSettings`, `NoiseWithinRule`,
+  `SmokeClock`, `SmokeSun`, `SmokeObstacle`, `CrystalPuff`, `SmokeBullet`
+  and `SmokeExplosion` are reflected and registered, for inspectors,
+  editors, scene files, and crates that turn glTF extras from Blender into
+  components. A smoke's style is left out: it is the core's type, which
+  the plugin can't reflect, so a smoke from a scene takes
+  `DefaultSmokeStyle`.
+- `llms.txt` has recipes for sounds, effects and UI on pops and ends, and
+  for a player who joins mid-match.
+
 - **results** The volumetric rule works out density in the same order as
   the picture. A sample used to take the density of the distance
   interpolated between voxels, while the GPU bakes each voxel's density

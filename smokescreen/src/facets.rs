@@ -61,7 +61,9 @@ const ICOSAHEDRON: [Vec3; 10] = [
 
 /// Puff shapes. All are centrally symmetric, so each needs one normal per
 /// pair of opposite faces. The discriminants are the ids renderers use.
+/// Later versions may add shapes, so a `match` on it needs a `_` arm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Polyhedron {
     /// Six square faces.
     Cube = 0,
@@ -105,8 +107,10 @@ impl Polyhedron {
     }
 }
 
-/// Which polyhedra a cloud is built from.
+/// Which polyhedra a cloud is built from. Later versions may add mixes, so a
+/// `match` on it needs a `_` arm.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum ShapeMix {
     /// Every puff has the same shape.
     Single(Polyhedron),
@@ -239,6 +243,20 @@ impl FacetSettings {
     /// clipped by it.
     pub(crate) fn halo_metres(&self) -> f32 {
         self.overhang + 0.2
+    }
+
+    /// Every number, by field name, for [`crate::Config::validate`].
+    pub(crate) fn numbers(&self) -> [(&'static str, f32); 8] {
+        [
+            ("spacing", self.spacing),
+            ("size", self.size),
+            ("size_jitter", self.size_jitter),
+            ("taper", self.taper),
+            ("blend", self.blend),
+            ("spin", self.spin),
+            ("pop_time", self.pop_time),
+            ("overhang", self.overhang),
+        ]
     }
 }
 

@@ -8,7 +8,7 @@ use crate::{
     chords::{ChordBounds, ChordField, CoreField, CrystalField},
     facets::{FacetField, FacetRule, FacetSettings, LivePuff},
     fill::{CloudShape, FillJob, FillSpec, Source, Work},
-    holes::{HOLE_BUFFER, HoleKind, HoleSettings, HoleShape, holes_near},
+    holes::{HOLE_BUFFER, HoleKind, HoleSettings, HoleShape, Impact, holes_near},
     level::Level,
     math::{boxes_overlap, clip_segment, distance_to_segment, hash_u32, safe_recip, slab},
     timeline::{DensityTable, Timeline},
@@ -174,11 +174,116 @@ impl Config {
             cached_ticks: 4,
         }
     }
+
+    /// Checks the settings that would otherwise make nonsense: every number
+    /// must be finite; [`Self::tick_rate`], [`Units::metres_per_unit`],
+    /// [`Tuning::voxel_size`] and [`Tuning::volume`] above 0;
+    /// [`Tuning::floor_fraction`] from 0 to 1; and [`Tuning::grid_dims`] at
+    /// most [`MAX_GRID_VOXELS`] voxels once rounded up to multiples of 4. Any
+    /// other value is allowed. [`Smokes::new`] and [`fill_cloud`] panic with
+    /// the error; call this first to handle it yourself (a configuration read
+    /// from a file, say).
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        let t = &self.tuning;
+        for (field, value) in [
+            ("tick_rate", self.tick_rate),
+            ("units.metres_per_unit", self.units.metres_per_unit),
+            ("tuning.voxel_size", t.voxel_size),
+            ("tuning.volume", t.volume),
+        ] {
+            if !(value.is_finite() && value > 0.0) {
+                return Err(ConfigError::new(field.into(), format!("{value}: it must be above 0")));
+            }
+        }
+        if !(0.0..=1.0).contains(&t.floor_fraction) {
+            return Err(ConfigError::new(
+                "tuning.floor_fraction".into(),
+                format!("{}: it must be from 0 to 1", t.floor_fraction),
+            ));
+        }
+        let finite = |field: &dyn Fn() -> String, value: f32| {
+            if value.is_finite() {
+                Ok(())
+            } else {
+                Err(ConfigError::new(field(), format!("{value}: it must be finite")))
+            }
+        };
+        for (name, value) in [
+            ("up_cost", t.up_cost),
+            ("down_cost", t.down_cost),
+            ("lumpiness", t.lumpiness),
+            ("lump_size", t.lump_size),
+            ("sight_threshold", t.sight_threshold),
+        ] {
+            finite(&|| format!("tuning.{name}"), value)?;
+        }
+        for (name, value) in t.timeline.numbers() {
+            finite(&|| format!("tuning.timeline.{name}"), value)?;
+        }
+        for (settings, f) in [("facets", &t.facets), ("crystals", &t.crystals)] {
+            for (name, value) in f.numbers() {
+                finite(&|| format!("tuning.{settings}.{name}"), value)?;
+            }
+        }
+        for (name, value) in t.holes.iter().flat_map(HoleSettings::numbers) {
+            finite(&|| format!("tuning.holes.{name}"), value)?;
+        }
+        // As the world rounds them.
+        let dims = (t.grid_dims.max(UVec3::splat(8)).as_u64vec3() + 3) / 4 * 4;
+        let voxels = dims.x.saturating_mul(dims.y).saturating_mul(dims.z);
+        if voxels > MAX_GRID_VOXELS {
+            return Err(ConfigError::new(
+                "tuning.grid_dims".into(),
+                format!(
+                    "{} × {} × {} ({voxels} voxels in multiples of 4): a cloud's grid may have at most {MAX_GRID_VOXELS}",
+                    t.grid_dims.x, t.grid_dims.y, t.grid_dims.z
+                ),
+            ));
+        }
+        Ok(())
+    }
 }
+
+/// The most voxels [`Tuning::grid_dims`] may give a cloud's grid, once
+/// rounded up to multiples of 4: 2^24, about 300 times the default's.
+pub const MAX_GRID_VOXELS: u64 = 1 << 24;
+
+/// Why [`Config::validate`] refused a configuration: which setting, and
+/// what it must be.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigError {
+    field: String,
+    message: String,
+}
+
+impl ConfigError {
+    fn new(field: String, problem: String) -> Self {
+        let message = format!("Config::{field} is {problem}");
+        Self { field, message }
+    }
+
+    /// The setting at fault, as a path from the [`Config`]: `tick_rate`,
+    /// `units.metres_per_unit`, `tuning.timeline.lifetime` and so on.
+    pub fn field(&self) -> &str {
+        &self.field
+    }
+}
+
+impl core::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ConfigError {}
 
 /// How a cloud is shaped. All three styles share the fill, timeline, holes
 /// and rule; only what counts as cloud differs.
+///
+/// Later versions may add styles, so a `match` on it needs a `_` arm.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum Style {
     /// A soft density field. The amount of cloud along a segment is its
     /// density integrated along it (metres of full-density cloud).
@@ -202,8 +307,12 @@ pub enum Style {
     Crystal,
 }
 
-/// What a cloud spreads from. Positions and lengths in the caller's units.
+/// What a cloud spreads from. Positions and lengths in the caller's units
+/// and axes. Later versions may add shapes, so a `match` on it needs a `_`
+/// arm.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum CloudSource {
     /// From its origin: a grenade.
     #[default]
@@ -214,9 +323,10 @@ pub enum CloudSource {
         /// The segment's other end.
         end: Vec3,
     },
-    /// From every open point of the box centred on its origin: a fog bank, a
-    /// gas-filled room. The box must fit the fill grid
-    /// ([`Tuning::grid_dims`]); set the cloud's volume to about the box's.
+    /// From every open point of the box centred on its origin, its edges
+    /// along the caller's axes: a fog bank, a gas-filled room. The box must
+    /// fit the fill grid ([`Tuning::grid_dims`]); set the cloud's volume to
+    /// about the box's.
     Box {
         /// Half the box's size along each axis.
         half_extents: Vec3,
@@ -225,6 +335,7 @@ pub enum CloudSource {
 
 /// A cloud: where, when and how it popped. This is all a server has to send.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CloudSpec {
     /// Where the grenade came to rest, in the caller's units.
     pub origin: Vec3,
@@ -264,6 +375,19 @@ impl CloudSpec {
         self
     }
 
+    /// The same cloud filling `volume` (in cubic caller units) instead of
+    /// [`Tuning::volume`].
+    pub fn with_volume(mut self, volume: f32) -> Self {
+        self.volume = Some(volume);
+        self
+    }
+
+    /// The same cloud on `timeline` instead of [`Tuning::timeline`].
+    pub fn with_timeline(mut self, timeline: Timeline) -> Self {
+        self.timeline = Some(timeline);
+        self
+    }
+
     /// A seed made from the origin's bits, so the same throw gives the same
     /// cloud everywhere.
     pub fn seed_from_origin(origin: Vec3) -> u32 {
@@ -276,19 +400,29 @@ impl CloudSpec {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CloudId(pub(crate) u64);
 
-struct Ready {
+/// What a filled cloud's per-tick states share: its fill, and what it was
+/// added with. Made once, when the fill is done, so a state needs only a
+/// pointer to it and stays whole whatever the world does afterwards.
+struct Filled {
     shape: Arc<CloudShape>,
+    spec: CloudSpec,
+    timeline: Timeline,
+}
+
+struct Ready {
+    filled: Arc<Filled>,
     /// Faceted: seconds after the pop when each puff pops in.
     arrival: Vec<f32>,
     bounds: (Vec3, Vec3),
 }
 
 impl Ready {
-    fn new(shape: Arc<CloudShape>) -> Self {
+    fn new(shape: Arc<CloudShape>, spec: CloudSpec, timeline: Timeline) -> Self {
         let bounds = shape.bounds();
+        let arrival = arrival_times(&shape, &timeline);
         Self {
-            shape,
-            arrival: Vec::new(),
+            filled: Arc::new(Filled { shape, spec, timeline }),
+            arrival,
             bounds,
         }
     }
@@ -331,6 +465,9 @@ struct HoleEntry {
     /// Orders holes of the same tick, independently of arrival order.
     key: u64,
     kind: HoleKind,
+    /// The impact as it was given, in the caller's units: converting `kind`
+    /// back wouldn't always give the same bits.
+    given: Impact,
 }
 
 fn hole_key(kind: &HoleKind) -> u64 {
@@ -362,11 +499,12 @@ fn hole_key(kind: &HoleKind) -> u64 {
     ((a as u64) << 32) | b as u64
 }
 
-/// One cloud at one tick: its growth, holes and (faceted) puffs.
-#[derive(Clone, Debug, Default)]
+/// One cloud at one tick: its growth, holes and (faceted) puffs. It points
+/// at what the queries read of its cloud (the fill, spec and timeline), so a
+/// tick's states answer on their own, whatever the world does afterwards.
+#[derive(Clone, Default)]
 #[doc(hidden)]
 pub struct CloudState {
-    cloud: usize,
     pub id: CloudId,
     /// Seconds since the pop.
     pub age: f32,
@@ -390,6 +528,27 @@ pub struct CloudState {
     /// Faceted and crystal: every puff's size and orientation (internal
     /// frame).
     pub live: Vec<LivePuff>,
+    /// What its cloud's states share; `None` only in a state not yet
+    /// filled in.
+    filled: Option<Arc<Filled>>,
+}
+
+/// Everything but the fill, which is megabytes of voxels.
+impl core::fmt::Debug for CloudState {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CloudState")
+            .field("id", &self.id)
+            .field("age", &self.age)
+            .field("growth", &self.growth)
+            .field("dissolve", &self.dissolve)
+            .field("bounds", &self.bounds)
+            .field("active", &self.active)
+            .field("holes", &self.holes)
+            .field("live", &self.live)
+            .field("spec", &self.filled.as_ref().map(|f| f.spec))
+            .field("timeline", &self.filled.as_ref().map(|f| f.timeline))
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for CloudId {
@@ -561,14 +720,43 @@ pub struct Smokes<L> {
     next_id: u64,
     generation: u64,
     snapshots: Vec<Snapshot>,
+    /// The snapshot each pin keeps (see [`Self::pin_view`]), out of the
+    /// cache's turnover.
+    pins: Vec<Option<usize>>,
     stamp: u64,
     last_tick: Option<u64>,
     scratch: Vec<usize>,
 }
 
+/// A summary: the settings that matter most, and how much the world holds.
+impl<L> core::fmt::Debug for Smokes<L> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let pending = self
+            .clouds
+            .iter()
+            .filter(|c| matches!(c.fill, Fill::Pending(_)))
+            .count();
+        f.debug_struct("Smokes")
+            .field("units", &self.config.units)
+            .field("tick_rate", &self.config.tick_rate)
+            .field("clouds", &self.clouds.len())
+            .field("pending_fills", &pending)
+            .field("holes", &self.holes.len())
+            .field("last_tick", &self.last_tick)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<L: Level> Smokes<L> {
     /// An empty world: no clouds yet, smoke spreading around `level`.
+    ///
+    /// # Panics
+    ///
+    /// If [`Config::validate`] refuses `config`.
     pub fn new(config: Config, level: L) -> Self {
+        if let Err(e) = config.validate() {
+            panic!("Smokes::new: {e}");
+        }
         let internal = config.tuning.to_internal(&config.units);
         Self {
             config,
@@ -579,6 +767,7 @@ impl<L: Level> Smokes<L> {
             next_id: 0,
             generation: 0,
             snapshots: Vec::new(),
+            pins: Vec::new(),
             stamp: 0,
             last_tick: None,
             scratch: Vec::new(),
@@ -645,24 +834,25 @@ impl<L: Level> Smokes<L> {
         pop.saturating_add(k)
     }
 
+    /// The timeline a cloud of `spec` runs on.
+    fn timeline_of(&self, spec: &CloudSpec) -> Timeline {
+        spec.timeline.unwrap_or(self.config.tuning.timeline)
+    }
+
     fn new_cloud(&mut self, spec: CloudSpec, fill: Fill) -> CloudId {
         let id = CloudId(self.next_id);
         self.next_id += 1;
-        let timeline = spec.timeline.unwrap_or(self.config.tuning.timeline);
+        let timeline = self.timeline_of(&spec);
         let start_tick = self.first_tick(spec.pop_tick, timeline.start, |a| timeline.has_started(a));
         let end_tick = self.first_tick(spec.pop_tick, timeline.lifetime, |a| timeline.is_finished(a));
-        let mut cloud = Cloud {
+        self.clouds.push(Cloud {
             id,
             spec,
             timeline,
             start_tick,
             end_tick,
             fill,
-        };
-        if let Fill::Ready(r) = &mut cloud.fill {
-            r.arrival = arrival_times(&r.shape, &cloud.timeline);
-        }
-        self.clouds.push(cloud);
+        });
         self.generation += 1;
         id
     }
@@ -674,20 +864,23 @@ impl<L: Level> Smokes<L> {
         self.new_cloud(spec, Fill::Pending(Box::new(job)))
     }
 
-    /// A cloud whose fill was computed elsewhere (by [`fill_cloud`], or
-    /// received from a server). It must come from the same spec, level and
+    /// A cloud whose fill was computed elsewhere (by [`fill_cloud`] on
+    /// another thread, say). It must come from the same spec, level and
     /// tuning, or machines will disagree.
     ///
-    /// A [`CloudShape`]'s contents are not part of the API yet: to send one
-    /// between machines, run the same version of this crate on both. Its
-    /// grid is used as it is. One put together by hand (received field by
-    /// field, say) needs its bricks (`Grid::build_bricks`), and checks are
+    /// A [`CloudShape`]'s contents are not part of the API, and it has no
+    /// wire format: sending one between machines means sending its hidden
+    /// fields, with the same version of this crate at both ends. Sending the
+    /// [`CloudSpec`] is simpler. A shape's grid is used as it is. One put
+    /// together by hand (received field by field, say) needs its bricks
+    /// (`Grid::build_bricks`), and checks are
     /// faster with its front bounds and, if it is volumetric, its sample
     /// cells (`Grid::build_front_bounds`, `Grid::build_sample_cells`);
     /// without those they give the same answers. [`fill_cloud`] builds all
     /// three.
     pub fn insert(&mut self, spec: CloudSpec, shape: Arc<CloudShape>) -> CloudId {
-        self.new_cloud(spec, Fill::Ready(Ready::new(shape)))
+        let ready = Ready::new(shape, spec, self.timeline_of(&spec));
+        self.new_cloud(spec, Fill::Ready(ready))
     }
 
     /// Remove a cloud now, whatever its age.
@@ -708,48 +901,90 @@ impl<L: Level> Smokes<L> {
         self.generation += 1;
     }
 
-    fn add_hole(&mut self, kind: HoleKind, tick: u64) {
-        if self.internal.holes.is_none() {
-            return;
-        }
-        let entry = HoleEntry {
-            tick,
-            key: hole_key(&kind),
-            kind,
-        };
-        let at = self.holes.partition_point(|h| (h.tick, h.key) <= (tick, entry.key));
-        self.holes.insert(at, entry);
-        self.generation += 1;
-    }
-
     /// A shot from `start` to `end` at `tick`: a tunnel through any cloud it
     /// crosses. Ignored when holes are off.
     pub fn bullet(&mut self, start: Vec3, end: Vec3, tick: u64) {
-        let units = self.config.units;
-        self.add_hole(
-            HoleKind::Bullet {
-                start: units.to_internal(start),
-                end: units.to_internal(end),
-            },
-            tick,
-        );
+        self.impact(Impact::Bullet { start, end, tick });
     }
 
     /// An explosion at `tick`: clears a sphere (default radius from the
     /// tuning) that refills. Ignored when holes are off.
     pub fn explosion(&mut self, center: Vec3, radius: Option<f32>, tick: u64) {
+        self.impact(Impact::Explosion { center, radius, tick });
+    }
+
+    /// A bullet or an explosion: what [`Self::bullet`] or
+    /// [`Self::explosion`] does with its fields. Ignored when holes are off.
+    /// For catching up from [`Self::impacts`], whatever kinds of impact a
+    /// later version adds.
+    pub fn impact(&mut self, impact: Impact) {
         let units = self.config.units;
         let Some(holes) = self.internal.holes else {
             return;
         };
-        let radius = radius.map_or(holes.explosion_radius, |r| units.length_to_internal(r));
-        self.add_hole(
-            HoleKind::Explosion {
-                center: units.to_internal(center),
-                radius,
+        let kind = match impact {
+            Impact::Bullet { start, end, .. } => HoleKind::Bullet {
+                start: units.to_internal(start),
+                end: units.to_internal(end),
             },
-            tick,
-        );
+            Impact::Explosion { center, radius, .. } => HoleKind::Explosion {
+                center: units.to_internal(center),
+                radius: radius.map_or(holes.explosion_radius, |r| units.length_to_internal(r)),
+            },
+        };
+        let entry = HoleEntry {
+            tick: impact.tick(),
+            key: hole_key(&kind),
+            kind,
+            given: impact,
+        };
+        let at = self
+            .holes
+            .partition_point(|h| (h.tick, h.key) <= (entry.tick, entry.key));
+        self.holes.insert(at, entry);
+        self.generation += 1;
+    }
+
+    /// Every bullet and explosion the world keeps, exactly as it was given
+    /// (in your units, to the bit): those whose holes are open or still to
+    /// come, and those that closed less than [`Config::history_ticks`] ago,
+    /// whether or not they hit a cloud. They come in order of tick, and in
+    /// the same order within a tick on every machine, whatever order they
+    /// arrived in. Empty when holes are off, as impacts are then ignored.
+    ///
+    /// With the [`CloudSpec`] of each cloud still alive, this is all a late
+    /// joiner needs: its world then computes the same clouds, to the bit.
+    /// The world keeps the impacts as given because it works in metres
+    /// inside, and converting back wouldn't always give the same bits.
+    ///
+    /// ```
+    /// use smokescreen::glam::Vec3;
+    /// use smokescreen::*;
+    ///
+    /// let config = Config::new(Units::INCHES_Z_UP, 64.0);
+    /// let ground = FlatGround::new(0.0, UpAxis::Z);
+    /// let mut server = Smokes::new(config.clone(), ground);
+    /// server.pop(CloudSpec::new(Vec3::ZERO, 0, 7, Style::Volumetric));
+    /// let tick = 128;
+    /// server.bullet(Vec3::new(-400.0, 0.0, 40.0), Vec3::new(400.0, 10.0, 50.0), tick - 4);
+    /// server.advance(tick);
+    ///
+    /// // A player joins: send the clouds still alive and the impacts.
+    /// let specs: Vec<CloudSpec> = server.clouds().filter(|c| c.end_tick() > tick).map(|c| *c.spec()).collect();
+    /// let impacts: Vec<Impact> = server.impacts().collect();
+    ///
+    /// let mut client = Smokes::new(config, ground);
+    /// for spec in specs {
+    ///     client.pop(spec);
+    /// }
+    /// for impact in impacts {
+    ///     client.impact(impact);
+    /// }
+    /// let (eye, enemy) = (Vec3::new(-400.0, 20.0, 45.0), Vec3::new(400.0, 0.0, 45.0));
+    /// assert_eq!(client.occlusion(eye, enemy, tick).to_bits(), server.occlusion(eye, enemy, tick).to_bits());
+    /// ```
+    pub fn impacts(&self) -> impl Iterator<Item = Impact> + '_ {
+        self.holes.iter().map(|h| h.given)
     }
 
     fn finish_fill(&mut self, i: usize) {
@@ -769,9 +1004,7 @@ impl<L: Level> Smokes<L> {
             return;
         }
         let job = std::mem::replace(job, Box::new(FillJob::new(placeholder_spec())));
-        let mut ready = Ready::new(Arc::new(job.into_shape()));
-        ready.arrival = arrival_times(&ready.shape, &cloud.timeline);
-        cloud.fill = Fill::Ready(ready);
+        cloud.fill = Fill::Ready(Ready::new(Arc::new(job.into_shape()), cloud.spec, cloud.timeline));
     }
 
     /// Finish every fill whose cloud has started growing by `tick`.
@@ -867,7 +1100,11 @@ impl<L: Level> Smokes<L> {
             return i;
         }
         self.finish_due(tick);
-        let slot = if self.snapshots.len() < self.config.cached_ticks.max(1) {
+        // Pinned snapshots stay out of the turnover, and don't take the
+        // cache's room.
+        let pinned = |i: usize| self.pins.contains(&Some(i));
+        let held = (0..self.snapshots.len()).filter(|&i| pinned(i)).count();
+        let slot = if self.snapshots.len() < self.config.cached_ticks.max(1) + held {
             self.snapshots.push(Snapshot {
                 tick,
                 generation: 0,
@@ -881,6 +1118,7 @@ impl<L: Level> Smokes<L> {
             self.snapshots.len() - 1
         } else {
             (0..self.snapshots.len())
+                .filter(|&i| !pinned(i))
                 .min_by_key(|&i| self.snapshots[i].stamp)
                 .unwrap_or(0)
         };
@@ -891,12 +1129,13 @@ impl<L: Level> Smokes<L> {
         snap.generation = self.generation;
         snap.stamp = self.stamp;
         snap.len = 0;
-        for (ci, cloud) in self.clouds.iter().enumerate() {
+        for cloud in &self.clouds {
             let (Some(ready), Some(age)) = (cloud.ready(), cloud.age(tick, rate)) else {
                 continue;
             };
             let tl = &cloud.timeline;
-            if !tl.has_started(age) || tl.is_finished(age) || ready.shape.is_empty() {
+            let shape = &ready.filled.shape;
+            if !tl.has_started(age) || tl.is_finished(age) || shape.is_empty() {
                 continue;
             }
             if snap.len == snap.states.len() {
@@ -904,14 +1143,18 @@ impl<L: Level> Smokes<L> {
             }
             let st = &mut snap.states[snap.len];
             snap.len += 1;
-            st.cloud = ci;
             st.id = cloud.id;
+            // Kept as it is while the slot's state is the same cloud's (a
+            // grown cloud's, every tick).
+            if !st.filled.as_ref().is_some_and(|f| Arc::ptr_eq(f, &ready.filled)) {
+                st.filled = Some(ready.filled.clone());
+            }
             st.age = age;
             st.growth = tl.growth(age);
             st.dissolve = tl.dissolve(age);
             // Kept from this slot's last tick while growth and dissolve are
             // the same (a grown cloud's, every tick).
-            if ready.shape.facets.is_none() {
+            if shape.facets.is_none() {
                 st.density.set(st.growth, st.dissolve);
             } else {
                 st.density.set(0.0, 0.0);
@@ -931,7 +1174,7 @@ impl<L: Level> Smokes<L> {
                 );
             }
             st.live.clear();
-            if let Some(f) = &ready.shape.facets {
+            if let Some(f) = &shape.facets {
                 st.live.extend(
                     f.puffs
                         .iter()
@@ -942,33 +1185,39 @@ impl<L: Level> Smokes<L> {
                     shrink_for_holes(&mut st.live, &st.holes);
                 }
             }
-            st.active = active_bounds(&ready.shape, st);
+            st.active = active_bounds(shape, st);
         }
         // The same order on every machine, whatever order the pops arrived
         // in (sums over clouds depend on it), and the newest `max_clouds`.
-        let clouds = &self.clouds;
         let states = &mut snap.states[..snap.len];
         states.sort_unstable_by_key(|st| {
-            let c = &clouds[st.cloud];
-            let o = c.spec.origin;
-            (
-                c.spec.pop_tick,
-                c.spec.seed,
-                o.x.to_bits(),
-                o.y.to_bits(),
-                o.z.to_bits(),
-                c.spec.style as u8,
-                c.id,
-            )
+            // Every state filled in here has its cloud's.
+            let key = st.filled.as_ref().map(|f| {
+                let o = f.spec.origin;
+                (
+                    f.spec.pop_tick,
+                    f.spec.seed,
+                    o.x.to_bits(),
+                    o.y.to_bits(),
+                    o.z.to_bits(),
+                    f.spec.style as u8,
+                )
+            });
+            (key, st.id)
         });
         snap.uncounted = snap.len.saturating_sub(max_clouds);
         if snap.len > max_clouds {
             states.rotate_left(snap.len - max_clouds);
             snap.len = max_clouds;
         }
+        // States past the end keep their buffers for later ticks, but not
+        // the fills of clouds that may be gone.
+        for st in &mut snap.states[snap.len..] {
+            st.filled = None;
+        }
         snap.facets_to_bound = snap.states[..snap.len]
             .iter()
-            .any(|st| st.dissolve <= LATE_FADE && clouds[st.cloud].spec.style == Style::Faceted);
+            .any(|st| st.dissolve <= LATE_FADE && st.filled.as_ref().is_some_and(|f| f.spec.style == Style::Faceted));
         snap.broad.build(&snap.states[..snap.len]);
         slot
     }
@@ -978,16 +1227,39 @@ impl<L: Level> Smokes<L> {
     /// it is cached for the last few ticks asked for.
     pub fn view(&mut self, tick: u64) -> View<'_> {
         let slot = self.prepare(tick);
+        self.view_of(slot)
+    }
+
+    fn view_of(&self, slot: usize) -> View<'_> {
         let snap = &self.snapshots[slot];
         View {
-            tick,
+            tick: snap.tick,
             states: &snap.states[..snap.len],
             uncounted: snap.uncounted,
-            clouds: &self.clouds,
             config: &self.config,
             facets_to_bound: snap.facets_to_bound,
             broad: &snap.broad,
         }
+    }
+
+    /// Prepares the view of `tick` and keeps it under `pin` (a small
+    /// number) until `pin` is pinned again, as the world is now: later pops,
+    /// holes and removals don't change it, and other ticks' views don't push
+    /// it out of the cache. For `bevy_smokescreen`'s read-only queries.
+    #[doc(hidden)]
+    pub fn pin_view(&mut self, pin: usize, tick: u64) {
+        let slot = self.prepare(tick);
+        if self.pins.len() <= pin {
+            self.pins.resize(pin + 1, None);
+        }
+        self.pins[pin] = Some(slot);
+    }
+
+    /// The view `pin` keeps (see [`Self::pin_view`]), if it has been pinned.
+    #[doc(hidden)]
+    pub fn pinned_view(&self, pin: usize) -> Option<View<'_>> {
+        let slot = (*self.pins.get(pin)?)?;
+        Some(self.view_of(slot))
     }
 
     /// The amount of cloud along the segment `from..to` at `tick`, every
@@ -1153,9 +1425,19 @@ fn collect_holes(
     out.reverse();
 }
 
-/// Run a whole fill at once, outside any world (for example on a server that
-/// sends finished clouds). Same result as [`Smokes::pop`] gives.
+/// Run a whole fill at once, outside any world: on a worker thread, say, for
+/// [`Smokes::insert`]. Same result as [`Smokes::pop`] gives.
+///
+/// A [`CloudShape`] has no wire format. To share a cloud between machines,
+/// send its [`CloudSpec`]: every machine fills the same cloud from it.
+///
+/// # Panics
+///
+/// If [`Config::validate`] refuses `config`.
 pub fn fill_cloud<L: Level + ?Sized>(config: &Config, spec: &CloudSpec, level: &L) -> CloudShape {
+    if let Err(e) = config.validate() {
+        panic!("fill_cloud: {e}");
+    }
     let internal = config.tuning.to_internal(&config.units);
     crate::fill::fill_now(
         make_fill_spec(&internal, config.tuning.voxel_size, &config.units, spec),
@@ -1227,6 +1509,21 @@ pub struct CloudInfo<'a> {
     cloud: &'a Cloud,
 }
 
+/// Everything but the fill, which is megabytes of voxels: whether it is
+/// done instead.
+impl core::fmt::Debug for CloudInfo<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CloudInfo")
+            .field("id", &self.cloud.id)
+            .field("spec", &self.cloud.spec)
+            .field("timeline", &self.cloud.timeline)
+            .field("start_tick", &self.cloud.start_tick)
+            .field("end_tick", &self.cloud.end_tick)
+            .field("filled", &self.cloud.ready().is_some())
+            .finish()
+    }
+}
+
 impl<'a> CloudInfo<'a> {
     fn new(cloud: &'a Cloud) -> Self {
         Self { cloud }
@@ -1259,7 +1556,7 @@ impl<'a> CloudInfo<'a> {
 
     /// The finished fill, once it is.
     pub fn shape(&self) -> Option<&'a Arc<CloudShape>> {
-        self.cloud.ready().map(|r| &r.shape)
+        self.cloud.ready().map(|r| &r.filled.shape)
     }
 
     /// Seconds since the pop at `tick` (`None` before the pop).
@@ -1275,10 +1572,20 @@ pub struct View<'a> {
     tick: u64,
     states: &'a [CloudState],
     uncounted: usize,
-    clouds: &'a [Cloud],
     config: &'a Config,
     facets_to_bound: bool,
     broad: &'a BroadPhase,
+}
+
+/// A summary: the tick, and how many clouds count at it.
+impl core::fmt::Debug for View<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("View")
+            .field("tick", &self.tick)
+            .field("clouds", &self.states.len())
+            .field("uncounted", &self.uncounted)
+            .finish_non_exhaustive()
+    }
 }
 
 /// One cloud at the view's tick.
@@ -1379,16 +1686,14 @@ impl<'a> View<'a> {
     /// The clouds present at this tick (started and not yet gone).
     #[doc(hidden)]
     pub fn clouds(&self) -> impl Iterator<Item = CloudView<'a>> + 'a {
-        let clouds = self.clouds;
         let volume_steps = self.config.tuning.volume_steps;
         self.states.iter().filter_map(move |state| {
-            let cloud = &clouds[state.cloud];
-            let ready = cloud.ready()?;
+            let filled = state.filled.as_ref()?;
             Some(CloudView {
                 state,
-                shape: &ready.shape,
-                spec: &cloud.spec,
-                timeline: &cloud.timeline,
+                shape: &filled.shape,
+                spec: &filled.spec,
+                timeline: &filled.timeline,
                 volume_steps,
             })
         })
@@ -1476,21 +1781,20 @@ impl<'a> View<'a> {
             if u1 < u0 {
                 return None;
             }
-            let cloud = &self.clouds[state.cloud];
-            let ready = cloud.ready()?;
-            let shape = &ready.shape;
+            let filled = state.filled.as_ref()?;
+            let (shape, style) = (&filled.shape, filled.spec.style);
             crossed = true;
             // Faceted: chord bounds. Any other cloud: its exact amount,
             // which serves as both bounds.
             let mut part = 0.0;
             let stopped = match &shape.facets {
-                Some(_) if cloud.spec.style == Style::Faceted && state.dissolve > LATE_FADE => {
+                Some(_) if style == Style::Faceted && state.dissolve > LATE_FADE => {
                     // Late in the fade the puffs left are small next to
                     // the blend radius, so the bounds seldom settle a line;
                     // the trace is cheap then anyway.
                     return Some(Verdict::Trace);
                 }
-                Some(f) if cloud.spec.style == Style::Faceted => {
+                Some(f) if style == Style::Faceted => {
                     // Over the whole box, like the trace: a grown polyhedron
                     // can reach a little past what the puffs occupy.
                     let holes = holes_near(&state.holes, a, inv, t0, t1, |h| h.radius * 0.2, &mut buf);
@@ -1573,13 +1877,12 @@ impl<'a> View<'a> {
         if p.cmplt(lo).any() || p.cmpgt(hi).any() {
             return None;
         }
-        let c = &self.clouds[state.cloud];
-        let ready = c.ready()?;
+        let filled = state.filled.as_ref()?;
         let cloud = CloudView {
             state,
-            shape: &ready.shape,
-            spec: &c.spec,
-            timeline: &c.timeline,
+            shape: &filled.shape,
+            spec: &filled.spec,
+            timeline: &filled.timeline,
             volume_steps: self.config.tuning.volume_steps,
         };
         let core_rule = self.config.tuning.facet_rule == FacetRule::Core;
@@ -1627,14 +1930,13 @@ impl<'a> View<'a> {
             if u1 < u0 {
                 return None;
             }
-            let cloud = &self.clouds[state.cloud];
-            let ready = cloud.ready()?;
-            let shape = &ready.shape;
+            let filled = state.filled.as_ref()?;
+            let shape = &filled.shape;
             // Only the holes that could matter along this segment; the rest
             // would change nothing.
             let mut buf = [HoleShape::NONE; HOLE_BUFFER];
             let stopped = match &shape.facets {
-                Some(f) if cloud.spec.style == Style::Crystal => CrystalField {
+                Some(f) if filled.spec.style == Style::Crystal => CrystalField {
                     bins: &f.bins,
                     live: &state.live,
                 }
@@ -1686,5 +1988,122 @@ impl<'a> View<'a> {
             stopped.then_some(())
         })
         .is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::FlatGround;
+
+    fn config() -> Config {
+        Config::new(Units::METRES_Y_UP, 128.0)
+    }
+
+    #[test]
+    fn the_default_configs_are_valid() {
+        for units in [Units::METRES_Y_UP, Units::INCHES_Z_UP] {
+            for rate in [20.0, 64.0, 128.0] {
+                assert_eq!(Config::new(units, rate).validate(), Ok(()));
+            }
+        }
+        // As big a grid as there may be, and values at their limits.
+        let mut c = config();
+        c.tuning.grid_dims = UVec3::splat(256);
+        c.tuning.floor_fraction = 1.0;
+        c.tuning.sight_threshold = 0.0;
+        c.tuning.timeline.start = 0.0;
+        c.tuning.holes = None;
+        assert_eq!(c.validate(), Ok(()));
+    }
+
+    /// A change that should make a configuration nonsense.
+    type Spoil = fn(&mut Config);
+
+    #[test]
+    fn nonsense_configs_are_refused() {
+        let cases: [(&str, Spoil); 16] = [
+            ("tick_rate", |c| c.tick_rate = 0.0),
+            ("tick_rate", |c| c.tick_rate = f32::NAN),
+            ("units.metres_per_unit", |c| c.units.metres_per_unit = -1.0),
+            ("tuning.voxel_size", |c| c.tuning.voxel_size = 0.0),
+            ("tuning.volume", |c| c.tuning.volume = f32::INFINITY),
+            ("tuning.floor_fraction", |c| c.tuning.floor_fraction = 1.5),
+            ("tuning.floor_fraction", |c| c.tuning.floor_fraction = f32::NAN),
+            ("tuning.lumpiness", |c| c.tuning.lumpiness = f32::NAN),
+            ("tuning.sight_threshold", |c| c.tuning.sight_threshold = f32::INFINITY),
+            ("tuning.timeline.lifetime", |c| {
+                c.tuning.timeline.lifetime = f32::INFINITY
+            }),
+            ("tuning.facets.size", |c| c.tuning.facets.size = f32::NAN),
+            ("tuning.crystals.spin", |c| c.tuning.crystals.spin = f32::NEG_INFINITY),
+            ("tuning.holes.bullet_radius", |c| {
+                if let Some(h) = &mut c.tuning.holes {
+                    h.bullet_radius = f32::NAN;
+                }
+            }),
+            ("tuning.grid_dims", |c| c.tuning.grid_dims = UVec3::splat(480)),
+            ("tuning.grid_dims", |c| c.tuning.grid_dims = UVec3::new(260, 256, 256)),
+            // Too big to round up in 32 bits.
+            ("tuning.grid_dims", |c| c.tuning.grid_dims = UVec3::splat(u32::MAX)),
+        ];
+        for (field, spoil) in cases {
+            let mut c = config();
+            spoil(&mut c);
+            let e = c.validate().expect_err(field);
+            assert_eq!(e.field(), field);
+            assert!(e.to_string().starts_with(&format!("Config::{field} is ")), "{e}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Smokes::new: Config::tick_rate is 0: it must be above 0")]
+    fn a_world_with_a_nonsense_config_panics() {
+        let mut c = config();
+        c.tick_rate = 0.0;
+        Smokes::new(c, FlatGround::default());
+    }
+
+    #[test]
+    #[should_panic(expected = "fill_cloud: Config::tuning.voxel_size is -0.3: it must be above 0")]
+    fn filling_with_a_nonsense_config_panics() {
+        let mut c = config();
+        c.tuning.voxel_size = -0.3;
+        fill_cloud(
+            &c,
+            &CloudSpec::new(Vec3::ZERO, 0, 1, Style::Volumetric),
+            &FlatGround::default(),
+        );
+    }
+
+    #[test]
+    fn spec_builders_set_their_fields() {
+        let timeline = Timeline {
+            lifetime: 9.0,
+            ..Timeline::default()
+        };
+        let spec = CloudSpec::new(Vec3::ZERO, 3, 1, Style::Crystal)
+            .with_volume(40.0)
+            .with_timeline(timeline);
+        assert_eq!((spec.volume, spec.timeline), (Some(40.0), Some(timeline)));
+    }
+
+    /// Summaries, not megabytes of voxels.
+    #[test]
+    fn debug_summarises() {
+        let mut smokes = Smokes::new(config(), FlatGround::default());
+        let id = smokes.pop(CloudSpec::new(Vec3::ZERO, 0, 4, Style::Volumetric));
+        smokes.pop(CloudSpec::new(Vec3::new(20.0, 0.0, 0.0), 0, 5, Style::Faceted));
+        let world = format!("{smokes:?}");
+        assert!(
+            world.contains("clouds: 2, pending_fills: 2") && world.len() < 300,
+            "{world}"
+        );
+        let view = format!("{:?}", smokes.view(640));
+        assert!(view.contains("tick: 640, clouds: 2"), "{view}");
+        let cloud = format!("{:?}", smokes.cloud(id).expect("the cloud"));
+        assert!(cloud.contains("filled: true") && cloud.len() < 500, "{cloud}");
+        let state = format!("{:?}", smokes.view(640).clouds().next().expect("a cloud").state);
+        assert!(state.len() < 2000, "{state}");
     }
 }

@@ -256,6 +256,10 @@ The README's tables come from `cargo bench -p smokescreen`. The weak spots:
 
 - Physics adapters: `Level` for avian and rapier colliders, as optional
   features or small crates.
+- A `render` feature (on by default), so a dedicated server built with
+  the plugin leaves out the GPU code and Bevy's renderer.
+- A wire format for `CloudShape`, if filling on the server and sending
+  the result turns out to matter. Today clients fill from the `CloudSpec`.
 - Dynamic obstacles (a door closing on a smoke): re-fill or patch the grid.
 - Wind that moves a cloud, not just its texture.
 - Continuous emitters (today a long `grow_time` stands in for a vent).

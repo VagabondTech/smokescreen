@@ -3,8 +3,6 @@
 //! [`SmokeLevel`](crate::SmokeLevel) on a background thread, whenever one is
 //! added, moved or removed.
 
-use std::sync::Arc;
-
 use bevy::{
     mesh::{Indices, Mesh, PrimitiveTopology, VertexAttributeValues},
     prelude::*,
@@ -37,7 +35,8 @@ use crate::{
 /// a box for a raised floor with open air below it. Where triangles face
 /// inwards (a room made of one box seen from inside), or a wall is a single
 /// upright sheet, smoke stops up to half a voxel short of the surface.
-#[derive(Component, Clone, Copy, Debug, Default)]
+#[derive(Component, Clone, Copy, Debug, Default, Reflect)]
+#[reflect(Component, Default, Debug)]
 pub struct SmokeObstacle;
 
 #[derive(Resource, Default)]
@@ -65,9 +64,10 @@ pub(crate) fn voxelise_obstacles(
     obstacles: Query<(Entity, &Mesh3d, &GlobalTransform), With<SmokeObstacle>>,
     unmeshed: Query<Entity, (With<SmokeObstacle>, Without<Mesh3d>)>,
     meshes: Option<Res<Assets<Mesh>>>,
-    asset_server: Res<AssetServer>,
+    // Both come with Bevy's asset plugins, which a server may leave out.
+    asset_server: Option<Res<AssetServer>>,
     config: Res<SmokeConfig>,
-    mut warnings: ResMut<SetupWarnings>,
+    warnings: Res<SetupWarnings>,
 ) {
     if !changed.is_empty() || removed.read().count() > 0 {
         build.dirty = true;
@@ -78,7 +78,7 @@ pub(crate) fn voxelise_obstacles(
         };
         build.task = None;
         if let Some(level) = done {
-            commands.insert_resource(SmokeLevel(Arc::new(level)));
+            commands.insert_resource(SmokeLevel::new(level));
         }
     }
     if !build.dirty {
@@ -99,7 +99,7 @@ pub(crate) fn voxelise_obstacles(
             )
         });
     }
-    let Some(meshes) = meshes else {
+    let (Some(meshes), Some(asset_server)) = (meshes, asset_server) else {
         return;
     };
     let mut triangles: Vec<[Vec3; 3]> = Vec::new();

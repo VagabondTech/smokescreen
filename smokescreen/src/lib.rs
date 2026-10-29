@@ -19,7 +19,8 @@
 //!   volume, timeline), the [`Level`], the [`Tuning`] and `t`.
 //! - **Holes.** Bullets and explosions are events with a tick too
 //!   ([`Smokes::bullet`], [`Smokes::explosion`]); `Tuning::holes = None` turns
-//!   them off.
+//!   them off. [`Smokes::impacts`] gives back every one a world keeps, as it
+//!   was given, for a late joiner.
 //! - **The rule.** [`Smokes::occlusion`] is the amount of cloud along a
 //!   segment, every cloud added up; [`Smokes::blocks_sight`] is whether that
 //!   reaches [`Tuning::sight_threshold`]. Queries allocate nothing and skip
@@ -47,6 +48,36 @@
 //!
 //! The `determinism` test hashes thousands of query results over the lives
 //! of eight clouds; run it on each platform you ship and compare.
+//!
+//! ## Features
+//!
+//! - **`serde`** (off by default): `Serialize` and `Deserialize` on what
+//!   machines send each other: [`CloudSpec`] (with [`CloudSource`],
+//!   [`Style`] and [`Timeline`]) and [`Impact`]. Binary formats such as
+//!   postcard and bincode carry every number exactly, and so does
+//!   `serde_json` for every finite `f32` (all of them checked). Without the
+//!   feature, the crate depends on `glam` and `libm` only.
+//!
+//! ## Versions
+//!
+//! - **Results.** 0.2 releases avoid changing results where they can (a
+//!   change shows in the `determinism` test's hashes, and the changelog
+//!   says so), but to be safe, run the same version on every machine in a
+//!   match.
+//! - **The API.** Later 0.2 releases may add to it without breaking code
+//!   written the way these docs write it. Enums marked `#[non_exhaustive]`
+//!   may gain variants, so match them with a `_` arm. The settings structs
+//!   ([`Config`], [`Tuning`], [`Timeline`], [`HoleSettings`],
+//!   [`FacetSettings`], [`FacetLimits`]) may gain fields, so build them from
+//!   their constructors or `Default` and set fields, or use `..` with one.
+//!   [`CloudSpec`] and [`Impact`] gain fields only in a new 0.x: every
+//!   machine must send them, so a new one should stop code that sends them
+//!   field by field from compiling.
+//! - **Serialised forms** follow the types: a 0.2 release may add a variant
+//!   or a field where the type may. Send them between machines running the
+//!   same version, as for results.
+//! - **Hidden items** (left out of these docs) are for `bevy_smokescreen`
+//!   and the tests, and may change in any release.
 //!
 //! ## Example
 //!
@@ -90,12 +121,15 @@ mod world;
 
 pub use facets::{FacetLimits, FacetRule, FacetSettings, Polyhedron, ShapeMix};
 pub use fill::CloudShape;
-pub use holes::HoleSettings;
-pub use level::{BoxObstacles, FlatGround, Level, ObstacleBox, VoxelObstacles};
+pub use holes::{HoleSettings, Impact};
+pub use level::{BoxObstacles, FlatGround, Level, ObstacleBox, VoxelBytesError, VoxelObstacles};
 pub use timeline::Timeline;
 pub use units::{Units, UpAxis};
 pub use volume::VolumeSteps;
-pub use world::{CloudId, CloudInfo, CloudSource, CloudSpec, Config, Smokes, Style, Tuning, View, fill_cloud};
+pub use world::{
+    CloudId, CloudInfo, CloudSource, CloudSpec, Config, ConfigError, MAX_GRID_VOXELS, Smokes, Style, Tuning, View,
+    fill_cloud,
+};
 
 // What bevy_smokescreen reads to draw, and the tests to check: public, but
 // not part of the API. Each definition is `#[doc(hidden)]` too, as

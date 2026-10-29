@@ -275,6 +275,195 @@ fn late_joiners_and_replays_agree() {
     }
 }
 
+/// An impact's tick and the bits of its numbers, to compare impacts exactly
+/// (`==` on `f32` takes -0 for 0).
+fn impact_bits(impact: &Impact) -> (u64, Vec<u32>) {
+    match *impact {
+        Impact::Bullet { start, end, tick } => (
+            tick,
+            start
+                .to_array()
+                .into_iter()
+                .chain(end.to_array())
+                .map(f32::to_bits)
+                .collect(),
+        ),
+        Impact::Explosion { center, radius, tick } => (
+            tick,
+            // A radius of `None` leaves a shorter list than `Some`.
+            center.to_array().into_iter().chain(radius).map(f32::to_bits).collect(),
+        ),
+        _ => unreachable!("a kind of impact this test doesn't know"),
+    }
+}
+
+/// `impacts()` gives back every impact exactly as it was given, in Z-up
+/// inches (where converting back from metres wouldn't), by tick and in the
+/// same order within a tick whatever order they arrived in, and forgets
+/// them with their holes.
+#[test]
+fn impacts_come_back_as_given() {
+    let inches = common::z_up_inches();
+    let shot = Impact::Bullet {
+        start: Vec3::new(-393.7, 11.1, 47.3),
+        end: Vec3::new(401.9, -7.7, 52.1),
+        tick: 300,
+    };
+    let given = [
+        shot,
+        Impact::Explosion {
+            center: Vec3::new(12.3, -45.6, 7.8),
+            radius: None,
+            tick: 300,
+        },
+        Impact::Explosion {
+            center: Vec3::new(-0.1, 0.3, 30.0),
+            radius: Some(97.3),
+            tick: 290,
+        },
+        // Still to come.
+        Impact::Bullet {
+            start: Vec3::new(-0.0, 1e-3, 64.0),
+            end: Vec3::new(500.0, 1.0, 64.0),
+            tick: 900,
+        },
+        // The same shot twice: both are kept.
+        shot,
+    ];
+    let world = |order: &[usize]| {
+        let mut smokes = Smokes::new(Config::new(inches, 128.0), FlatGround::new(0.0, UpAxis::Z));
+        for &i in order {
+            match given[i] {
+                Impact::Bullet { start, end, tick } => smokes.bullet(start, end, tick),
+                Impact::Explosion { center, radius, tick } if i == 1 => smokes.explosion(center, radius, tick),
+                other => smokes.impact(other),
+            }
+        }
+        smokes
+    };
+    let mut smokes = world(&[0, 1, 2, 3, 4]);
+    let kept: Vec<_> = smokes.impacts().map(|i| impact_bits(&i)).collect();
+    let reversed: Vec<_> = world(&[4, 3, 2, 1, 0]).impacts().map(|i| impact_bits(&i)).collect();
+    assert_eq!(kept, reversed);
+    let mut expected: Vec<_> = given.iter().map(impact_bits).collect();
+    expected.sort();
+    let mut sorted = kept.clone();
+    sorted.sort();
+    assert_eq!(sorted, expected, "every impact, exactly as given");
+    assert!(kept.windows(2).all(|w| w[0].0 <= w[1].0), "by tick");
+
+    // Holes last 5 s at most and are kept a second (`history_ticks`) after
+    // that: 641 + 128 ticks at 128 Hz.
+    smokes.advance(1068);
+    let ticks: Vec<u64> = smokes.impacts().map(|i| i.tick()).collect();
+    assert_eq!(ticks, [300, 300, 300, 900]);
+    smokes.advance(1069);
+    let ticks: Vec<u64> = smokes.impacts().map(|i| i.tick()).collect();
+    assert_eq!(ticks, [900]);
+
+    // With holes off, impacts are ignored and so not kept.
+    let mut config = Config::new(inches, 128.0);
+    config.tuning.holes = None;
+    let mut off = Smokes::new(config, FlatGround::new(0.0, UpAxis::Z));
+    for impact in given {
+        off.impact(impact);
+    }
+    off.bullet(Vec3::ZERO, Vec3::X, 5);
+    assert_eq!(off.impacts().count(), 0);
+}
+
+/// A late joiner given the specs of the clouds still alive and the world's
+/// `impacts()`, in any order, computes the same clouds as the world it
+/// joins, to the bit, in Z-up inches.
+#[test]
+fn late_joiners_catch_up_from_specs_and_impacts() {
+    let inches = common::z_up_inches();
+    let level = common::level_in(inches);
+    let config = Config::new(inches, 128.0);
+    let mut server = Smokes::new(config.clone(), &level);
+    let styles = [Style::Volumetric, Style::Faceted, Style::Crystal];
+    let (lo, hi) = (Vec3::new(-15.0, 0.2, -10.0), Vec3::new(18.0, 3.0, 12.0));
+    let mut rng = common::Rng(29);
+    let point = |rng: &mut common::Rng| inches.from_internal(rng.point(lo, hi));
+    for tick in 0..1500_u64 {
+        if tick % 150 == 0 {
+            let k = (tick / 150) as usize;
+            let (origin, seed) = common::pops()[k % 8];
+            let mut spec = CloudSpec::new(inches.from_internal(origin), tick, seed, styles[k % 3]);
+            if k % 2 == 1 {
+                // Short-lived: the one popped at tick 1050 has ended by the
+                // join but is still kept, and is left out of what the
+                // joiner is sent.
+                spec = spec.with_timeline(Timeline {
+                    lifetime: 3.0,
+                    fade_time: 1.0,
+                    ..Timeline::default()
+                });
+            }
+            server.pop(spec);
+        }
+        if tick % 7 == 0 {
+            let (a, b) = (point(&mut rng), point(&mut rng));
+            // Some shots are heard a tick or two late.
+            server.bullet(a, b, tick - tick % 3);
+        }
+        if tick % 97 == 0 {
+            let radius = (tick % 2 == 0).then_some(80.0 + (tick % 50) as f32);
+            server.explosion(point(&mut rng), radius, tick);
+        }
+        server.advance(tick);
+    }
+
+    let join = 1499;
+    let specs: Vec<CloudSpec> = server
+        .clouds()
+        .filter(|c| c.end_tick() > join)
+        .map(|c| *c.spec())
+        .collect();
+    let impacts: Vec<Impact> = server.impacts().collect();
+    assert!(specs.len() >= 4 && specs.len() < server.clouds().count());
+    assert!(impacts.len() > 100, "{} impacts", impacts.len());
+    let mut client = Smokes::new(config, &level);
+    for spec in specs.iter().rev() {
+        client.pop(*spec);
+    }
+    for impact in impacts.iter().rev() {
+        client.impact(*impact);
+    }
+    let bits = |s: &Smokes<&BoxObstacles>| s.impacts().map(|i| impact_bits(&i)).collect::<Vec<_>>();
+    assert_eq!(bits(&client), bits(&server));
+    // A joiner sent the clouds alone would see through holes that aren't
+    // there.
+    let mut bare = Smokes::new(client.config().clone(), &level);
+    for spec in &specs {
+        bare.pop(*spec);
+    }
+
+    let (mut smoky, mut holed) = (0, 0);
+    for tick in join..join + 256 {
+        server.advance(tick);
+        client.advance(tick);
+        bare.advance(tick);
+        if tick % 16 != 0 {
+            continue;
+        }
+        for _ in 0..50 {
+            let (a, b) = (point(&mut rng), point(&mut rng));
+            let (s, c) = (server.occlusion(a, b, tick), client.occlusion(a, b, tick));
+            assert_eq!(s.to_bits(), c.to_bits(), "tick {tick}: {a} to {b}");
+            smoky += (s > 0.0) as u32;
+            holed += (bare.occlusion(a, b, tick).to_bits() != s.to_bits()) as u32;
+            let p = point(&mut rng);
+            let (s, c) = (server.density_at(p, tick), client.density_at(p, tick));
+            assert_eq!(s.to_bits(), c.to_bits(), "tick {tick}: at {p}");
+        }
+    }
+    assert!(
+        smoky > 100 && holed > 10,
+        "{smoky} lines through smoke, {holed} changed by holes"
+    );
+}
+
 /// Z-up inches and Y-up metres describe the same world.
 #[test]
 fn units_and_up_axis() {
@@ -325,6 +514,7 @@ fn queries_do_not_allocate() {
         smokes.explosion(Vec3::new(0.0, 1.0, 4.0), None, 595);
         let tick = 600;
         let _ = smokes.occlusion(Vec3::ZERO, Vec3::ONE, tick);
+        smokes.pin_view(0, tick);
         let mut rng = common::Rng(3);
         let segments: Vec<(Vec3, Vec3)> = (0..500)
             .map(|_| {
@@ -343,6 +533,7 @@ fn queries_do_not_allocate() {
             for &id in &ids {
                 sum += smokes.density_of(id, *a, tick);
             }
+            sum += smokes.pinned_view(0).map_or(0.0, |v| v.occlusion(*a, *b));
         }
         let after = allocations();
         assert!(sum > 0.0);
@@ -363,6 +554,57 @@ fn views_are_shared_between_threads() {
             s.spawn(|| assert_eq!(view.occlusion(a, b).to_bits(), expected.to_bits()));
         }
     });
+}
+
+/// A pinned view answers as the world was when it was pinned: holes, pops
+/// and removals since, and more ticks viewed than the cache holds, leave it
+/// as it was. Pinned again, it answers as a fresh view does.
+#[test]
+fn a_pinned_view_keeps_the_world_it_was_pinned_with() {
+    let level = common::level();
+    let mut smokes = Smokes::new(config(), &level);
+    let mut ids = Vec::new();
+    for (i, (origin, seed)) in common::pops().into_iter().enumerate() {
+        let style = [Style::Faceted, Style::Volumetric, Style::Crystal][i % 3];
+        ids.push(smokes.pop(CloudSpec::new(origin, 0, seed, style)));
+    }
+    let tick = 600;
+    let mut rng = common::Rng(5);
+    let (lo, hi) = (Vec3::new(-16.0, 0.0, -10.0), Vec3::new(16.0, 4.0, 12.0));
+    let lines: Vec<(Vec3, Vec3)> = (0..200).map(|_| (rng.point(lo, hi), rng.point(lo, hi))).collect();
+    let answers = |view: View| -> Vec<u32> {
+        let mut out = Vec::new();
+        for (a, b) in &lines {
+            out.push(view.occlusion(*a, *b).to_bits());
+            out.push(view.blocks_sight(*a, *b) as u32);
+            out.push(view.density_at(*a).to_bits());
+            out.extend(ids.iter().map(|&id| view.density_of(id, *b).to_bits()));
+        }
+        out
+    };
+    smokes.pin_view(0, tick);
+    let pinned = answers(smokes.pinned_view(0).expect("pinned"));
+    assert_eq!(pinned, answers(smokes.view(tick)), "a pinned view is its tick's view");
+    let clouds = smokes.pinned_view(0).expect("pinned").clouds().count();
+    assert_eq!(clouds, ids.len());
+
+    smokes.bullet(Vec3::new(-15.0, 1.0, -3.0), Vec3::new(18.0, 1.5, 7.0), tick);
+    smokes.explosion(Vec3::new(0.0, 1.0, 4.0), None, tick);
+    smokes.remove(ids[0]);
+    smokes.pop(CloudSpec::new(Vec3::new(-8.0, 0.0, 3.0), 100, 29, Style::Volumetric));
+    for k in 0..12 {
+        smokes.view(tick + 10 * k);
+    }
+    let view = smokes.pinned_view(0).expect("pinned");
+    assert_eq!((view.tick(), view.clouds().count()), (tick, clouds));
+    assert_eq!(answers(view), pinned, "the pinned view changed");
+    assert_ne!(answers(smokes.view(tick)), pinned, "the world didn't change");
+
+    smokes.clear();
+    assert_eq!(answers(smokes.pinned_view(0).expect("pinned")), pinned);
+    smokes.pin_view(0, tick);
+    assert_eq!(smokes.pinned_view(0).expect("pinned").clouds().count(), 0);
+    assert!(smokes.pinned_view(1).is_none());
 }
 
 /// A cloud filled elsewhere and inserted answers exactly as one popped, in

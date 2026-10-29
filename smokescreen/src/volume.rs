@@ -10,8 +10,10 @@ use crate::{
 };
 
 /// How far apart the volumetric rule's samples lie along a line
-/// ([`crate::Tuning::volume_steps`]).
+/// ([`crate::Tuning::volume_steps`]). Later versions may add spacings, so a
+/// `match` on it needs a `_` arm.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum VolumeSteps {
     /// A sample every half voxel: twice as many, so a check costs about 1.5
     /// times as much, and the amount of cloud it finds is a little more

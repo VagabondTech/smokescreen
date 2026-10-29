@@ -152,7 +152,7 @@ fn split_fills_are_identical() {
             let mut cfg = config();
             cfg.fill_budget = match style {
                 Style::Volumetric => 1_500,
-                Style::Faceted | Style::Crystal => 5_000,
+                _ => 5_000,
             };
             cfg.tuning.timeline.start = 4.0;
             cfg.tuning.timeline.lifetime = 22.0;

@@ -55,6 +55,64 @@ impl HoleSettings {
     pub(crate) fn max_duration(&self) -> f32 {
         self.bullet_close.max(self.explosion_refill)
     }
+
+    /// Every number, by field name, for [`crate::Config::validate`].
+    pub(crate) fn numbers(&self) -> [(&'static str, f32); 7] {
+        [
+            ("bullet_radius", self.bullet_radius),
+            ("bullet_hold", self.bullet_hold),
+            ("bullet_close", self.bullet_close),
+            ("explosion_radius", self.explosion_radius),
+            ("explosion_hold", self.explosion_hold),
+            ("explosion_refill", self.explosion_refill),
+            ("explosion_strength", self.explosion_strength),
+        ]
+    }
+}
+
+/// A bullet or an explosion with its tick, as given to
+/// [`Smokes::bullet`](crate::Smokes::bullet) or
+/// [`Smokes::explosion`](crate::Smokes::explosion): positions and lengths in
+/// the caller's units. [`Smokes::impacts`](crate::Smokes::impacts) gives back
+/// every one a world keeps, and [`Smokes::impact`](crate::Smokes::impact)
+/// adds one: how a server brings a late joiner up to date.
+///
+/// Later versions may add kinds of impact, so a `match` on it needs a `_`
+/// arm; `Smokes::impact` takes every kind. Like
+/// [`CloudSpec`](crate::CloudSpec), its kinds gain fields only in a new 0.x:
+/// every machine must send them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
+pub enum Impact {
+    /// A shot: a tunnel along it through any cloud it crosses.
+    Bullet {
+        /// Where the shot starts.
+        start: Vec3,
+        /// Where it ends: what it hit, or the end of its range.
+        end: Vec3,
+        /// The tick it was fired on.
+        tick: u64,
+    },
+    /// An explosion: a cleared sphere that refills.
+    Explosion {
+        /// Where it went off.
+        center: Vec3,
+        /// The cleared sphere's radius; `None` for
+        /// [`HoleSettings::explosion_radius`].
+        radius: Option<f32>,
+        /// The tick it went off on.
+        tick: u64,
+    },
+}
+
+impl Impact {
+    /// The tick it happened on.
+    pub fn tick(&self) -> u64 {
+        match *self {
+            Impact::Bullet { tick, .. } | Impact::Explosion { tick, .. } => tick,
+        }
+    }
 }
 
 /// What made a hole. Internally in metres, Y up.

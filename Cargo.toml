@@ -25,6 +25,12 @@ resolver = "2"
 [features]
 # Draw through WebGPU in the browser (wasm32); see web/ and .github/workflows/web.yml.
 webgpu = ["bevy/webgpu"]
+# Serialize and Deserialize on SmokeBullet and SmokeExplosion, and on the
+# core's CloudSpec and Impact (smokescreen's serde feature).
+serde = ["dep:serde", "smokescreen/serde"]
+
+[package.metadata.docs.rs]
+features = ["serde"]
 
 [dependencies]
 # Exactly this version: the plugin reads what the core hides from its docs,
@@ -44,6 +50,7 @@ bevy = { version = "0.20.0", default-features = false, features = [
 ] }
 
 bytemuck = "1"
+serde = { version = "1.0.200", default-features = false, features = ["derive"], optional = true }
 
 [dev-dependencies]
 bevy = { version = "0.20.0", default-features = false, features = [

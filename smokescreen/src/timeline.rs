@@ -6,6 +6,7 @@ use crate::math::{BYTE_TO_UNIT, smoothstep};
 /// growing 0.1 s after the pop, full after another 1.4 s, dissolves over the
 /// last 3 s of an 18 s life.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Timeline {
     /// Seconds from the pop until the cloud starts to grow. The flood fill
     /// runs in this window, a little each tick (see
@@ -36,8 +37,11 @@ impl Default for Timeline {
     }
 }
 
+// `growth`, `dissolve` and `is_growing` are the density model renderers
+// mirror: public for `bevy_smokescreen`, not part of the API.
 impl Timeline {
     /// Radius of the growth front in normalised fill-distance units, 0 → 1.2.
+    #[doc(hidden)]
     pub fn growth(&self, age: f32) -> f32 {
         let x = ((age - self.start) / self.grow_time.max(1e-3)).clamp(0.0, 1.0);
         let y = 1.0 - x;
@@ -45,6 +49,7 @@ impl Timeline {
     }
 
     /// 0 while alive, rising to 1 over the fade.
+    #[doc(hidden)]
     pub fn dissolve(&self, age: f32) -> f32 {
         ((age - (self.lifetime - self.fade_time)) / self.fade_time.max(1e-3)).clamp(0.0, 1.0)
     }
@@ -55,6 +60,7 @@ impl Timeline {
     }
 
     /// Still blooming out (plus a little margin)?
+    #[doc(hidden)]
     pub fn is_growing(&self, age: f32) -> bool {
         age < self.start + self.grow_time + 0.05
     }
@@ -62,6 +68,16 @@ impl Timeline {
     /// Gone (past its lifetime)?
     pub fn is_finished(&self, age: f32) -> bool {
         age >= self.lifetime
+    }
+
+    /// Every number, by field name, for [`crate::Config::validate`].
+    pub(crate) fn numbers(&self) -> [(&'static str, f32); 4] {
+        [
+            ("start", self.start),
+            ("grow_time", self.grow_time),
+            ("lifetime", self.lifetime),
+            ("fade_time", self.fade_time),
+        ]
     }
 }
 
