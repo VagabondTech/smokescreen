@@ -10,7 +10,10 @@
 //! - G: throw a smoke grenade; it pops where it comes to rest
 //! - H: throw an HE grenade (it clears a sphere that refills)
 //! - X: clear all smokes
-//! - F: cycle the style: volumetric, faceted, crystal (re-throws current smokes)
+//! - F: cycle the style: volumetric, faceted, crystal (re-throws current smokes).
+//!   In a browser it skips the experimental faceted look, which costs 20–40
+//!   times what a volumetric smoke does to draw; `?style=faceted` still
+//!   starts in it.
 //! - 1-6: the quality dial, cheapest to best; it starts at 3, low
 //! - B: budget mode (the dial turns itself to fit a GPU budget), [ and ]: budget -/+
 //! - M: toggle MSAA, T: toggle TAA (enables temporal jitter on the smoke)
@@ -1386,8 +1389,17 @@ fn quality_keys(
     }
 }
 
-/// F: cycle the style (volumetric, faceted, crystal) and re-throw the
-/// current smokes in it.
+/// The looks F and the Style button step through. A browser leaves out the
+/// experimental faceted look: it costs 20–40 times what a volumetric smoke
+/// does to draw, which makes a poor first look on a laptop or a phone.
+/// `?style=faceted` still starts in it.
+const STYLES: &[SmokeStyle] = if cfg!(target_arch = "wasm32") {
+    &[SmokeStyle::Volumetric, SmokeStyle::Crystal]
+} else {
+    &[SmokeStyle::Volumetric, SmokeStyle::Faceted, SmokeStyle::Crystal]
+};
+
+/// F: step to the next of `STYLES` and re-throw the current smokes in it.
 fn style_key(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
@@ -1398,11 +1410,12 @@ fn style_key(
     if !(std::mem::take(&mut actions.cycle_style) | keys.just_pressed(KeyCode::KeyF)) {
         return;
     }
-    style.0 = match style.0 {
-        SmokeStyle::Volumetric => SmokeStyle::Faceted,
-        SmokeStyle::Faceted => SmokeStyle::Crystal,
-        _ => SmokeStyle::Volumetric,
-    };
+    // From a look that isn't in the list (faceted in a browser), the first.
+    let next = STYLES
+        .iter()
+        .position(|&s| s == style.0)
+        .map_or(0, |i| (i + 1) % STYLES.len());
+    style.0 = STYLES[next];
     for (entity, smoke, transform) in &smokes {
         commands.entity(entity).despawn();
         // A clone pops a fresh cloud, here in the new default style.
